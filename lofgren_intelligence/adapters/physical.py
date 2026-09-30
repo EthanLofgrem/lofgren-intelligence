@@ -92,19 +92,29 @@ class OrbitalPassAdapter(Adapter):
             )
             if passes:
                 best = max(passes, key=lambda p: p.max_elevation_deg)
-                content = (f"{tle.name} passes over ({lat:.4f}, {lon:.4f}) {len(passes)} time(s) above "
+                content = (f"{tle.name} is predicted to pass over ({lat:.4f}, {lon:.4f}) {len(passes)} time(s) above "
                            f"{self.min_elevation_deg:.0f} deg elevation in the {self.hours:.0f} h from "
                            f"{start:%Y-%m-%d %H:%M} UTC; highest {best.max_elevation_deg:.1f} deg at "
                            f"{best.culmination:%Y-%m-%d %H:%M} UTC.")
             else:
-                content = (f"{tle.name} does not pass above {self.min_elevation_deg:.0f} deg over "
+                content = (f"{tle.name} is predicted not to pass above {self.min_elevation_deg:.0f} deg over "
                            f"({lat:.4f}, {lon:.4f}) in the {self.hours:.0f} h from {start:%Y-%m-%d %H:%M} UTC.")
+            calc = {"name": f"predicted pass count: {tle.name}",
+                    "formula": "count(passes with max elevation >= min_elevation within [start, start + hours])",
+                    "inputs": [{"name": "min_elevation", "value": self.min_elevation_deg, "unit": "deg"},
+                               {"name": "hours", "value": self.hours, "unit": "h"},
+                               {"name": "element_age", "value": round(age_days, 2), "unit": "days"}],
+                    "result": float(len(passes)), "unit": "passes"}
             data: dict[str, Any] = {
                 "passes": [p.to_dict() for p in passes],
                 "propagator": PROPAGATOR,
+                # A prediction from public elements, not a provider acquisition schedule:
+                # a pass is an opportunity to image, not proof an image was taken.
+                "prediction_kind": "approximate propagation (not a provider acquisition schedule)",
                 "element_age_days": round(age_days, 2),
                 "observed_claims": [{"statement": content, "value": float(len(passes)), "unit": "passes",
-                                     "subject": f"passes:{tle.norad_id}:{lat:.3f},{lon:.3f}:{start:%Y-%m-%dT%H}"}],
+                                     "subject": f"passes:{tle.norad_id}:{lat:.3f},{lon:.3f}:{start:%Y-%m-%dT%H}",
+                                     "calculation": calc}],
             }
             if sat:
                 data["sensor"] = sat.sensor
@@ -128,6 +138,33 @@ def _post_json(url: str, body: dict, timeout: float = 20.0) -> dict:
                                           "User-Agent": "lofgren-intelligence/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed public host
         return json.loads(resp.read().decode())
+
+
+COLLECTION_INFO = {
+    "sentinel-2-l2a": {"provider": "ESA Copernicus", "license": "Copernicus Sentinel data terms (free, open)",
+                       "gsd_m": 10.0},
+    "landsat-c2-l2": {"provider": "USGS / NASA", "license": "USGS Landsat (public domain)", "gsd_m": 30.0},
+}
+
+
+def normalize_scene(feature: dict, collection: str) -> dict:
+    """One schema for every imagery provider: what, when, where, how clear, how sharp, whose."""
+    props = feature.get("properties", {}) or {}
+    info = COLLECTION_INFO.get(collection, {})
+    bbox = feature.get("bbox")
+    return {
+        "id": feature.get("id"),
+        "collection": collection,
+        "provider": info.get("provider", props.get("providers", "unknown")),
+        "platform": props.get("platform"),
+        "acquired_at": props.get("datetime"),
+        "cloud_cover_pct": props.get("eo:cloud_cover"),
+        "gsd_m": props.get("gsd", info.get("gsd_m")),
+        "footprint_bbox": list(bbox) if bbox else None,
+        "epsg": props.get("proj:epsg"),
+        "license": info.get("license", props.get("license", "unknown")),
+        "access": "open" if collection in COLLECTION_INFO else "check provider terms",
+    }
 
 
 class ImageryCatalogAdapter(Adapter):
@@ -171,15 +208,7 @@ class ImageryCatalogAdapter(Adapter):
             except Exception as exc:
                 result.notes.append(f"imagery_catalog: {collection} search unavailable ({exc})")
                 continue
-            scenes = [
-                {
-                    "id": f.get("id"),
-                    "datetime": f.get("properties", {}).get("datetime"),
-                    "cloud_cover": f.get("properties", {}).get("eo:cloud_cover"),
-                    "platform": f.get("properties", {}).get("platform"),
-                }
-                for f in payload.get("features", [])
-            ]
+            scenes = [normalize_scene(f, collection) for f in payload.get("features", [])]
             src = Source(kind=SourceKind.IMAGERY, title=f"STAC catalog: {collection}", uri=self.endpoint,
                          publisher="Element 84 Earth Search", license=self.license, quality=0.9,
                          independence_group=f"imagery-{collection}")
@@ -188,8 +217,14 @@ class ImageryCatalogAdapter(Adapter):
             ev = Evidence(
                 source_id=src.id, kind=EvidenceKind.DATASET, content=content,
                 data={"scenes": scenes, "query": body,
-                      "observed_claims": [{"statement": content, "value": float(len(scenes)), "unit": "scenes",
-                                          "subject": f"scenes:{collection}:{lat:.3f},{lon:.3f}:{end:%Y-%m-%d}"}]},
+                      "observed_claims": [{
+                          "statement": content, "value": float(len(scenes)), "unit": "scenes",
+                          "subject": f"scenes:{collection}:{lat:.3f},{lon:.3f}:{end:%Y-%m-%d}",
+                          "calculation": {"name": f"scene count: {collection}",
+                                          "formula": "count(scenes intersecting point with cloud_cover < max_cloud in window)",
+                                          "inputs": [{"name": "max_cloud", "value": self.max_cloud, "unit": "%"},
+                                                     {"name": "days", "value": float(self.days), "unit": "days"}],
+                                          "result": float(len(scenes)), "unit": "scenes"}}]},
                 observed_at=end.isoformat(), location=Location(lat, lon, contract.location.get("name")),
                 valid_from=start.isoformat(), valid_to=end.isoformat(),
                 transformations=["STAC search; scene metadata only, pixels not downloaded"],
@@ -198,16 +233,52 @@ class ImageryCatalogAdapter(Adapter):
         return result
 
 
-class SensorAdapter(Adapter):
-    """Reads IoT / sensor readings the user owns or is authorized to read.
+# Unit normalization: every reading is stored in one canonical unit per quantity.
+UNIT_ALIASES: dict[str, tuple[str, Callable[[float], float]]] = {
+    "%": ("%", lambda v: v), "percent": ("%", lambda v: v), "pct": ("%", lambda v: v),
+    "c": ("°C", lambda v: v), "°c": ("°C", lambda v: v), "degc": ("°C", lambda v: v), "celsius": ("°C", lambda v: v),
+    "f": ("°C", lambda v: (v - 32) * 5 / 9), "°f": ("°C", lambda v: (v - 32) * 5 / 9),
+    "degf": ("°C", lambda v: (v - 32) * 5 / 9), "fahrenheit": ("°C", lambda v: (v - 32) * 5 / 9),
+    "k": ("°C", lambda v: v - 273.15),
+    "pa": ("kPa", lambda v: v / 1000), "kpa": ("kPa", lambda v: v), "hpa": ("kPa", lambda v: v / 10),
+    "mm": ("mm", lambda v: v), "cm": ("mm", lambda v: v * 10), "in": ("mm", lambda v: v * 25.4),
+    "w": ("W", lambda v: v), "kw": ("W", lambda v: v * 1000), "kwh": ("kWh", lambda v: v), "wh": ("kWh", lambda v: v / 1000),
+    "ppm": ("ppm", lambda v: v), "ug/m3": ("µg/m³", lambda v: v), "µg/m³": ("µg/m³", lambda v: v),
+    "m/s": ("m/s", lambda v: v), "km/h": ("m/s", lambda v: v / 3.6), "mph": ("m/s", lambda v: v * 0.44704),
+    "v": ("V", lambda v: v), "a": ("A", lambda v: v), "lux": ("lux", lambda v: v),
+}
 
-    CSV columns: timestamp, sensor_id, metric, value, unit [, lat, lon]
+
+def normalize_unit(unit: str) -> tuple[str, Callable[[float], float]] | None:
+    return UNIT_ALIASES.get(unit.strip().lower()) if unit and unit.strip() else None
+
+
+def _parse_time(stamp: str) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+class SensorAdapter(Adapter):
+    """Reads IoT / sensor readings the user owns or is authorized to read. Read-only.
+
+    CSV columns: timestamp, sensor_id, metric, value, unit
+    optional:    lat, lon, calibrated_at, uncertainty
+
+    Every series is normalized to a canonical unit. A series with a missing or
+    unknown unit, or mixing quantities that cannot be converted, is rejected
+    with a reason rather than guessed. Health (sampling gaps, calibration age)
+    is reported with the evidence. Device control is not possible here; it
+    belongs to V4 behind the authority engine.
     """
 
     id = "sensors"
     capabilities = frozenset({"sensor"})
     license = "user-owned device data"
-    description = "Summarizes readings from the user's own sensors (read-only)."
+    description = "Summarizes readings from the user's own sensors (read-only, unit-normalized)."
+    calibration_max_age_days = 365
 
     def __init__(self, csv_paths: list[str | Path], authorized: bool = False, owner: str = "user") -> None:
         self.csv_paths = [Path(p) for p in csv_paths]
@@ -224,40 +295,83 @@ class SensorAdapter(Adapter):
                                 "authorized to read these devices")
             return result
         for path in self.csv_paths:
-            series: dict[tuple[str, str], list[tuple[str, float, str]]] = defaultdict(list)
-            coords: dict[str, tuple[float, float]] = {}
+            series: dict[tuple[str, str], list[dict]] = defaultdict(list)
             with path.open(newline="") as fh:
                 for row in csv.DictReader(fh):
-                    try:
-                        key = (row["sensor_id"], row["metric"])
-                        series[key].append((row["timestamp"], float(row["value"]), row.get("unit", "")))
-                        if row.get("lat") and row.get("lon"):
-                            coords[row["sensor_id"]] = (float(row["lat"]), float(row["lon"]))
-                    except (KeyError, ValueError):
+                    if not row.get("sensor_id") or not row.get("metric"):
                         continue
+                    series[(row["sensor_id"], row["metric"])].append(row)
             src = Source(kind=SourceKind.SENSOR, title=f"Sensor log: {path.name}", uri=path.resolve().as_uri(),
                          publisher=self.owner, license=self.license, quality=0.85,
                          independence_group=f"sensor-{path.name}")
             for (sensor, metric), rows in sorted(series.items()):
-                rows.sort(key=lambda r: r[0])
-                values = [v for _, v, _ in rows]
-                unit = rows[0][2]
-                mean = statistics.fmean(values)
-                first_t, last_t = rows[0][0], rows[-1][0]
-                content = (f"{metric} at sensor {sensor} averaged {mean:.2f} {unit} over {len(values)} readings "
-                           f"from {first_t} to {last_t} (min {min(values):.2f}, max {max(values):.2f}); "
-                           f"it moved from {values[0]:.2f} to {values[-1]:.2f}.")
-                lat_lon = coords.get(sensor)
-                ev = Evidence(
-                    source_id=src.id, kind=EvidenceKind.TIME_SERIES, content=content,
-                    data={"sensor_id": sensor, "metric": metric, "unit": unit, "count": len(values),
-                          "mean": mean, "min": min(values), "max": max(values),
-                          "first": values[0], "last": values[-1],
-                          "observed_claims": [{"statement": content, "value": mean, "unit": unit,
-                                              "subject": f"sensor:{sensor}:{metric}:{first_t}/{last_t}"}]},
-                    observed_at=last_t, valid_from=first_t, valid_to=last_t,
-                    location=Location(*lat_lon) if lat_lon else None,
-                    transformations=["aggregated: count, mean, min, max, first, last"],
-                )
-                result.items.append((src, ev))
+                item = self._summarize(sensor, metric, rows, src, result)
+                if item:
+                    result.items.append(item)
         return result
+
+    def _summarize(self, sensor: str, metric: str, rows: list[dict], src: Source, result: GatherResult):
+        readings: list[tuple[datetime, float]] = []
+        canonical: set[str] = set()
+        rejected = 0
+        for row in rows:
+            norm = normalize_unit(row.get("unit", ""))
+            t = _parse_time(row.get("timestamp", ""))
+            try:
+                raw = float(row["value"])
+            except (KeyError, ValueError, TypeError):
+                rejected += 1
+                continue
+            if norm is None or t is None:
+                rejected += 1
+                continue
+            canonical.add(norm[0])
+            readings.append((t, norm[1](raw)))
+        if len(canonical) > 1:
+            result.notes.append(f"sensors: {sensor}/{metric} mixes quantities {sorted(canonical)}; series rejected")
+            return None
+        if not readings:
+            result.notes.append(f"sensors: {sensor}/{metric} has no readings with a known unit and valid "
+                                f"timestamp ({rejected} rejected); series not used")
+            return None
+        unit = canonical.pop()
+        readings.sort()
+        values = [v for _, v in readings]
+        n, mean = len(values), statistics.fmean(values)
+        first_t, last_t = readings[0][0], readings[-1][0]
+        gaps = [(b[0] - a[0]).total_seconds() for a, b in zip(readings, readings[1:])]
+        health: list[str] = []
+        if rejected:
+            health.append(f"{rejected} reading(s) rejected (unknown unit, bad value or timestamp)")
+        if len(gaps) >= 2:
+            typical = statistics.median(gaps)
+            if typical > 0 and max(gaps) > 3 * typical:
+                health.append(f"irregular sampling: longest gap {max(gaps) / 3600:.1f} h vs typical {typical / 3600:.1f} h")
+        cal = next((r.get("calibrated_at") for r in reversed(rows) if r.get("calibrated_at")), None)
+        cal_t = _parse_time(cal) if cal else None
+        if cal_t is None:
+            health.append("calibration date unknown")
+        elif (last_t - cal_t).days > self.calibration_max_age_days:
+            health.append(f"calibration older than {self.calibration_max_age_days} days")
+        uncertainty = next((r.get("uncertainty") for r in rows if r.get("uncertainty")), None)
+        loc_row = next((r for r in rows if r.get("lat") and r.get("lon")), None)
+        location = Location(float(loc_row["lat"]), float(loc_row["lon"])) if loc_row else None
+        f0, f1 = first_t.isoformat(), last_t.isoformat()
+        content = (f"{metric} at sensor {sensor} averaged {mean:.2f} {unit} over {n} readings from {f0} to {f1} "
+                   f"(min {min(values):.2f}, max {max(values):.2f}); it moved from {values[0]:.2f} to {values[-1]:.2f}.")
+        calc = {"name": f"mean {metric} at {sensor}", "formula": "sum(values) / n",
+                "inputs": [{"name": "n", "value": float(n), "unit": "readings"},
+                           {"name": "sum", "value": round(sum(values), 6), "unit": unit}],
+                "result": round(mean, 6), "unit": unit}
+        ev = Evidence(
+            source_id=src.id, kind=EvidenceKind.TIME_SERIES, content=content,
+            data={"sensor_id": sensor, "owner": self.owner, "authorization": "read-only, confirmed by user",
+                  "metric": metric, "unit": unit, "count": n, "mean": mean, "min": min(values), "max": max(values),
+                  "first": values[0], "last": values[-1], "uncertainty": uncertainty,
+                  "calibrated_at": cal, "health": health or ["ok"],
+                  "observed_claims": [{"statement": content, "value": mean, "unit": unit,
+                                       "subject": f"sensor:{sensor}:{metric}:{f0}/{f1}", "calculation": calc}]},
+            observed_at=f1, valid_from=f0, valid_to=f1, location=location,
+            transformations=[f"normalized to {unit}", "aggregated: count, mean, min, max, first, last"],
+        )
+        return src, ev
