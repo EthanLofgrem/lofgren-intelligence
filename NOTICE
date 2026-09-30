@@ -1,0 +1,8 @@
+Lofgren Intelligence
+Copyright 2026 Lofgren Enterprise
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Orbital element data, when fetched, comes from CelesTrak (celestrak.org).
+Satellite imagery metadata, when searched, comes from Element 84 Earth Search;
+Copernicus Sentinel data and USGS Landsat data are subject to their own terms.
