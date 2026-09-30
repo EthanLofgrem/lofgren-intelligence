@@ -66,6 +66,8 @@ class Question:
     role: str = "state"  # state | support | contradict | gap | prior | claim | stage
     stage: str = ""  # Lofgren venture stage, when applicable
     weight: float = 1.0  # how much this question matters to the decision
+    depends_on: list[str] = field(default_factory=list)  # question ids answered first
+    stop_when: str = ""  # the condition that ends research on this question
     id: str = ""
 
     def __post_init__(self) -> None:
@@ -133,6 +135,24 @@ def _parse_location(text: str) -> dict | None:
     return None
 
 
+def _link_dependencies(mode: str, questions: list[Question]) -> None:
+    """Research question graph: which answers each question builds on."""
+    if mode == "venture":
+        for prev, q in zip(questions, questions[1:]):
+            q.depends_on = [prev.id]
+    else:
+        by_role = {q.role: q for q in questions}
+        base = by_role.get("state") or by_role.get("claim")
+        for q in questions:
+            if q.role in ("support", "contradict") and base is not None:
+                q.depends_on = [base.id]
+            elif q.role == "gap":
+                q.depends_on = [x.id for x in questions if x.role in ("support", "contradict")]
+    for q in questions:
+        q.stop_when = ("every requirement is answered by evidence meeting its policy, "
+                       "or the expected value of more research falls below its cost")
+
+
 def compile_intent(
     objective: str,
     max_spend_usd: float = 5.0,
@@ -184,6 +204,8 @@ def compile_intent(
             Question("What is missing, and what would resolve it?", base_needs, role="gap", weight=1.0),
             Question("Has this been studied or attempted before?", base_needs, role="prior", weight=1.0),
         ]
+
+    _link_dependencies(mode, questions)
 
     constraints: list[str] = []
     budget = _parse_money(text)
