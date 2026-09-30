@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/contradiction.schema.json",
+  "title": "Contradiction",
+  "description": "Contradiction(claim_a: 'str', claim_b: 'str', reason: 'str', kind: 'str' = 'incompatible', scope_note: 'str' = '', resolution: 'str' = '', severity: 'float' = 1.0, id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "claim_a": {
+      "type": "string"
+    },
+    "claim_b": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "scope_note": {
+      "type": "string"
+    },
+    "resolution": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "number"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "claim_a",
+    "claim_b",
+    "reason"
+  ]
+}
