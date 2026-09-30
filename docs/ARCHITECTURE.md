@@ -87,9 +87,21 @@ Q = mean source quality, D = independent supporting sources, T = directness (obs
 
 The planner estimates work units; the billing module maps them to a job class and price for the user's plan. The authority engine blocks the run if the estimate exceeds the contract's cap. During the run, the research budget is capped at the estimated class, and the final charge is never more than the estimate.
 
-## Known limits of V1
+## V1 data path (0.2.0)
 
-- The offline extractor finds factual-looking sentences; it does not understand them. Set `ANTHROPIC_API_KEY` for model-based extraction.
+```
+Objective → Outcome Contract → research question graph → evidence requirements
+→ source selection / search → acquisition → normalization (scope, units, calculations)
+→ evidence graph → claim extraction → lineage → independent verification (policies)
+→ contradiction graph → skeptic → unknowns → findings → report + research receipt
+```
+
+Report text is a view of validated state, never the state itself. See [EVIDENCE_PROTOCOL.md](EVIDENCE_PROTOCOL.md) and [V1_CERTIFICATION.md](V1_CERTIFICATION.md).
+
+## Known limits
+
+- The offline extractor finds factual-looking sentences; it does not understand them. Configure a model provider for better extraction; the skeptic still checks every model claim against its evidence.
 - Question answering is role-based (state, support, contradict, gap, prior art, venture stage keywords), not semantic.
-- Web search is not built in; V1 reads pages you name. A search adapter plugs into the same registry.
-- Imagery adapters return scene metadata, not pixel analysis. Change detection on pixels is V2 work.
+- Web discovery needs a search-provider key (Brave included); without one, V1 reads documents and pages you name.
+- Imagery adapters return normalized scene metadata, not pixel analysis. Pixel change detection is next.
+- Confidence is provisional until outcomes are recorded in the prediction log and the calibrator is fitted.

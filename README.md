@@ -28,6 +28,22 @@ This release runs the first six stages end to end:
 
 Later stages are declared in the kernel already and show as "arrives in V2…V5" in every report. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
+### Release 0.2.0: V1 hardened for V2
+
+V1 is now a typed, provable evidence base, and it passes the **V1 certification gate** (`lofgren certify`) that V2 construction depends on:
+
+- **Typed findings and unknowns.** Every question is answered by a `Finding` built only from graph state. Every gap is an `Unknown` with an acquisition plan (sources, expected gain, cost, approval).
+- **Scope on every claim.** Each claim records the period and place it covers. Disagreements across different scopes are leads, not conflicts.
+- **Lineage.** Syndicated copies and quoted sources count as one confirmation.
+- **Contradiction graph and skeptic pass.** Every conflict states what would resolve it. An adversarial review flags unsupported, circular, stale and unscoped claims.
+- **Receipts.** Every run gets a tamper-evident research receipt with inputs, state and report hashes, plus a per-operation cost ledger and calculation receipts for every derived number.
+- **Model-independent.** Heuristic, Anthropic, or any OpenAI-compatible endpoint, including local models.
+- **Web discovery.** Search results are deduplicated and robots.txt is respected.
+- **Clean physical data.** Normalized satellite metadata, and unit-checked sensor data.
+- **Structured MCP tools.** A V2 knowledge map (`export_state`) and JSON Schemas for the evidence protocol.
+
+See [CHANGELOG.md](CHANGELOG.md), [docs/V1_CERTIFICATION.md](docs/V1_CERTIFICATION.md) and [docs/EVIDENCE_PROTOCOL.md](docs/EVIDENCE_PROTOCOL.md).
+
 V1 runs on the Python standard library alone (Python 3.10+). A model is optional: with `ANTHROPIC_API_KEY` set it uses Claude for claim extraction; without one it uses a deterministic offline extractor.
 
 ## Quick start
@@ -53,6 +69,17 @@ lofgren investigate "How is soil moisture changing on my field at 33.4484, -112.
 
 # Plans and bills
 lofgren pricing --standard-units 1000 --heavy 6
+
+# Receipts, the V2 knowledge map, and calibration
+lofgren investigate "..." --files notes/ --receipt receipt.json --state knowledge-map.json --log predictions.jsonl
+lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
+
+# Web discovery (Brave Search API key) and model choice
+BRAVE_API_KEY=... lofgren investigate "..." --search brave
+LOFGREN_PROVIDER=openai-compatible LOFGREN_BASE_URL=http://localhost:11434/v1 LOFGREN_MODEL=llama3.1 lofgren investigate "..."
+
+# The gate before V2
+lofgren certify
 ```
 
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
@@ -71,13 +98,14 @@ command = "lofgren"
 args = ["mcp"]
 ```
 
-Tools: `investigate`, `verify_claim`, `compile_intent`, `estimate_cost`, `satellite_passes`, `trace_claim`, `pricing`.
+Tools return structured data, not narrative: `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `render_report`, `satellite_passes`, `pricing`.
 
 ## How a finding earns its status
 
 | Status | Meaning |
 | --- | --- |
 | Verified | Meets the contract's standard (default: 2 independent sources, confidence ≥ 70%), or is a direct measurement with no contradiction |
+| Verified attribution | One primary source establishes what it *said*, not that it is true |
 | Partially verified | Supported, confidence ≥ 50%, but short of the standard |
 | Contested | Independent evidence disagrees; both sides are shown |
 | Single-source | One source, low confidence |
@@ -97,19 +125,23 @@ Confidence scores are **uncalibrated starting estimates** until real outcomes ar
 
 ```
 lofgren_intelligence/
-  kernel/        the loop, the pipeline, stage records, question answering
+  kernel/        the loop, pipeline, findings, ledger, receipts, knowledge map
   intent/        objective → Outcome Contract (incl. Lofgren Enterprise venture stages)
   research/      research planner, value-per-cost ordering, stopping rule
-  adapters/      evidence adapters + source registry (documents, web, orbital, imagery, sensors)
-  evidence/      typed evidence and the evidence graph
-  verification/  cross-checking, contradiction detection, confidence, calibration
+  adapters/      evidence adapters + source registry (documents, web search, web pages, orbital, imagery, sensors)
+  evidence/      typed evidence, evidence graph, scope, lineage
+  verification/  cross-checking, policies, contradictions, skeptic, confidence, calibration
   orbital/       TLE parsing, orbit propagation, pass prediction, imaging-satellite catalog
   models/        replaceable model providers (offline heuristic, Anthropic)
   authority/     the authority engine (V4 foundation)
   billing/       work units, job classes, plans, bill formula
   report/        Markdown and JSON reports
-  mcp/           MCP server (stdio)
+  mcp/           MCP server (stdio), structured tools
+  discovery/     V2 entry contracts: Hypothesis, Candidate, promotion guard
+  certification.py  the V1Ready gate (lofgren certify)
+  schemas.py     JSON Schemas for the evidence protocol
   cli.py         the `lofgren` command
+schemas/         generated JSON Schemas
 docs/            architecture, roadmap, pricing, Lofgren Enterprise integration
 tests/           standard-library unittest suite
 ```
@@ -126,6 +158,9 @@ python -m unittest discover -s tests -t .
 - [Roadmap: V1 → V6](docs/ROADMAP.md)
 - [Pricing model](docs/PRICING.md)
 - [Lofgren Enterprise integration](docs/LOFGREN_ENTERPRISE.md)
+- [Evidence protocol](docs/EVIDENCE_PROTOCOL.md)
+- [V1 certification: the gate before V2](docs/V1_CERTIFICATION.md)
+- [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
 
 ## License
 

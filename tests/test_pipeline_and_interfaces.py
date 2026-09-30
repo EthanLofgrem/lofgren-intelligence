@@ -42,7 +42,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn(ClaimStatus.VERIFIED, statuses)
         self.assertIn(ClaimStatus.CONTESTED, statuses)
         md = render_markdown(r)
-        self.assertIn("## Contradictions", md)
+        self.assertIn("## Contradiction graph", md)
         self.assertIn("arrives in V2", md)
         json.dumps(render_json(r))  # fully serializable
 
@@ -77,7 +77,7 @@ class PipelineTests(unittest.TestCase):
         r = run_investigation(c, docs_registry())
         md = render_markdown(r)
         for stage in ("Qualify", "Discover", "Diligence", "Blueprint", "Assemble", "Pilot", "Operate"):
-            self.assertIn(f"### {stage}:", md)
+            self.assertIn(f"· {stage}:", md)
 
 
 class PhysicalAdapterTests(unittest.TestCase):
@@ -188,10 +188,20 @@ class MCPTests(unittest.TestCase):
         res = out["result"]
         self.assertFalse(res["isError"])
         data = res["structuredContent"]
+        self.assertTrue(data["run_id"].startswith("RR-"))
+        finding = self.call(s, 9, "tools/call", {"name": "get_finding",
+                                                 "arguments": {"run_id": data["run_id"], "question_index": 1}})
+        claim_id = finding["result"]["structuredContent"]["claims"][0]["id"]
         trace = self.call(s, 4, "tools/call", {"name": "trace_claim",
-                                               "arguments": {"run_id": data["run_id"],
-                                                             "claim_id": data["claims"][0]["id"]}})
+                                               "arguments": {"run_id": data["run_id"], "claim_id": claim_id}})
         self.assertTrue(trace["result"]["structuredContent"]["supporting"])
+        for tool in ("find_contradictions", "find_gaps", "get_receipt", "export_state", "render_report"):
+            out = self.call(s, 10, "tools/call", {"name": tool, "arguments": {"run_id": data["run_id"]}})
+            self.assertFalse(out["result"]["isError"], tool)
+        receipt = self.call(s, 11, "tools/call", {"name": "get_receipt", "arguments": {"run_id": data["run_id"]}})
+        self.assertTrue(receipt["result"]["structuredContent"]["intact"])
+        legacy = self.call(s, 12, "tools/call", {"name": "estimate_cost", "arguments": {"objective": OBJECTIVE}})
+        self.assertIn("estimate", legacy["result"]["structuredContent"])
 
     def test_satellite_passes_tool(self):
         from lofgren_intelligence.orbital import format_tle
