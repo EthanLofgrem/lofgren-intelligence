@@ -1,0 +1,176 @@
+"""Command line: `lofgren <command>`.
+
+    lofgren investigate "objective" --files notes/ --lat 33.45 --lon -112.07 --tle elements.tle
+    lofgren estimate "objective" --files notes/
+    lofgren passes --lat 33.45 --lon -112.07 --fetch
+    lofgren pricing --standard-units 500 --heavy 5
+    lofgren satellites
+    lofgren mcp
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import __version__, build_registry
+from .billing.pricing import PLANS, cheapest_plan, monthly_bill
+from .intent.compiler import compile_intent
+from .kernel.pipeline import estimate_run, run_investigation
+from .models.provider import default_provider
+from .orbital.catalog import IMAGING_SATELLITES, fetch_tles, load_tles
+from .orbital.propagate import PROPAGATOR, find_passes
+from .report.markdown import render_json, render_markdown
+from .research.planner import plan_research
+
+
+def _add_sources(p: argparse.ArgumentParser) -> None:
+    p.add_argument("objective", help="what you want to know, verify or accomplish")
+    p.add_argument("--files", nargs="*", default=[], help="documents or folders to use as evidence")
+    p.add_argument("--url", nargs="*", default=[], dest="urls", help="public web pages to read")
+    p.add_argument("--tle", help="file of orbital elements (TLE) for pass prediction")
+    p.add_argument("--fetch-orbits", action="store_true", help="fetch current elements from CelesTrak")
+    p.add_argument("--imagery", action="store_true", help="search open Sentinel-2 / Landsat catalogs")
+    p.add_argument("--sensors", nargs="*", default=[], help="CSV readings from your own sensors")
+    p.add_argument("--sensors-authorized", action="store_true",
+                   help="confirm you own or are authorized to read these sensors")
+    p.add_argument("--lat", type=float)
+    p.add_argument("--lon", type=float)
+    p.add_argument("--plan", default="payg", choices=sorted(PLANS))
+    p.add_argument("--max-spend", type=float, default=5.0, help="research spend cap in USD")
+
+
+def _setup(args: argparse.Namespace):
+    location = {"lat": args.lat, "lon": args.lon, "name": None} if args.lat is not None and args.lon is not None else None
+    contract = compile_intent(args.objective, max_spend_usd=args.max_spend, location=location)
+    registry = build_registry(files=args.files, urls=args.urls, tle_path=args.tle, fetch_orbits=args.fetch_orbits,
+                              imagery=args.imagery, sensor_csvs=args.sensors,
+                              sensors_authorized=args.sensors_authorized)
+    return contract, registry
+
+
+def cmd_estimate(args: argparse.Namespace) -> int:
+    contract, registry = _setup(args)
+    plan = plan_research(contract, registry)
+    est = estimate_run(plan, args.plan)
+    print(f"Objective: {contract.objective}\nMode: {contract.mode}\n")
+    print("Questions:")
+    for q in contract.questions:
+        print(f"  - {q.text}")
+    print(f"\nPlan: {len(plan.tasks)} gather tasks, {plan.estimated_work_units:g} WU")
+    for g in plan.gaps:
+        print(f"  gap: {g.question} -> {g.reason}")
+    status = "allowed" if est.allowed else f"not allowed: {est.reason}"
+    print(f"\nEstimate ({PLANS[args.plan].name}): {est.job_class} job, ${est.total_usd:.4f} ({status})")
+    print(f"Spend cap: ${contract.max_spend_usd:.2f}")
+    return 0
+
+
+def cmd_investigate(args: argparse.Namespace) -> int:
+    contract, registry = _setup(args)
+    result = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve)
+    md = render_markdown(result)
+    if args.out:
+        Path(args.out).write_text(md)
+        print(f"report written to {args.out}", file=sys.stderr)
+    else:
+        print(md)
+    if args.json:
+        Path(args.json).write_text(json.dumps(render_json(result), indent=2))
+        print(f"evidence graph written to {args.json}", file=sys.stderr)
+    return 0 if result.completed else 2
+
+
+def cmd_passes(args: argparse.Namespace) -> int:
+    if args.tle:
+        tles = load_tles(args.tle)
+    elif args.fetch:
+        tles = fetch_tles([s.norad_id for s in IMAGING_SATELLITES])
+    else:
+        print("give --tle FILE or --fetch", file=sys.stderr)
+        return 2
+    start = datetime.now(timezone.utc)
+    rows = []
+    for t in tles:
+        for p in find_passes(t, args.lat, args.lon, start, args.hours, args.min_elevation):
+            rows.append(p)
+    rows.sort(key=lambda p: p.rise)
+    print(f"Passes over ({args.lat}, {args.lon}) above {args.min_elevation:g} deg, next {args.hours:g} h "
+          f"[{PROPAGATOR}]")
+    for p in rows:
+        print(f"  {p.rise:%Y-%m-%d %H:%M} UTC  {p.name:<14} max {p.max_elevation_deg:5.1f} deg  "
+              f"{p.duration_s / 60:4.1f} min")
+    if not rows:
+        print("  none")
+    return 0
+
+
+def cmd_pricing(args: argparse.Namespace) -> int:
+    print(f"{'Plan':<14}{'Fee':>9}{'Rate/unit':>11}{'Heavy':>9}{'Incl.':>7}  Limit")
+    for p in PLANS.values():
+        print(f"{p.name:<14}{p.monthly_fee:>9.2f}{p.rate:>11.4f}{p.heavy_price:>9.2f}{p.included_heavy:>7}  "
+              f"{p.entry_limit:,}/{p.limit_period}")
+    if args.standard_units is not None:
+        print(f"\nMonthly bill for {args.standard_units:g} standard units and {args.heavy} heavy jobs:")
+        for pid in PLANS:
+            if pid != "free":
+                print(f"  {PLANS[pid].name:<14} ${monthly_bill(pid, args.standard_units, args.heavy):,.2f}")
+        print(f"  cheapest: {PLANS[cheapest_plan(args.standard_units, args.heavy)].name}")
+    return 0
+
+
+def cmd_satellites(_: argparse.Namespace) -> int:
+    for s in IMAGING_SATELLITES:
+        print(f"{s.name:<12} NORAD {s.norad_id:<6} {s.sensor:<42} {s.data_access}")
+    return 0
+
+
+def cmd_mcp(_: argparse.Namespace) -> int:
+    from .mcp.server import serve
+
+    serve()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="lofgren", description="Lofgren Intelligence — evidence to outcome.")
+    parser.add_argument("--version", action="version", version=f"lofgren-intelligence {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("investigate", help="run the V1 loop and write a verified report")
+    _add_sources(p)
+    p.add_argument("--approve", action="store_true", help="approve actions that need approval")
+    p.add_argument("--out", help="write the Markdown report here")
+    p.add_argument("--json", help="write the full evidence graph as JSON here")
+    p.set_defaults(fn=cmd_investigate)
+
+    p = sub.add_parser("estimate", help="show the contract, plan and price without running")
+    _add_sources(p)
+    p.set_defaults(fn=cmd_estimate)
+
+    p = sub.add_parser("passes", help="predict imaging-satellite passes over a location")
+    p.add_argument("--lat", type=float, required=True)
+    p.add_argument("--lon", type=float, required=True)
+    p.add_argument("--tle")
+    p.add_argument("--fetch", action="store_true")
+    p.add_argument("--hours", type=float, default=24.0)
+    p.add_argument("--min-elevation", type=float, default=30.0)
+    p.set_defaults(fn=cmd_passes)
+
+    p = sub.add_parser("pricing", help="show plans and compare monthly bills")
+    p.add_argument("--standard-units", type=float)
+    p.add_argument("--heavy", type=int, default=0)
+    p.set_defaults(fn=cmd_pricing)
+
+    sub.add_parser("satellites", help="list open-data imaging satellites").set_defaults(fn=cmd_satellites)
+    sub.add_parser("mcp", help="run as an MCP server over stdio").set_defaults(fn=cmd_mcp)
+
+    args = parser.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
