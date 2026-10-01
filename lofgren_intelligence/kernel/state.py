@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .pipeline import RunResult
 
 STATE_SCHEMA = "lofgren.knowledge-map/1"
+_NOT_IN_MAP_V1 = frozenset({"question_ids", "derivation", "claim_scopes"})  # Finding fields added after knowledge-map/1 was fixed
 
 
 def export_state(r: "RunResult") -> dict:
@@ -51,6 +52,7 @@ def export_state(r: "RunResult") -> dict:
         "contradictions": [to_dict(c) for c in g.contradictions.values()],
         "unknowns": [to_dict(u) for u in r.unknowns if u.status == "open"],
         "calculations": [to_dict(c) for c in g.calculations.values()],
-        "findings": [to_dict(f) for f in r.findings],
+        # knowledge-map/1 is frozen: question associations and derivation are carried by knowledge-map/2.
+        "findings": [{k: v for k, v in to_dict(f).items() if k not in _NOT_IN_MAP_V1} for f in r.findings],
         "rule": "V2 may hypothesize from this map; it may never promote a hypothesis into a verified finding.",
     }

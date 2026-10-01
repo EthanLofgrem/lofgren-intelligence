@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lofgren.enterprise/schemas/claim.schema.json",
   "title": "Claim",
-  "description": "Claim(statement: 'str', origin: 'ClaimOrigin' = <ClaimOrigin.EXTRACTED: 'extracted'>, value: 'float | None' = None, unit: 'str' = '', polarity: 'int' = 1, supporting: 'list[str]' = <factory>, contradicting: 'list[str]' = <factory>, status: 'ClaimStatus' = <ClaimStatus.UNVERIFIED: 'unverified'>, confidence: 'float' = 0.0, topic: 'list[str]' = <factory>, question_id: 'str | None' = None, subject: 'str' = '', claim_type: 'ClaimType' = <ClaimType.GENERAL: 'general'>, scope: 'Scope' = <factory>, confidence_method: 'str' = 'v1-heuristic', sufficiency: 'str' = '', issues: 'list[str]' = <factory>, calculation_id: 'str | None' = None, id: 'str' = '')",
+  "description": "Claim(statement: 'str', origin: 'ClaimOrigin' = <ClaimOrigin.EXTRACTED: 'extracted'>, value: 'float | None' = None, unit: 'str' = '', polarity: 'int' = 1, supporting: 'list[str]' = <factory>, contradicting: 'list[str]' = <factory>, status: 'ClaimStatus' = <ClaimStatus.UNVERIFIED: 'unverified'>, confidence: 'float' = 0.0, topic: 'list[str]' = <factory>, question_id: 'str | None' = None, subject: 'str' = '', claim_type: 'ClaimType' = <ClaimType.GENERAL: 'general'>, scope: 'Scope' = <factory>, confidence_method: 'str' = 'v1-heuristic', sufficiency: 'str' = '', issues: 'list[str]' = <factory>, calculation_id: 'str | None' = None, question_ids: 'list[str]' = <factory>, identity_version: 'int' = 2, id: 'str' = '')",
   "type": "object",
   "properties": {
     "statement": {
@@ -113,6 +113,15 @@
           "type": "null"
         }
       ]
+    },
+    "question_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "identity_version": {
+      "type": "integer"
     },
     "id": {
       "type": "string"

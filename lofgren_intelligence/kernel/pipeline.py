@@ -31,7 +31,7 @@ from ..research.planner import CAPABILITY_SOURCES, ResearchPlan, StoppingRule, g
 from ..verification.calibration import PredictionLog
 from ..verification.engine import ConfidenceFactors, Verifier
 from ..verification.skeptic import SkepticReport, review
-from .findings import build_findings, post_verification_unknowns
+from .findings import build_findings, post_verification_unknowns, validate_findings
 from .ledger import CostLedger
 from .stages import KERNEL_LOOP, STAGE_VERSION, VERSION_NAMES, Stage
 
@@ -245,6 +245,10 @@ def _finish(result: RunResult, provider: ReasoningProvider) -> None:
             result.stages.append(StageRecord(stage, status, detail))
     result.finished_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     result.provider_info = provider.describe()
+    # No authoritative receipt from an inconsistent graph (GraphValidationError) or from a finding that cites a
+    # claim belonging to none of its questions (FindingIntegrityError).
+    result.graph.validate()
+    validate_findings(result)
     from .receipt import build_receipt  # late import: the receipt reads the finished result
 
     result.receipt = build_receipt(result)

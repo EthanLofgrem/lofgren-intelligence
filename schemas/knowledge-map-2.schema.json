@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/knowledge-map-2.schema.json",
+  "title": "KnowledgeMap2",
+  "description": "lofgren.knowledge-map/2: V1 state handed to V2, with provenance, question associations and finding derivation. Structural only: validate_knowledge_map enforces references, dates, derivations, fingerprints and the receipt binding.",
+  "type": "object",
+  "required": [
+    "calculations",
+    "claims",
+    "contradictions",
+    "evidence",
+    "evidence_standard",
+    "findings",
+    "fingerprint",
+    "identity_versions",
+    "limitations",
+    "lineage",
+    "mode",
+    "objective",
+    "questions",
+    "receipt",
+    "research_id",
+    "schema",
+    "sources",
+    "unknowns"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "lofgren.knowledge-map/2"
+    },
+    "research_id": {
+      "type": "string",
+      "pattern": "^RR-[0-9a-f]{20}$"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "identity_versions": {
+      "const": {
+        "claim": {
+          "1": "lofgren.claim-identity/1",
+          "2": "lofgren.claim-identity/2"
+        },
+        "evidence": {
+          "1": "lofgren.evidence-identity/1",
+          "2": "lofgren.evidence-identity/2"
+        }
+      }
+    },
+    "evidence_standard": {
+      "type": "object",
+      "required": [
+        "min_independent_sources",
+        "min_confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "min_independent_sources": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "research_id",
+        "contract_hash",
+        "inputs_hash",
+        "state_hash",
+        "knowledge_state_hash"
+      ],
+      "properties": {
+        "schema": {
+          "const": "lofgren.research-receipt/2"
+        },
+        "research_id": {
+          "type": "string",
+          "pattern": "^RR-[0-9a-f]{20}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "inputs_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "state_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "knowledge_state_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "text",
+          "role",
+          "stage",
+          "weight",
+          "depends_on",
+          "stop_when"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "text": {},
+          "role": {},
+          "stage": {},
+          "weight": {},
+          "depends_on": {},
+          "stop_when": {}
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "statement",
+          "origin",
+          "type",
+          "status",
+          "confidence",
+          "confidence_status",
+          "confidence_method",
+          "value",
+          "unit",
+          "polarity",
+          "subject",
+          "scope",
+          "policy",
+          "supporting",
+          "contradicting",
+          "issues",
+          "calculation_id",
+          "question_ids",
+          "identity_version",
+          "assessment"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "statement": {},
+          "origin": {},
+          "type": {},
+          "status": {},
+          "confidence": {},
+          "confidence_status": {},
+          "confidence_method": {},
+          "value": {},
+          "unit": {},
+          "polarity": {},
+          "subject": {},
+          "scope": {},
+          "policy": {},
+          "supporting": {},
+          "contradicting": {},
+          "issues": {},
+          "calculation_id": {},
+          "question_ids": {},
+          "identity_version": {},
+          "assessment": {}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source_id",
+          "kind",
+          "content_hash",
+          "observed_at",
+          "valid_from",
+          "valid_to",
+          "location",
+          "transformations",
+          "identity_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "source_id": {},
+          "kind": {},
+          "content_hash": {},
+          "observed_at": {},
+          "valid_from": {},
+          "valid_to": {},
+          "location": {},
+          "transformations": {},
+          "identity_version": {}
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "uri",
+          "publisher",
+          "published_at",
+          "retrieved_at",
+          "license",
+          "quality",
+          "independence_group",
+          "derived_from"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "kind": {},
+          "title": {},
+          "uri": {},
+          "publisher": {},
+          "published_at": {},
+          "retrieved_at": {},
+          "license": {},
+          "quality": {},
+          "independence_group": {},
+          "derived_from": {}
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "claim_a",
+          "claim_b",
+          "reason",
+          "kind",
+          "scope_note",
+          "resolution",
+          "severity"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "claim_a": {},
+          "claim_b": {},
+          "reason": {},
+          "kind": {},
+          "scope_note": {},
+          "resolution": {},
+          "severity": {}
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "question_id",
+          "capability",
+          "source_types",
+          "expected_gain",
+          "est_cost_usd",
+          "needs_approval",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "description": {},
+          "question_id": {},
+          "capability": {},
+          "source_types": {},
+          "expected_gain": {},
+          "est_cost_usd": {},
+          "needs_approval": {},
+          "status": {}
+        }
+      }
+    },
+    "calculations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "formula",
+          "inputs",
+          "result",
+          "unit",
+          "method"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "name": {},
+          "formula": {},
+          "inputs": {},
+          "result": {},
+          "unit": {},
+          "method": {}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "question_id",
+          "question",
+          "answer",
+          "claim_ids",
+          "evidence_ids",
+          "contradiction_ids",
+          "unknown_ids",
+          "scope",
+          "confidence",
+          "confidence_status",
+          "confidence_method",
+          "affects",
+          "next_best_evidence",
+          "issues",
+          "question_ids",
+          "derivation",
+          "claim_scopes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {},
+          "question_id": {},
+          "question": {},
+          "answer": {},
+          "claim_ids": {},
+          "evidence_ids": {},
+          "contradiction_ids": {},
+          "unknown_ids": {},
+          "scope": {},
+          "confidence": {},
+          "confidence_status": {},
+          "confidence_method": {},
+          "affects": {},
+          "next_best_evidence": {},
+          "issues": {},
+          "question_ids": {},
+          "derivation": {},
+          "claim_scopes": {}
+        }
+      }
+    },
+    "lineage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "derived_from",
+          "relation",
+          "detail"
+        ],
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "derived_from": {
+            "type": "string"
+          },
+          "relation": {
+            "enum": [
+              "declared",
+              "syndicated",
+              "quotes"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "map",
+        "content"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256/canonical-json-2"
+        },
+        "map": {
+          "type": "string",
+          "pattern": "^KM2-[0-9a-f]{64}$"
+        },
+        "content": {
+          "type": "string",
+          "pattern": "^KM2C-[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

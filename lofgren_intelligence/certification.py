@@ -288,6 +288,7 @@ def s_hypothesis_guard() -> str:
     r.graph.link(ev.id, claim.id, "supports")
     Verifier(now=CERT_NOW).verify(r.graph)
     assert claim.status == ClaimStatus.UNVERIFIED, claim.status
+    r.graph.validate()  # the graph stays consistent with a hypothesis in it
     try:
         promote(claim)
         raise AssertionError("promotion allowed")

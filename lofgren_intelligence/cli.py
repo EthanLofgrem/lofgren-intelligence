@@ -20,6 +20,7 @@ from . import __version__, build_registry
 from .billing.pricing import PLANS, cheapest_plan, monthly_bill
 from .intent.compiler import compile_intent
 from .kernel.pipeline import estimate_run, run_investigation
+from .kernel.knowledge_map import export_knowledge_map
 from .kernel.state import export_state
 from .verification.calibration import PredictionLog
 from .models.provider import default_provider
@@ -92,6 +93,9 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     if args.state:
         Path(args.state).write_text(json.dumps(export_state(result), indent=2, default=str), encoding="utf-8")
         print(f"knowledge map written to {args.state}", file=sys.stderr)
+    if args.state2:
+        Path(args.state2).write_text(json.dumps(export_knowledge_map(result), indent=2), encoding="utf-8")
+        print(f"knowledge-map/2 written to {args.state2}", file=sys.stderr)
     return 0 if result.completed else 2
 
 
@@ -121,6 +125,16 @@ def cmd_certify(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
     return 0 if cert["v1_ready"] else 1
+
+
+def cmd_certify_boundary(args: argparse.Namespace) -> int:
+    from .boundary_certification import render_boundary, run_boundary_certification
+
+    cert = run_boundary_certification()
+    print(render_boundary(cert))
+    if args.out:
+        Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
+    return 0 if cert["code_terms_certified"] else 1
 
 
 def cmd_passes(args: argparse.Namespace) -> int:
@@ -185,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", help="write the Markdown report here")
     p.add_argument("--json", help="write the full run (findings, graph, ledger, receipt) as JSON here")
     p.add_argument("--receipt", help="write the research receipt here")
-    p.add_argument("--state", help="write the V2 knowledge map here")
+    p.add_argument("--state", help="write the V2 knowledge map (knowledge-map/1) here")
+    p.add_argument("--state2", help="write knowledge-map/2 (provenance, question associations, derivation) here")
     p.add_argument("--log", help="append stated confidences to this prediction log (JSONL)")
     p.set_defaults(fn=cmd_investigate)
 
@@ -220,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("certify", help="run the V1 certification suite (the gate before V2)")
     p.add_argument("--out", help="write the certification result as JSON")
     p.set_defaults(fn=cmd_certify)
+
+    p = sub.add_parser("certify-boundary", help="certify the V1 -> V2 boundary (code terms of the step-4 gate)")
+    p.add_argument("--out", help="write the boundary certification result as JSON")
+    p.set_defaults(fn=cmd_certify_boundary)
 
     sub.add_parser("satellites", help="list open-data imaging satellites").set_defaults(fn=cmd_satellites)
     sub.add_parser("mcp", help="run as an MCP server over stdio").set_defaults(fn=cmd_mcp)

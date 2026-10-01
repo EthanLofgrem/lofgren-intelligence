@@ -45,13 +45,20 @@ class FrameResult:
 
 
 def uncertainty_reason(record) -> UncertaintyReason:
-    """Why a V1 claim is uncertain, from its status and issues only (knowledge-map/1 has nothing more)."""
+    """Why a V1 claim is uncertain, from its status and issues, and under knowledge-map/2 from its assessment: a
+    claim that met its confidence threshold but rests on one independent source where its policy needs more is
+    SINGLE_SOURCE. knowledge-map/1 carries no assessment, so there that case stays POLICY_UNMET."""
     if record["status"] == "contested":
         return UncertaintyReason.CONTESTED
     if any(str(i).lower().startswith("stale") for i in record["issues"]):
         return UncertaintyReason.STALE
     if record["status"] == "insufficient_evidence":
         return UncertaintyReason.INSUFFICIENT
+    assessment = record.get("assessment")
+    if assessment and assessment["requirements"]:
+        f, req = assessment["factors"], assessment["requirements"]
+        if f["independent_sources"] == 1 < req["min_independent_sources"] and                 f["calibrated"] >= req["min_confidence"]:
+            return UncertaintyReason.SINGLE_SOURCE
     return UncertaintyReason.POLICY_UNMET
 
 
@@ -91,7 +98,8 @@ def frame_problem(context: DiscoveryContext, objective: DiscoveryObjective,
         for c in sorted(uncertain, key=lambda c: c["id"]))
     missing = tuple(context.ensure(MissingEvidence(
         u["id"], u["description"], u["capability"], list(u["source_types"]), u["expected_gain"],
-        u["est_cost_usd"], u["needs_approval"], created_at=at)) for u in context.entities("unknowns"))
+        u["est_cost_usd"], u["needs_approval"], created_at=at))
+        for u in context.entities("unknowns") if u["status"] == "open")
 
     if not facts and not uncertainties:
         notes.append("The knowledge map has no known and no uncertain claims, so there is nothing to frame. "

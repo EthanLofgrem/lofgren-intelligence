@@ -65,6 +65,18 @@
         "type": "string"
       }
     },
+    "question_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derivation": {
+      "type": "string"
+    },
+    "claim_scopes": {
+      "type": "object"
+    },
     "id": {
       "type": "string"
     }
