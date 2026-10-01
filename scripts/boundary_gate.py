@@ -49,7 +49,9 @@ def sh(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
 
 def git_clean() -> tuple[bool, str]:
     out = sh("git", "status", "--porcelain", "--untracked-files=all")
-    return out.returncode == 0 and not out.stdout.strip(), out.stdout.strip() or "clean"
+    if out.returncode != 0:  # a failed status is no evidence of a clean tree
+        return False, f"git status failed (exit {out.returncode}): {out.stderr.strip()[:200]}"
+    return not out.stdout.strip(), out.stdout.strip() or "clean"
 
 
 def suite(utf8: bool) -> tuple[bool, str]:
@@ -131,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sha", required=True, help="the exact 40-hex commit being certified")
     parser.add_argument("--repo", default="EthanLofgrem/lofgren-intelligence")
     args = parser.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):  # the report uses non-ASCII characters; never crash or garble them
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     terms: dict[str, bool] = {}
     evidence: dict[str, str] = {}
