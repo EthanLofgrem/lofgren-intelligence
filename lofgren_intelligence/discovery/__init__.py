@@ -21,9 +21,11 @@ from __future__ import annotations
 from ..evidence.graph import EvidenceGraph
 from ..evidence.types import Claim
 from .errors import (
+    ContextMismatch,
     DependencyCycle,
     DiscoveryError,
     DuplicateId,
+    FalseNovelty,
     ImpossibleTimestamp,
     InputTooLarge,
     InvalidScope,
@@ -39,7 +41,7 @@ from .errors import (
     UnsafeName,
     UnsupportedAlgorithm,
 )
-from .context import DiscoveryContext, ResolvedReference
+from .context import DiscoveryContext, ResolvedReference, knowledge_map_fingerprint
 from .types import (
     ALL_TYPES,
     SCHEMA_VERSION,
@@ -70,6 +72,8 @@ from .types import (
     OptimizationResult,
     OptimizationStatus,
     PriorArt,
+    PriorArtAssessment,
+    PriorArtConclusion,
     ProblemFrame,
     Robustness,
     Scenario,
@@ -79,6 +83,11 @@ from .types import (
     UncertaintyReason,
     from_dict,
 )
+from .frame import FrameResult, frame_problem
+from .gaps import GapResult, detect_gaps
+from .principles import ground_constraint, state_assumption
+from .prior_art import FixturePriorArtProvider, PriorArtProvider, ProviderCoverage, assess_prior_art
+from .requirements import evidence_requirement, requirement_for_gap
 
 
 def add_hypothesis(graph: EvidenceGraph, hyp: Hypothesis) -> Claim:

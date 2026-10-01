@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/scenario.schema.json",
+  "title": "Scenario",
+  "description": "Scenario(candidate_id: 'str', parameters: 'dict', assumption_ids: 'list[str]' = <factory>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "assumption_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "parameters"
+  ],
+  "additionalProperties": false
+}

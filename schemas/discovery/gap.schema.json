@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/gap.schema.json",
+  "title": "Gap",
+  "description": "Gap(type: 'GapType', missing: 'str', why_it_matters: 'str', basis: 'GapBasis', evidence_ids: 'list[str]' = <factory>, confidence: 'float' = 0.5, ways_to_close: 'list[str]' = <factory>, information_gain: 'float' = 0.0, est_cost_usd: 'float' = 0.0, needs_authorization: 'bool' = False, coverage_statement: 'str' = '', derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "knowledge",
+        "evidence",
+        "capability",
+        "market",
+        "technical",
+        "scientific",
+        "operational",
+        "data",
+        "measurement",
+        "integration",
+        "constraint"
+      ]
+    },
+    "missing": {
+      "type": "string"
+    },
+    "why_it_matters": {
+      "type": "string"
+    },
+    "basis": {
+      "type": "string",
+      "enum": [
+        "observed_absence",
+        "search_absence",
+        "contradiction",
+        "unknown"
+      ]
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "ways_to_close": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "information_gain": {
+      "type": "number"
+    },
+    "est_cost_usd": {
+      "type": "number"
+    },
+    "needs_authorization": {
+      "type": "boolean"
+    },
+    "coverage_statement": {
+      "type": "string"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "missing",
+    "why_it_matters",
+    "basis"
+  ],
+  "additionalProperties": false
+}

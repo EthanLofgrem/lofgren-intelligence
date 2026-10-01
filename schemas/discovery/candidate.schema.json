@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/candidate.schema.json",
+  "title": "Candidate",
+  "description": "A possible solution. Novelty, feasibility, value and robustness are separate measures.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "originating_gap": {
+      "type": "string"
+    },
+    "problem": {
+      "type": "string"
+    },
+    "hypothesis_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "prior_art": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints_satisfied": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints_violated": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_support": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_against": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "novelty": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "technical_feasibility": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "economic_feasibility": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expected_value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "robustness": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "fragile",
+        "moderate",
+        "robust"
+      ]
+    },
+    "legal_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "benefits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "costs": {
+      "type": "object"
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "test_requirements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reversible": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expected_outcome": {
+      "type": "string"
+    },
+    "uncertainty": {
+      "type": "string"
+    },
+    "estimated_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "simulation_results": {
+      "type": "object"
+    },
+    "sensitivity": {
+      "type": "object"
+    },
+    "failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_experiment": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "proposed",
+        "infeasible",
+        "dominated",
+        "viable",
+        "requires_research",
+        "selected"
+      ]
+    },
+    "prior_art_assessment_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "originating_gap"
+  ],
+  "additionalProperties": false
+}

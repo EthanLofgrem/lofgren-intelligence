@@ -79,12 +79,20 @@ class ReceiptTampered(DiscoveryError, ValueError):
     pass
 
 
+class FalseNovelty(MalformedInput):
+    """Novelty language ("novel", "new", "first", ...) where only search coverage can be stated."""
+
+
+class ContextMismatch(DiscoveryError, ValueError):
+    """An object or reference belongs to a different V1 research run or knowledge map."""
+
+
 class PromotionRefused(DiscoveryError, PermissionError):
     """Anything that tries to turn a hypothesis, candidate or simulation into verified evidence."""
 
 
 __all__ = [
-    "DependencyCycle", "DiscoveryError", "DuplicateId", "ImpossibleTimestamp", "InputTooLarge", "InvalidScope",
+    "ContextMismatch", "DependencyCycle", "DiscoveryError", "DuplicateId", "FalseNovelty", "ImpossibleTimestamp", "InputTooLarge", "InvalidScope",
     "InvalidTransition", "MalformedInput", "NegativeCost", "NonFiniteValue", "PromotionRefused", "ReceiptTampered",
     "UnitMismatch", "UnknownReference", "UnknownStatus", "UnsafeName", "UnsupportedAlgorithm",
 ]

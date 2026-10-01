@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/hypothesis.schema.json",
+  "title": "Hypothesis",
+  "description": "A V2 idea. It can survive analysis; it can never be verified by V2.",
+  "type": "object",
+  "properties": {
+    "statement": {
+      "type": "string"
+    },
+    "originating": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "test": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "supporting_claim_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "contradicting_claim_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "mechanism": {
+      "type": "string"
+    },
+    "predicted_observations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "falsification_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "proposed",
+        "challenged",
+        "survives",
+        "refuted_by_analysis",
+        "requires_research"
+      ]
+    },
+    "provisional_score": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "confidence_kind": {
+      "type": "string",
+      "enum": [
+        "evidence",
+        "claim",
+        "hypothesis",
+        "simulation_uncertainty",
+        "candidate_robustness",
+        "outcome"
+      ]
+    },
+    "parent_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "candidate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "statement"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "properties": {
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "geography": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+}

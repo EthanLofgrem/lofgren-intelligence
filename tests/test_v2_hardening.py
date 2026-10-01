@@ -66,8 +66,10 @@ class IdentityTests(unittest.TestCase):
         b = Scenario("CAND-1", {"price": {"unit": "usd", "value": 2.5}, "units": {"unit": "unit", "value": 4}})
         self.assertEqual(a.id, b.id)
         self.assertEqual(Const(2, "usd"), Const(2.0, "usd"))
-        c1 = Constraint("cap", "economic", Relation(Var("x"), "<=", Const(2, "usd")), source_assumption_id="ASM-1")
-        c2 = Constraint("cap", "economic", Relation(Var("x"), "<=", Const(2.0, "usd")), source_assumption_id="ASM-1")
+        c1 = Constraint("cap", "economic", Relation(Var("x"), "<=", Const(2, "usd")), source_assumption_id="ASM-1",
+                        variable_units={"x": "usd"})
+        c2 = Constraint("cap", "economic", Relation(Var("x"), "<=", Const(2.0, "usd")), source_assumption_id="ASM-1",
+                        variable_units={"x": "usd"})
         self.assertEqual(c1.id, c2.id)
 
     def test_hypothesis_identity_includes_scope(self):

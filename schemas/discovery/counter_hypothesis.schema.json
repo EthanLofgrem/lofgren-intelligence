@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/counter_hypothesis.schema.json",
+  "title": "CounterHypothesis",
+  "description": "CounterHypothesis(statement: 'str', originating: 'list[str]' = <factory>, assumptions: 'list[str]' = <factory>, test: 'str' = '', origin: 'str' = 'engine', supporting_claim_ids: 'list[str]' = <factory>, contradicting_claim_ids: 'list[str]' = <factory>, scope: 'Scope' = <factory>, mechanism: 'str' = '', predicted_observations: 'list[str]' = <factory>, falsification_criteria: 'list[str]' = <factory>, status: 'HypothesisStatus' = <HypothesisStatus.PROPOSED: 'proposed'>, provisional_score: 'float | None' = None, confidence_kind: 'ConfidenceKind' = <ConfidenceKind.HYPOTHESIS: 'hypothesis'>, parent_ids: 'list[str]' = <factory>, candidate_ids: 'list[str]' = <factory>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '', counters: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "statement": {
+      "type": "string"
+    },
+    "originating": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "test": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "supporting_claim_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "contradicting_claim_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "mechanism": {
+      "type": "string"
+    },
+    "predicted_observations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "falsification_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "proposed",
+        "challenged",
+        "survives",
+        "refuted_by_analysis",
+        "requires_research"
+      ]
+    },
+    "provisional_score": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "confidence_kind": {
+      "type": "string",
+      "enum": [
+        "evidence",
+        "claim",
+        "hypothesis",
+        "simulation_uncertainty",
+        "candidate_robustness",
+        "outcome"
+      ]
+    },
+    "parent_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "candidate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    },
+    "counters": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "statement"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "properties": {
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "geography": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+}

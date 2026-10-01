@@ -32,6 +32,7 @@ from lofgren_intelligence.discovery import (
     OptimizationProblem,
     OptimizationResult,
     PriorArt,
+    PriorArtAssessment,
     ProblemFrame,
     PromotionRefused,
     Scenario,
@@ -73,6 +74,7 @@ from lofgren_intelligence.evidence import (
 from lofgren_intelligence.verification import Verifier
 
 BUDGET = Relation(Mul(Var("units"), Var("unit_cost")), "<=", Var("budget"))
+BUDGET_UNITS = {"units": "unit", "unit_cost": "usd/unit", "budget": "usd"}
 
 
 def sample_objects() -> dict:
@@ -90,10 +92,12 @@ def sample_objects() -> dict:
                               limitations=["fixture only; no live patent search"]),
         "gap": Gap("measurement", "Zone 7 temperature", "spoilage cause unknown", "unknown"),
         "assumption": Assumption("Energy costs $0.14/kWh", "price", 0.14, "usd/kWh", "utility tariff not yet sourced"),
-        "constraint": Constraint("budget", "economic", rel, source_assumption_id="ASM-1"),
+        "constraint": Constraint("budget", "economic", rel, source_assumption_id="ASM-1",
+                                 variable_units=BUDGET_UNITS),
         "connection": Connection("KF-1", "KF-2", "same_place_and_period", "derived"),
         "evidence_requirement": EvidenceRequirement("Hourly Zone 7 temperature for 30 days", "sensor",
-                                                    "Phoenix", ("2026-09-01", "2026-09-30"), rel),
+                                                    "Phoenix", ("2026-09-01", "2026-09-30"), rel,
+                                                    variable_units=BUDGET_UNITS),
         "hypothesis": Hypothesis("Door seals in Zone 7 leak.", originating=["UNK-1"], test="REQ-1"),
         "counter_hypothesis": CounterHypothesis("Spoilage comes from late deliveries.", counters="HYP-1"),
         "candidate": Candidate("Replace Zone 7 door seals", originating_gap="GAP-1", novelty=0.1,
@@ -108,6 +112,9 @@ def sample_objects() -> dict:
         "discovery_finding": DiscoveryFinding("Simulated spoilage falls to 2%.", "simulation_result", ["SIM-1"]),
         "discovery_decision": DiscoveryDecision("max expected value s.t. feasibility >= 0.5", "CAND-1",
                                                 outcome="candidate_selected"),
+        "prior_art_assessment": PriorArtAssessment(
+            "door-seal replacement for cold storage", "no_match_within_coverage", ["door seal spoilage"], ["PA-1"],
+            ["fixture-patents"], limitations=["fixture corpus only; no live patent search"]),
     }
 
 

@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/constraint.schema.json",
+  "title": "Constraint",
+  "description": "A structured constraint. Its source is a V1 known fact or an explicit assumption.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "physical",
+        "logical",
+        "economic",
+        "legal",
+        "resource"
+      ]
+    },
+    "relation": {
+      "$ref": "#/$defs/relation"
+    },
+    "source_fact_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_assumption_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "variable_units": {
+      "type": "object"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "kind",
+    "relation"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "expr": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "const"
+            },
+            "value": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "var"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "sub",
+                "mul",
+                "div",
+                "min",
+                "max"
+              ]
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/expr"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "op",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "neg"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/expr"
+              },
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "op",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "pow"
+            },
+            "exponent": {
+              "type": "integer"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/expr"
+              },
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "op",
+            "args",
+            "exponent"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relation": {
+      "type": "object",
+      "properties": {
+        "lhs": {
+          "$ref": "#/$defs/expr"
+        },
+        "op": {
+          "enum": [
+            "<=",
+            ">=",
+            "=="
+          ]
+        },
+        "rhs": {
+          "$ref": "#/$defs/expr"
+        }
+      },
+      "required": [
+        "lhs",
+        "op",
+        "rhs"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
