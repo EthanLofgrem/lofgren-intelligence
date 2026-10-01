@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/missing_evidence.schema.json",
+  "title": "MissingEvidence",
+  "description": "MissingEvidence(unknown_id: 'str', description: 'str', capability: 'str' = '', sources: 'list[str]' = <factory>, expected_gain: 'float' = 0.0, est_cost_usd: 'float' = 0.0, needs_approval: 'bool' = False, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "unknown_id": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "capability": {
+      "type": "string"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_gain": {
+      "type": "number"
+    },
+    "est_cost_usd": {
+      "type": "number"
+    },
+    "needs_approval": {
+      "type": "boolean"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "unknown_id",
+    "description"
+  ],
+  "additionalProperties": false
+}

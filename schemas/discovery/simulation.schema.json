@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/simulation.schema.json",
+  "title": "Simulation",
+  "description": "A model run. Its outputs are predictions, never observations.",
+  "type": "object",
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "model_version": {
+      "type": "string"
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "initial_conditions": {
+      "type": "object"
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "iterations": {
+      "type": "integer"
+    },
+    "outcomes": {
+      "type": "object"
+    },
+    "uncertainty": {
+      "type": "object"
+    },
+    "failure_states": {
+      "type": "object"
+    },
+    "runtime_s": {
+      "type": "number"
+    },
+    "cost_usd": {
+      "type": "number"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "confidence_kind": {
+      "type": "string",
+      "enum": [
+        "evidence",
+        "claim",
+        "hypothesis",
+        "simulation_uncertainty",
+        "candidate_robustness",
+        "outcome"
+      ]
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "model",
+    "model_version",
+    "parameters"
+  ],
+  "additionalProperties": false
+}

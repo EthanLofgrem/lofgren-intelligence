@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import warnings
 import weakref
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from datetime import date, datetime, timezone
@@ -31,6 +32,7 @@ from ..evidence.types import Scope, make_id, utcnow
 from .errors import (
     DependencyCycle,
     DuplicateId,
+    FalseNovelty,
     ImpossibleTimestamp,
     InputTooLarge,
     InvalidScope,
@@ -99,6 +101,26 @@ class GapBasis(str, Enum):
 
 
 SEARCH_ABSENCE_MAX_CONFIDENCE = 0.4
+
+
+class PriorArtConclusion(str, Enum):
+    """The only three things a prior-art assessment may conclude. None of them is "novel"."""
+
+    MATCH_FOUND = "match_found"
+    NO_MATCH_WITHIN_COVERAGE = "no_match_within_coverage"  # says nothing about novelty
+    INCOMPLETE = "incomplete"  # part of the requested coverage was not searched
+
+
+# Words that claim novelty. A prior-art miss can never support them, so V2 prior-art text never uses them.
+NOVELTY_WORDS = re.compile(r"\b(novel|new|newly|first|never[\s-]+(?:been[\s-]+)?(?:attempted|done|tried)|"
+                           r"unprecedented)\b", re.IGNORECASE)
+
+
+def check_no_novelty_claim(value: str, where: str) -> str:
+    m = NOVELTY_WORDS.search(value)
+    if m:
+        raise FalseNovelty(f"{m.group(0)!r} claims novelty; state search coverage instead", where)
+    return value
 
 
 class ConstraintKind(str, Enum):
@@ -400,6 +422,29 @@ def boolean(value: Any, where: str, allow_none: bool = False) -> bool | None:
     return value
 
 
+def unit_map(value: Any, where: str) -> dict[str, str]:
+    """Variable name -> unit text, every name safe and every unit parseable."""
+    out = mapping(value, where)
+    for name, unit in out.items():
+        Var(name)
+        if not isinstance(unit, str):
+            raise MalformedInput("a unit is text ('' for dimensionless)", f"{where}.{name}")
+        Unit.parse(unit)
+    return out
+
+
+def check_relation_units(relation: Relation, units: dict[str, str], where: str) -> None:
+    """Every variable has a declared unit, no unit is declared for nothing, and both sides agree."""
+    names = relation.variables()
+    undeclared = names - set(units)
+    if undeclared:
+        raise MalformedInput(f"declare units for {sorted(undeclared)}", where)
+    unused = set(units) - names
+    if unused:
+        raise MalformedInput(f"units declared for variables the relation does not use: {sorted(unused)}", where)
+    relation.check_units({k: Unit.parse(v) for k, v in units.items()})
+
+
 def _plain(v: Any) -> Any:
     """JSON-ready form of a field value."""
     if isinstance(v, Enum):
@@ -597,6 +642,7 @@ class ProblemFrame(_Obj):
     missing_ids: list[str] = field(default_factory=list)
     scope: Scope = field(default_factory=Scope)
     success_metrics: list[str] = field(default_factory=list)
+    scope_note: str = ""  # how the scope was derived from V1, including any widening
     derived_from: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow)
     version: str = SCHEMA_VERSION
@@ -615,6 +661,7 @@ class ProblemFrame(_Obj):
             raise MalformedInput(f"ids cannot be both known and uncertain: {sorted(both)}", "ProblemFrame")
         self.scope = scope(self.scope, "ProblemFrame.scope")
         self.success_metrics = texts(self.success_metrics, "ProblemFrame.success_metrics")
+        self.scope_note = text(self.scope_note, "ProblemFrame.scope_note", required=False)
         self._base_init()
 
 
@@ -660,6 +707,106 @@ class PriorArt(_Obj):
 
 
 @dataclass
+class PriorArtAssessment(_Obj):
+    """What a set of prior-art searches established about one subject, and what they did not cover.
+
+    `conclusion` is the only verdict. "No match within coverage" is a statement about the search,
+    never about novelty; see `statement`.
+    """
+
+    subject: str
+    conclusion: PriorArtConclusion
+    queries: list[str]
+    search_ids: list[str]  # the PriorArt records, one per query
+    sources_searched: list[str]
+    domains: list[str] = field(default_factory=list)
+    time_range: tuple[str | None, str | None] = (None, None)
+    matches: list[dict] = field(default_factory=list)  # validated hits: title, source, uri, published, summary
+    nearest_matches: list[str] = field(default_factory=list)  # titles of the closest matches
+    distinctive_features: list[str] = field(default_factory=list)  # what the subject has that matches lack
+    limitations: list[str] = field(default_factory=list)
+    unsearched_areas: list[str] = field(default_factory=list)
+    derived_from: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utcnow)
+    version: str = SCHEMA_VERSION
+    id: str = ""
+    _id_prefix = "PAA"
+    _id_fields = ("subject", "conclusion", "queries", "search_ids", "sources_searched", "domains", "time_range",
+                  "matches", "unsearched_areas")
+
+    def __post_init__(self) -> None:
+        w = "PriorArtAssessment"
+        self.subject = check_no_novelty_claim(text(self.subject, f"{w}.subject"), f"{w}.subject")
+        self.conclusion = enum_value(PriorArtConclusion, self.conclusion, f"{w}.conclusion")
+        self.queries = texts(self.queries, f"{w}.queries")
+        self.search_ids = ids(self.search_ids, f"{w}.search_ids", ("PA",))
+        self.sources_searched = texts(self.sources_searched, f"{w}.sources_searched")
+        if not self.queries or not self.search_ids or not self.sources_searched:
+            raise MalformedInput("an assessment records its queries, searches and sources", w)
+        self.domains = texts(self.domains, f"{w}.domains")
+        self.time_range = period(self.time_range, f"{w}.time_range")
+        if not isinstance(self.matches, list):
+            raise MalformedInput("matches must be a list of hits", f"{w}.matches")
+        self.matches = [prior_art_hit(m, f"{w}.matches[{i}]") for i, m in enumerate(self.matches)]
+        for name in ("nearest_matches", "distinctive_features", "limitations", "unsearched_areas"):
+            values = texts(getattr(self, name), f"{w}.{name}")
+            for i, v in enumerate(values):
+                check_no_novelty_claim(v, f"{w}.{name}[{i}]")
+            setattr(self, name, values)
+        c = self.conclusion
+        if c == PriorArtConclusion.MATCH_FOUND and not self.matches:
+            raise MalformedInput("match_found needs at least one match", f"{w}.matches")
+        if c != PriorArtConclusion.MATCH_FOUND and self.matches:
+            raise MalformedInput(f"{c.value} cannot carry matches", f"{w}.matches")
+        if c == PriorArtConclusion.NO_MATCH_WITHIN_COVERAGE and not self.limitations:
+            raise MalformedInput("a search that found nothing must state its coverage limitations", f"{w}.limitations")
+        if c == PriorArtConclusion.NO_MATCH_WITHIN_COVERAGE and self.unsearched_areas:
+            raise MalformedInput("unsearched areas make the search incomplete", f"{w}.conclusion")
+        if c == PriorArtConclusion.INCOMPLETE and not self.unsearched_areas:
+            raise MalformedInput("an incomplete search names what was not searched", f"{w}.unsearched_areas")
+        self._base_init()
+
+    @property
+    def statement(self) -> str:
+        """The only wording V2 uses for prior art. It never asserts novelty."""
+        if self.conclusion == PriorArtConclusion.MATCH_FOUND:
+            titles = "; ".join(m["title"] for m in self.matches[:5])
+            more = f" and {len(self.matches) - 5} more" if len(self.matches) > 5 else ""
+            return f"Matching prior art found: {titles}{more}."
+        coverage = ", ".join(self.sources_searched)
+        if self.domains:
+            coverage += "; domains: " + ", ".join(self.domains)
+        if self.time_range != (None, None):
+            coverage += f"; period: {self.time_range[0] or 'any'} to {self.time_range[1] or 'any'}"
+        if self.conclusion == PriorArtConclusion.NO_MATCH_WITHIN_COVERAGE:
+            return (f"No matching prior art was found within the searched sources ({coverage}) for "
+                    f"{self.subject}; this does not establish novelty.")
+        return (f"The prior-art search for {self.subject} was incomplete (not searched: "
+                f"{'; '.join(self.unsearched_areas)}); no conclusion about prior art can be drawn.")
+
+
+_HIT_FIELDS = {"title", "source", "uri", "published", "summary", "matched_terms"}
+
+
+def prior_art_hit(value: Any, where: str) -> dict:
+    """One prior-art search result, validated. Malformed results fail closed rather than being dropped."""
+    if not isinstance(value, dict):
+        raise MalformedInput("a prior-art hit is an object", where)
+    extra = set(value) - _HIT_FIELDS
+    if extra:
+        raise MalformedInput(f"unexpected hit fields {sorted(map(str, extra))}", where)
+    hit = {"title": text(value.get("title"), f"{where}.title"), "source": text(value.get("source"), f"{where}.source")}
+    for key in ("uri", "summary"):
+        hit[key] = text(value.get(key, ""), f"{where}.{key}", required=False)
+    published = value.get("published")
+    calendar_date(published, f"{where}.published")
+    hit["published"] = published
+    terms = texts(value.get("matched_terms", []), f"{where}.matched_terms")
+    hit["matched_terms"] = sorted(terms)
+    return hit
+
+
+@dataclass
 class Gap(_Obj):
     type: GapType
     missing: str
@@ -677,7 +824,7 @@ class Gap(_Obj):
     version: str = SCHEMA_VERSION
     id: str = ""
     _id_prefix = "GAP"
-    _id_fields = ("type", "missing", "basis")
+    _id_fields = ("type", "missing", "basis", "evidence_ids")
 
     def __post_init__(self) -> None:
         self.type = enum_value(GapType, self.type, "Gap.type")
@@ -740,12 +887,13 @@ class Constraint(_Obj):
     relation: Relation
     source_fact_id: str | None = None
     source_assumption_id: str | None = None
+    variable_units: dict = field(default_factory=dict)  # variable -> unit; required for every variable
     derived_from: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow)
     version: str = SCHEMA_VERSION
     id: str = ""
     _id_prefix = "CON"
-    _id_fields = ("name", "kind", "relation")
+    _id_fields = ("name", "kind", "relation", "variable_units")
 
     def __post_init__(self) -> None:
         self.name = text(self.name, "Constraint.name")
@@ -761,6 +909,8 @@ class Constraint(_Obj):
             ref(self.source_fact_id, "Constraint.source_fact_id", ("KF", "CL"), fact=True)
         if self.source_assumption_id is not None:
             ref(self.source_assumption_id, "Constraint.source_assumption_id", ("ASM",))
+        self.variable_units = unit_map(self.variable_units, "Constraint.variable_units")
+        check_relation_units(self.relation, self.variable_units, "Constraint.relation")
         self._base_init()
 
 
@@ -799,20 +949,26 @@ class EvidenceRequirement(_Obj):
     place: str | None = None
     period: tuple[str | None, str | None] = (None, None)
     threshold: dict | None = None  # serialized Relation when the test is quantitative
+    variable_units: dict = field(default_factory=dict)  # required for every threshold variable
     derived_from: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow)
     version: str = SCHEMA_VERSION
     id: str = ""
     _id_prefix = "REQ"
-    _id_fields = ("description", "capability", "place", "period")
+    _id_fields = ("description", "capability", "place", "period", "threshold", "variable_units")
 
     def __post_init__(self) -> None:
         self.description = text(self.description, "EvidenceRequirement.description")
         self.capability = text(self.capability, "EvidenceRequirement.capability")
         if self.place is not None:
             self.place = text(self.place, "EvidenceRequirement.place")
+        self.variable_units = unit_map(self.variable_units, "EvidenceRequirement.variable_units")
         if self.threshold is not None:
-            Relation.from_json(self.threshold)  # validates
+            relation = Relation.from_json(self.threshold)
+            check_relation_units(relation, self.variable_units, "EvidenceRequirement.threshold")
+            self.threshold = relation.to_json()
+        elif self.variable_units:
+            raise MalformedInput("units are declared but there is no threshold", "EvidenceRequirement.variable_units")
         self.period = period(self.period, "EvidenceRequirement.period")
         self._base_init()
 
@@ -929,6 +1085,7 @@ class Candidate(_Obj):
     failure_modes: list[str] = field(default_factory=list)
     next_experiment: str = ""
     status: CandidateStatus = CandidateStatus.PROPOSED
+    prior_art_assessment_id: str | None = None  # the structured replacement for `novelty`
     derived_from: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow)
     version: str = SCHEMA_VERSION
@@ -956,6 +1113,11 @@ class Candidate(_Obj):
         self.reversible = boolean(self.reversible, "Candidate.reversible", allow_none=True)
         for name in ("novelty", "technical_feasibility", "economic_feasibility"):
             setattr(self, name, unit_interval(getattr(self, name), f"Candidate.{name}"))
+        if self.novelty is not None:
+            warnings.warn("Candidate.novelty is deprecated: a scalar cannot say what was searched. "
+                          "Use prior_art_assessment_id (a PriorArtAssessment).", DeprecationWarning, stacklevel=3)
+        if self.prior_art_assessment_id is not None:
+            ref(self.prior_art_assessment_id, "Candidate.prior_art_assessment_id", ("PAA",))
         self.expected_value = finite(self.expected_value, "Candidate.expected_value")
         if self.estimated_cost_usd is not None:
             self.estimated_cost_usd = cost(self.estimated_cost_usd, "Candidate.estimated_cost_usd")
@@ -1260,6 +1422,7 @@ ALL_TYPES = {
     "candidate": Candidate, "scenario": Scenario, "simulation": Simulation, "sensitivity_result": SensitivityResult,
     "optimization_problem": OptimizationProblem, "optimization_result": OptimizationResult,
     "discovery_finding": DiscoveryFinding, "discovery_decision": DiscoveryDecision,
+    "prior_art_assessment": PriorArtAssessment,
 }
 
 

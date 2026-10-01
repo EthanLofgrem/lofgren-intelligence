@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/discovery_objective.schema.json",
+  "title": "DiscoveryObjective",
+  "description": "DiscoveryObjective(objective: 'str', research_id: 'str', mode: 'str' = 'investigate', config: 'dict' = <factory>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "objective": {
+      "type": "string"
+    },
+    "research_id": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "config": {
+      "type": "object"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "objective",
+    "research_id"
+  ],
+  "additionalProperties": false
+}

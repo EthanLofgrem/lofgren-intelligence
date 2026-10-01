@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/connection.schema.json",
+  "title": "Connection",
+  "description": "Connection(a: 'str', b: 'str', relation: 'str', strength: 'ConnectionStrength', evidence_ids: 'list[str]' = <factory>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "a": {
+      "type": "string"
+    },
+    "b": {
+      "type": "string"
+    },
+    "relation": {
+      "type": "string"
+    },
+    "strength": {
+      "type": "string",
+      "enum": [
+        "observed",
+        "derived",
+        "speculative"
+      ]
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "a",
+    "b",
+    "relation",
+    "strength"
+  ],
+  "additionalProperties": false
+}

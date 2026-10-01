@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/discovery_finding.schema.json",
+  "title": "DiscoveryFinding",
+  "description": "DiscoveryFinding(statement: 'str', kind: 'FindingKind', rests_on: 'list[str]', confidence_kind: 'ConfidenceKind' = <ConfidenceKind.HYPOTHESIS: 'hypothesis'>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "statement": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "verified_fact",
+        "hypothesis",
+        "simulation_result",
+        "optimization_result",
+        "gap"
+      ]
+    },
+    "rests_on": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence_kind": {
+      "type": "string",
+      "enum": [
+        "evidence",
+        "claim",
+        "hypothesis",
+        "simulation_uncertainty",
+        "candidate_robustness",
+        "outcome"
+      ]
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "statement",
+    "kind",
+    "rests_on"
+  ],
+  "additionalProperties": false
+}

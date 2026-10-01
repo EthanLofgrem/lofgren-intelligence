@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/assumption.schema.json",
+  "title": "Assumption",
+  "description": "Assumption(statement: 'str', name: 'str' = '', value: 'float | None' = None, unit: 'str' = '', why_assumed: 'str' = '', replaceable: 'bool' = True, sensitivity: 'float | None' = None, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "statement": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unit": {
+      "type": "string"
+    },
+    "why_assumed": {
+      "type": "string"
+    },
+    "replaceable": {
+      "type": "boolean"
+    },
+    "sensitivity": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "statement"
+  ],
+  "additionalProperties": false
+}
