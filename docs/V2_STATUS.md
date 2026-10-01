@@ -45,6 +45,13 @@ evidence state, because `knowledge-map/1` does not carry that hash.
 
 ### V1 certification blocker: `knowledge-map/2`
 
+Status: V1 exports `lofgren.knowledge-map/2` (`kernel/knowledge_map.py`, `lofgren investigate --state2`,
+`schemas/knowledge-map-2.schema.json`; hardening branch, commit 5) and `/1` is unchanged. `DiscoveryContext` still
+accepts `/1` only; consuming `/2` is the next hardening step. `/2` carries the five items below, plus claim
+question associations and finding derivation, a map fingerprint (`KM2-`, the exact export) and a content
+fingerprint (`KM2C-`, reproducible across reruns of identical inputs). Item 4 is carried as the verifier's
+recorded factors and the policy thresholds, not as a re-derived reason.
+
 `knowledge-map/1` is too thin for V2 to audit what it consumes. Before V2 certification, V1 needs a
 backwards-compatible `knowledge-map/2` export (keeping `/1`) that adds:
 
@@ -61,7 +68,8 @@ backwards-compatible `knowledge-map/2` export (keeping `/1`) that adds:
 ### V2 certification blockers inherited from V1
 
 A perfect `DiscoveryContext` can only guarantee that V2 consumed V1's state faithfully. These V1 defects must be
-fixed before hypothesis generation (step 4) and before V2 certification:
+fixed before hypothesis generation (step 4) and before V2 certification. Both are fixed on the hardening branch
+(claim identity v2, commits 2 and 2A; question isolation, commit 4) and await certification:
 
 1. **Scope-insensitive claim identity.** `Claim.id` hashes only the normalized statement, so the same sentence
    about different places, periods or questions collapses into one claim, and `EvidenceGraph.add_claim` keeps

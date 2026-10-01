@@ -20,6 +20,7 @@ from . import __version__, build_registry
 from .billing.pricing import PLANS, cheapest_plan, monthly_bill
 from .intent.compiler import compile_intent
 from .kernel.pipeline import estimate_run, run_investigation
+from .kernel.knowledge_map import export_knowledge_map
 from .kernel.state import export_state
 from .verification.calibration import PredictionLog
 from .models.provider import default_provider
@@ -92,6 +93,9 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     if args.state:
         Path(args.state).write_text(json.dumps(export_state(result), indent=2, default=str), encoding="utf-8")
         print(f"knowledge map written to {args.state}", file=sys.stderr)
+    if args.state2:
+        Path(args.state2).write_text(json.dumps(export_knowledge_map(result), indent=2), encoding="utf-8")
+        print(f"knowledge-map/2 written to {args.state2}", file=sys.stderr)
     return 0 if result.completed else 2
 
 
@@ -185,7 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", help="write the Markdown report here")
     p.add_argument("--json", help="write the full run (findings, graph, ledger, receipt) as JSON here")
     p.add_argument("--receipt", help="write the research receipt here")
-    p.add_argument("--state", help="write the V2 knowledge map here")
+    p.add_argument("--state", help="write the V2 knowledge map (knowledge-map/1) here")
+    p.add_argument("--state2", help="write knowledge-map/2 (provenance, question associations, derivation) here")
     p.add_argument("--log", help="append stated confidences to this prediction log (JSONL)")
     p.set_defaults(fn=cmd_investigate)
 
