@@ -57,6 +57,11 @@ class EvidenceGraph:
         return self.evidence[item.id]
 
     def add_claim(self, claim: Claim, supported_by: Iterable[str] = ()) -> Claim:
+        # Only V1 Claim objects enter the graph. A V2 hypothesis enters solely through
+        # Hypothesis.as_claim() (origin=hypothesis, never verified); candidates,
+        # simulations and other discovery objects cannot be added at all.
+        if not isinstance(claim, Claim):
+            raise TypeError(f"only Claim objects can be added to the evidence graph, not {type(claim).__name__}")
         existing = self.claims.get(claim.id)
         if existing is None:
             self.claims[claim.id] = claim

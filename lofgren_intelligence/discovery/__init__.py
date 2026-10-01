@@ -1,83 +1,92 @@
-"""Discovery Intelligence (V2) — construction starts here.
+"""Discovery Intelligence (V2).
 
-This package holds the V2 contracts only. V2 engines (prior art, gap
-discovery, hypothesis generation, simulation, optimization) will implement
-against these types and read V1 state exclusively through
-`kernel.state.export_state`.
+V2 turns verified V1 evidence and explicitly represented uncertainty into
+possibilities that can be analysed, challenged, simulated and optimized. It
+reads V1 state only through `kernel.state.export_state`.
 
-Two rules are enforced in code, not only in documentation:
+The invariant enforced in code, from the first V2 commit:
 
-1. Novelty, feasibility and expected value are separate measurements; a
-   candidate has no single "score" that blends them.
-2. A hypothesis can enter the evidence graph only as origin=HYPOTHESIS. The
-   verifier never marks such a claim verified, and `promote` refuses.
+    V2-generated idea != verified fact
+
+* A hypothesis enters a V1 evidence graph only as origin=hypothesis, which the
+  V1 verifier never verifies.
+* `promote` refuses every V2 object. A hypothesis becomes knowledge only when
+  a new V1 investigation verifies a separate claim.
+* The evidence graph accepts only V1 `Claim` objects.
+* Novelty, feasibility, expected value and robustness stay separate measures.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from ..evidence.graph import EvidenceGraph
-from ..evidence.types import Claim, ClaimOrigin, make_id
-
-
-class PromotionRefused(PermissionError):
-    """Raised when anything tries to turn a hypothesis into verified evidence."""
-
-
-@dataclass
-class Hypothesis:
-    statement: str
-    originating: list[str]  # ids of V1 unknowns, contradictions or claims it responds to
-    assumptions: list[str] = field(default_factory=list)
-    test: str = ""  # the observation or experiment that would confirm or refute it
-    id: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.id:
-            self.id = make_id("HYP", self.statement)
-
-    def as_claim(self) -> Claim:
-        return Claim(self.statement, origin=ClaimOrigin.HYPOTHESIS)
-
-
-@dataclass
-class Candidate:
-    """A possible solution. Its three measures are never collapsed into one."""
-
-    description: str
-    originating_gap: str
-    prior_art: list[str] = field(default_factory=list)
-    assumptions: list[str] = field(default_factory=list)
-    required_conditions: list[str] = field(default_factory=list)
-    constraints: list[str] = field(default_factory=list)
-    evidence_support: list[str] = field(default_factory=list)  # V1 claim ids
-    evidence_against: list[str] = field(default_factory=list)  # V1 claim ids
-    novelty: float | None = None
-    technical_feasibility: float | None = None
-    economic_feasibility: float | None = None
-    expected_value: float | None = None
-    legal_constraints: list[str] = field(default_factory=list)
-    uncertainty: str = ""
-    estimated_cost_usd: float | None = None
-    simulation_results: dict = field(default_factory=dict)
-    sensitivity: dict = field(default_factory=dict)
-    failure_modes: list[str] = field(default_factory=list)
-    next_experiment: str = ""
-    id: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.id:
-            self.id = make_id("CAND", self.description)
+from ..evidence.types import Claim
+from .errors import (
+    DiscoveryError,
+    DuplicateId,
+    ImpossibleTimestamp,
+    InputTooLarge,
+    InvalidScope,
+    MalformedInput,
+    NegativeCost,
+    NonFiniteValue,
+    PromotionRefused,
+    ReceiptTampered,
+    UnitMismatch,
+    UnknownReference,
+    UnknownStatus,
+    UnsafeName,
+    UnsupportedAlgorithm,
+)
+from .types import (
+    ALL_TYPES,
+    SCHEMA_VERSION,
+    Assumption,
+    Candidate,
+    CandidateStatus,
+    ConfidenceKind,
+    Connection,
+    ConnectionStrength,
+    Constraint,
+    ConstraintKind,
+    CounterHypothesis,
+    DecisionVariable,
+    DiscoveryDecision,
+    DiscoveryFinding,
+    DiscoveryObjective,
+    DiscoveryOutcome,
+    EvidenceRequirement,
+    FindingKind,
+    Gap,
+    GapBasis,
+    GapType,
+    Hypothesis,
+    HypothesisStatus,
+    KnownFact,
+    MissingEvidence,
+    OptimizationProblem,
+    OptimizationResult,
+    OptimizationStatus,
+    PriorArt,
+    ProblemFrame,
+    Robustness,
+    Scenario,
+    SensitivityResult,
+    Simulation,
+    Uncertainty,
+    UncertaintyReason,
+    from_dict,
+)
 
 
 def add_hypothesis(graph: EvidenceGraph, hyp: Hypothesis) -> Claim:
-    """Record a hypothesis in the graph without giving it evidential weight."""
+    """Record a hypothesis in a V1 graph without giving it evidential weight."""
     return graph.add_claim(hyp.as_claim())
 
 
-def promote(claim: Claim) -> None:
-    """There is no path from hypothesis to finding except new evidence through V1."""
-    if claim.origin == ClaimOrigin.HYPOTHESIS:
-        raise PromotionRefused("a hypothesis becomes a finding only when new V1 evidence verifies a separate claim")
+def promote(obj: object) -> None:
+    """There is no path from any V2 object to a verified finding except new V1 evidence."""
+    if isinstance(obj, Hypothesis):
+        raise PromotionRefused("a hypothesis becomes knowledge only when a new V1 investigation verifies a separate claim")
+    if isinstance(obj, (Candidate, Simulation, OptimizationResult, Connection, Gap)):
+        raise PromotionRefused(f"a {type(obj).__name__} is a discovery object, never evidence")
     raise PromotionRefused("claims are verified by the V1 verifier, not promoted")
