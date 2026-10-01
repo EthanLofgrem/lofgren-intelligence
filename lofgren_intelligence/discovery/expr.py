@@ -30,6 +30,7 @@ MAX_NODES = 10_000
 MAX_DEPTH = 64
 MAX_POWER = 12
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_UNIT_SYMBOL = re.compile(r"^[A-Za-z°%µ$][A-Za-z0-9°%µ²³_]{0,31}$")
 
 # Canonical spellings for common units (extends the V1 sensor normalization).
 UNIT_CANON = {
@@ -54,21 +55,33 @@ class Unit:
 
     @staticmethod
     def parse(text: str) -> "Unit":
-        text = (text or "").strip()
+        if text is None:
+            text = ""
+        if not isinstance(text, str):
+            raise MalformedInput(f"unit must be text, got {type(text).__name__}")
+        text = text.strip()
         if not text:
             return DIMENSIONLESS
+        if len(text) > 64:
+            raise InputTooLarge("unit text longer than 64 characters")
         num, _, den = text.partition("/")
+        if "/" in den:
+            raise MalformedInput(f"unit '{text}' has more than one '/'")
         dims: dict[str, int] = {}
         for part, sign in ((num, 1), (den, -1)):
             for sym in filter(None, (s.strip() for s in part.split("*"))):
                 base, _, exp = sym.partition("^")
+                if base != "1" and not _UNIT_SYMBOL.match(base):
+                    raise MalformedInput(f"'{base}' is not a unit symbol (in '{text}')")
                 canon = UNIT_CANON.get(base.lower(), base)
-                if not canon:
+                if not canon or canon == "1":
                     continue
                 try:
                     power = int(exp) if exp else 1
                 except ValueError as exc:
                     raise MalformedInput(f"bad unit exponent in '{text}'") from exc
+                if power == 0 or abs(power) > MAX_POWER:
+                    raise MalformedInput(f"unit exponent {power} out of range in '{text}'")
                 dims[canon] = dims.get(canon, 0) + sign * power
         return Unit(tuple(sorted((k, v) for k, v in dims.items() if v)))
 
@@ -131,6 +144,23 @@ class Expr:
     def __str__(self) -> str:  # human-readable, for reports only
         return self.op
 
+    def _seal(self, *children: object) -> None:
+        """Check child types and bound the tree as it is built, so evaluation never recurses unboundedly.
+
+        Depth and size are cached outside the dataclass fields; equality and hashing ignore them.
+        """
+        for child in children:
+            if not isinstance(child, Expr):
+                raise MalformedInput(f"'{self.op}' needs expression arguments, got {type(child).__name__}")
+        depth = 1 + max((c._depth for c in children), default=0)  # type: ignore[attr-defined]
+        size = 1 + sum(c._size for c in children)  # type: ignore[attr-defined]
+        if depth > MAX_DEPTH:
+            raise InputTooLarge(f"expression is deeper than {MAX_DEPTH}")
+        if size > MAX_NODES:
+            raise InputTooLarge(f"expression has more than {MAX_NODES} nodes")
+        object.__setattr__(self, "_depth", depth)
+        object.__setattr__(self, "_size", size)
+
 
 @dataclass(frozen=True, eq=True)
 class Const(Expr):
@@ -141,6 +171,9 @@ class Const(Expr):
     def __post_init__(self) -> None:
         Quantity(self.value)  # validates number and finiteness
         Unit.parse(self.unit_text)
+        # 2 and 2.0 are the same constant; normalizing keeps ids identical across JSON round trips.
+        object.__setattr__(self, "value", float(self.value))
+        self._seal()
 
     def evaluate(self, env):
         return Quantity(float(self.value), Unit.parse(self.unit_text))
@@ -163,6 +196,7 @@ class Var(Expr):
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _NAME.match(self.name):
             raise UnsafeName(f"variable name {self.name!r} must match {_NAME.pattern}")
+        self._seal()
 
     def evaluate(self, env):
         if self.name not in env:
@@ -189,6 +223,9 @@ class Var(Expr):
 class _Binary(Expr):
     a: Expr
     b: Expr
+
+    def __post_init__(self) -> None:
+        self._seal(self.a, self.b)
 
     def variables(self):
         return self.a.variables() | self.b.variables()
@@ -294,6 +331,9 @@ class Neg(Expr):
     a: Expr
     op = "neg"
 
+    def __post_init__(self) -> None:
+        self._seal(self.a)
+
     def evaluate(self, env):
         x = self.a.evaluate(env)
         return Quantity(-x.value, x.unit)
@@ -320,6 +360,7 @@ class Pow(Expr):
     def __post_init__(self) -> None:
         if not isinstance(self.exponent, int) or isinstance(self.exponent, bool) or abs(self.exponent) > MAX_POWER:
             raise MalformedInput(f"exponent must be an integer with |n| <= {MAX_POWER}")
+        self._seal(self.a)
 
     def evaluate(self, env):
         x = self.a.evaluate(env)
@@ -341,6 +382,8 @@ class Pow(Expr):
 
 
 _BINARY = {"add": Add, "sub": Sub, "mul": Mul, "div": Div, "min": Min, "max": Max}
+_NODE_KEYS = {"const": {"op", "value", "unit"}, "var": {"op", "name"}, "neg": {"op", "args"},
+              "pow": {"op", "args", "exponent"}, **{op: {"op", "args"} for op in _BINARY}}
 
 
 def from_json(data: object, _depth: int = 0, _count: list[int] | None = None) -> Expr:
@@ -354,10 +397,15 @@ def from_json(data: object, _depth: int = 0, _count: list[int] | None = None) ->
     if not isinstance(data, dict) or "op" not in data:
         raise MalformedInput("expression node must be an object with 'op'")
     op = data["op"]
+    if not isinstance(op, str) or op not in _NODE_KEYS:
+        raise MalformedInput(f"unknown expression op {op!r}")
+    extra = set(data) - _NODE_KEYS[op]
+    if extra:
+        raise MalformedInput(f"'{op}' node has unexpected keys {sorted(map(str, extra))}")
     if op == "const":
         if not isinstance(data.get("value"), (int, float)) or isinstance(data.get("value"), bool):
             raise MalformedInput("const needs a numeric 'value'")
-        return Const(float(data["value"]), str(data.get("unit", "")))
+        return Const(data["value"], data.get("unit", ""))
     if op == "var":
         return Var(data.get("name", ""))
     args = data.get("args")
@@ -404,6 +452,8 @@ class Relation:
     def __post_init__(self) -> None:
         if self.op not in OPS:
             raise MalformedInput(f"constraint operator must be one of {OPS}, got {self.op!r}")
+        if not isinstance(self.lhs, Expr) or not isinstance(self.rhs, Expr):
+            raise MalformedInput("both sides of a relation must be structured expressions")
 
     def check_units(self, var_units: Mapping[str, Unit]) -> Unit:
         return _same_unit(self.lhs.unit(var_units), self.rhs.unit(var_units), "compare")
@@ -430,8 +480,8 @@ class Relation:
 
     @staticmethod
     def from_json(data: object) -> "Relation":
-        if not isinstance(data, dict):
-            raise MalformedInput("relation must be an object with lhs, op, rhs")
+        if not isinstance(data, dict) or set(data) != {"lhs", "op", "rhs"}:
+            raise MalformedInput("relation must be an object with exactly lhs, op, rhs")
         return Relation(from_json(data.get("lhs")), data.get("op"), from_json(data.get("rhs")))
 
     def __str__(self) -> str:
@@ -443,12 +493,16 @@ Number = Union[int, float]
 
 def env_of(values: Mapping[str, Number | tuple[Number, str] | Quantity]) -> dict[str, Quantity]:
     """Build an evaluation environment: {name: value} or {name: (value, unit)}."""
+    if not isinstance(values, Mapping):
+        raise MalformedInput("an environment maps variable names to values")
     out: dict[str, Quantity] = {}
     for name, v in values.items():
         Var(name)  # validates the name
         if isinstance(v, Quantity):
             out[name] = v
         elif isinstance(v, tuple):
+            if len(v) != 2:
+                raise MalformedInput(f"'{name}' must be (value, unit)")
             out[name] = Quantity(v[0], Unit.parse(v[1]))
         else:
             out[name] = Quantity(v)

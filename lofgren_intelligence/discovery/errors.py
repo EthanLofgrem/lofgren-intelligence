@@ -7,6 +7,8 @@ stops the operation with one of these.
 
 from __future__ import annotations
 
+from ..research.planner import DependencyCycle as _V1DependencyCycle
+
 
 class DiscoveryError(Exception):
     """Base class. `where` names the object, field or path that failed."""
@@ -57,6 +59,14 @@ class DuplicateId(DiscoveryError, ValueError):
     pass
 
 
+class InvalidTransition(DiscoveryError, ValueError):
+    """A status change the object's lifecycle does not allow."""
+
+
+class DependencyCycle(DiscoveryError, _V1DependencyCycle):
+    """Objects derive from each other in a cycle. Also catchable as the V1 research-planner error."""
+
+
 class InputTooLarge(DiscoveryError, ValueError):
     pass
 
@@ -74,7 +84,7 @@ class PromotionRefused(DiscoveryError, PermissionError):
 
 
 __all__ = [
-    "DiscoveryError", "DuplicateId", "ImpossibleTimestamp", "InputTooLarge", "InvalidScope", "MalformedInput",
-    "NegativeCost", "NonFiniteValue", "PromotionRefused", "ReceiptTampered", "UnitMismatch", "UnknownReference",
-    "UnknownStatus", "UnsafeName", "UnsupportedAlgorithm",
+    "DependencyCycle", "DiscoveryError", "DuplicateId", "ImpossibleTimestamp", "InputTooLarge", "InvalidScope",
+    "InvalidTransition", "MalformedInput", "NegativeCost", "NonFiniteValue", "PromotionRefused", "ReceiptTampered",
+    "UnitMismatch", "UnknownReference", "UnknownStatus", "UnsafeName", "UnsupportedAlgorithm",
 ]

@@ -21,11 +21,13 @@ from __future__ import annotations
 from ..evidence.graph import EvidenceGraph
 from ..evidence.types import Claim
 from .errors import (
+    DependencyCycle,
     DiscoveryError,
     DuplicateId,
     ImpossibleTimestamp,
     InputTooLarge,
     InvalidScope,
+    InvalidTransition,
     MalformedInput,
     NegativeCost,
     NonFiniteValue,
