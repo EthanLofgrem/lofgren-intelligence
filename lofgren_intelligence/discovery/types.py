@@ -111,15 +111,22 @@ class PriorArtConclusion(str, Enum):
     INCOMPLETE = "incomplete"  # part of the requested coverage was not searched
 
 
-# Words that claim novelty. A prior-art miss can never support them, so V2 prior-art text never uses them.
-NOVELTY_WORDS = re.compile(r"\b(novel|new|newly|first|never[\s-]+(?:been[\s-]+)?(?:attempted|done|tried)|"
-                           r"unprecedented)\b", re.IGNORECASE)
+# Explicit novelty predicates. Applied only to text V2 itself asserts about a subject (the subject and its
+# distinctive features), never to evidence such as titles, provider limitations, place or domain names.
+# Bare "new" and "first" are not judged: "New Mexico", "first-in first-out" and "the first 100 results"
+# are not claims. The structural guarantees carry the rule: no conclusion value means novel, the no-match
+# statement always disclaims novelty, and distinctiveness can only be asserted against actual matches.
+NOVELTY_CLAIMS = re.compile(
+    r"\b(novel|unprecedented|never[\s-]+(?:been[\s-]+)?(?:attempted|done|tried|seen)|never[\s-]+before|"
+    r"first[\s-]+of[\s-]+its[\s-]+kind|first[\s-]+ever|(?:world|industry|market)(?:'|’)?s[\s-]+first|"
+    r"brand[\s-]+new|nobody[\s-]+has|no[\s-]+one[\s-]+has)\b", re.IGNORECASE)
 
 
 def check_no_novelty_claim(value: str, where: str) -> str:
-    m = NOVELTY_WORDS.search(value)
+    """Refuse a V2-authored assertion of novelty. Only for text V2 asserts, never for evidence text."""
+    m = NOVELTY_CLAIMS.search(value)
     if m:
-        raise FalseNovelty(f"{m.group(0)!r} claims novelty; state search coverage instead", where)
+        raise FalseNovelty(f"{m.group(0)!r} asserts novelty; a prior-art search can only state its coverage", where)
     return value
 
 
@@ -682,7 +689,10 @@ class PriorArt(_Obj):
     version: str = SCHEMA_VERSION
     id: str = ""
     _id_prefix = "PA"
-    _id_fields = ("query", "sources_searched", "time_range", "domains")
+    # A search observation: the request plus what it returned. The same deterministic search gives the same id;
+    # a materially different result set (or a failed search, recorded in limitations) gives a different one.
+    # No wall-clock time: created_at stays out of identity so observations remain reproducible.
+    _id_fields = ("query", "sources_searched", "time_range", "domains", "results", "limitations")
 
     def __post_init__(self) -> None:
         self.query = text(self.query, "PriorArt.query")
@@ -748,12 +758,15 @@ class PriorArtAssessment(_Obj):
         if not isinstance(self.matches, list):
             raise MalformedInput("matches must be a list of hits", f"{w}.matches")
         self.matches = [prior_art_hit(m, f"{w}.matches[{i}]") for i, m in enumerate(self.matches)]
+        # Titles, limitations and unsearched areas are evidence and coverage text, not V2 assertions.
         for name in ("nearest_matches", "distinctive_features", "limitations", "unsearched_areas"):
-            values = texts(getattr(self, name), f"{w}.{name}")
-            for i, v in enumerate(values):
-                check_no_novelty_claim(v, f"{w}.{name}[{i}]")
-            setattr(self, name, values)
+            setattr(self, name, texts(getattr(self, name), f"{w}.{name}"))
+        for i, v in enumerate(self.distinctive_features):
+            check_no_novelty_claim(v, f"{w}.distinctive_features[{i}]")
         c = self.conclusion
+        if self.distinctive_features and c != PriorArtConclusion.MATCH_FOUND:
+            raise FalseNovelty("distinctive features are differences from matched prior art; with no matches they "
+                               "would assert distinctiveness against nothing", f"{w}.distinctive_features")
         if c == PriorArtConclusion.MATCH_FOUND and not self.matches:
             raise MalformedInput("match_found needs at least one match", f"{w}.matches")
         if c != PriorArtConclusion.MATCH_FOUND and self.matches:

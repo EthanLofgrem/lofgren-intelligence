@@ -4,6 +4,7 @@ Fixtures are fictional (tests/fixtures/discovery).
 """
 
 import json
+import re
 import unittest
 import warnings
 from pathlib import Path
@@ -39,7 +40,7 @@ from lofgren_intelligence.discovery.prior_art import (
 )
 from lofgren_intelligence.discovery.requirements import evidence_requirement, requirement_for_gap
 from lofgren_intelligence.discovery.schemas import render, validate
-from lofgren_intelligence.discovery.types import NOVELTY_WORDS, SEARCH_ABSENCE_MAX_CONFIDENCE
+from lofgren_intelligence.discovery.types import NOVELTY_CLAIMS, SEARCH_ABSENCE_MAX_CONFIDENCE
 
 from .test_v2_context_integrity import AT, FIXTURES, load, objective
 from .test_v2_foundations import sample_objects
@@ -146,10 +147,15 @@ class PriorArtTests(unittest.TestCase):
         self.assertEqual(len(absence), 1)
         self.assertLessEqual(absence[0].confidence, SEARCH_ABSENCE_MAX_CONFIDENCE)
         self.assertEqual(absence[0].coverage_statement, a.statement)
-        rendered = [a.statement, *a.limitations, *(g.missing for g in absence), *(g.why_it_matters for g in absence),
+        self.assertTrue(a.statement.endswith("this does not establish novelty."))
+        # Every string V2 renders here asserts no novelty, and V2's own template wording (with the subject and
+        # the searched coverage taken out) never even uses the words new, first, novel or unprecedented.
+        rendered = [a.statement, *(g.missing for g in absence), *(g.why_it_matters for g in absence),
                     *(w for g in absence for w in g.ways_to_close)]
         for s in rendered:
-            self.assertIsNone(NOVELTY_WORDS.search(s), s)
+            self.assertIsNone(NOVELTY_CLAIMS.search(s), s)
+            template = s.replace(a.subject, "")
+            self.assertIsNone(re.search(r"\b(novel|new|newly|first|unprecedented)\b", template, re.I), s)
 
     def test_incomplete_coverage_concludes_nothing(self):
         a, _ = assess_prior_art(self.ctx, "drone-delivered pallet racking", ["drone pallet racking"], self.provider,
@@ -198,8 +204,8 @@ class PriorArtTests(unittest.TestCase):
             FixturePriorArtProvider([{"title": "t"}], corpus_provider().coverage())
 
     def test_false_novelty_language_is_refused(self):
-        for subject in ("a new cross-dock design", "the first solar canopy", "an unprecedented layout",
-                        "a NOVEL hub", "something never attempted before"):
+        for subject in ("the world's first solar canopy", "an unprecedented layout", "a NOVEL hub",
+                        "something never attempted before", "a first-of-its-kind cross-dock", "a brand-new racking"):
             with self.subTest(subject=subject), self.assertRaises(FalseNovelty):
                 assess_prior_art(self.ctx, subject, ["drone pallet racking"], self.provider, ["US"], COVERED, at=AT)
         with self.assertRaises(FalseNovelty):
@@ -242,6 +248,98 @@ class PriorArtTests(unittest.TestCase):
         self.assertIsNone(c.novelty)
         with self.assertRaises(MalformedInput):
             Candidate("x", "GAP-1", prior_art_assessment_id="PA-1")
+
+
+def single_record_provider(title: str, limitations: tuple[str, ...] = ("offline fixture corpus (fictional)",),
+                           domains: tuple[str, ...] = ("US",), summary: str = "cold storage warehouse"):
+    coverage = ProviderCoverage(("fixture-patents (fictional)",), domains, COVERED, limitations)
+    return FixturePriorArtProvider([{"title": title, "source": "fixture-patents (fictional)", "uri": f"fixture:{title}",
+                                     "published": "2020-01-01", "summary": summary}], coverage)
+
+
+class PriorArtRegressionTests(unittest.TestCase):
+    """PR #4 review: D1 (titles), D2 (search identity), D3 (novelty guard boundary)."""
+
+    def setUp(self):
+        self.ctx, _ = build()
+
+    def assess(self, provider, subject="cold storage warehouse", query="cold storage warehouse", domains=("US",),
+               ctx=None, **kw):
+        return assess_prior_art(ctx or self.ctx, subject, [query], provider, list(domains), COVERED, at=AT, **kw)[0]
+
+    def test_d1_matched_titles_are_evidence_not_claims(self):
+        for title in ("New method for cold storage warehouse cooling", "First-in first-out cold storage warehouse "
+                      "racking", "A novel cold storage warehouse layout"):
+            with self.subTest(title=title):
+                a = self.assess(single_record_provider(title), ctx=build()[0])
+                self.assertEqual(a.conclusion, PriorArtConclusion.MATCH_FOUND)
+                self.assertEqual(a.nearest_matches, [title])
+                self.assertIn(title, a.statement)
+
+    def test_d2_same_search_observation_same_identity(self):
+        first = self.assess(single_record_provider("Cold storage warehouse hub"))
+        again = self.assess(single_record_provider("Cold storage warehouse hub"))
+        self.assertEqual(first.search_ids, again.search_ids)
+        self.assertEqual(first.id, again.id)
+
+    def test_d2_different_results_different_identity(self):
+        a = self.assess(single_record_provider("Cold storage warehouse hub A"))
+        b = self.assess(single_record_provider("Cold storage warehouse hub B"))  # the corpus changed
+        self.assertNotEqual(a.search_ids, b.search_ids)
+        self.assertNotEqual(a.id, b.id)
+        self.assertIn(a.search_ids[0], self.ctx)
+        self.assertIn(b.search_ids[0], self.ctx)
+
+    def test_d2_failed_and_empty_searches_are_different_observations(self):
+        class Failing(PriorArtProvider):
+            def coverage(self):
+                return single_record_provider("x").coverage()
+
+            def search(self, query, domains, time_range):
+                raise TimeoutError("upstream timed out")
+
+        empty = self.assess(single_record_provider("Unrelated title", summary="unrelated"), query="drone racking")
+        failed = self.assess(Failing(), query="drone racking")
+        self.assertNotEqual(empty.search_ids, failed.search_ids)
+        self.assertEqual((empty.conclusion, failed.conclusion),
+                         (PriorArtConclusion.NO_MATCH_WITHIN_COVERAGE, PriorArtConclusion.INCOMPLETE))
+
+    def test_d2_identity_has_no_wall_clock_time(self):
+        p = single_record_provider("Cold storage warehouse hub")
+        early = assess_prior_art(build()[0], "cold storage warehouse", ["cold storage warehouse"], p, ["US"], COVERED,
+                                 at="2026-01-01T00:00:00+00:00")[0]
+        late = assess_prior_art(build()[0], "cold storage warehouse", ["cold storage warehouse"], p, ["US"], COVERED,
+                                at="2026-09-30T00:00:00+00:00")[0]
+        self.assertEqual((early.id, early.search_ids), (late.id, late.search_ids))
+
+    def test_d3_place_names_coverage_text_and_titles_do_not_trigger(self):
+        cases = [
+            dict(subject="cold storage warehouse in New Mexico"),
+            dict(subject="cold storage warehouse for New Zealand exporters", domains=("US", "New Zealand")),
+            dict(provider=single_record_provider("Unrelated", limitations=("only the first 100 results are returned",),
+                                                 summary="unrelated"), query="drone racking"),
+            dict(provider=single_record_provider("New method for cold storage warehouse cooling")),
+            dict(provider=single_record_provider("First-in first-out cold storage warehouse racking")),
+            dict(provider=single_record_provider("Cold storage warehouse", domains=("US", "New Mexico")),
+                 domains=("New Mexico",)),
+        ]
+        for case in cases:
+            provider = case.pop("provider", single_record_provider("Cold storage warehouse hub"))
+            with self.subTest(case=case):
+                a = self.assess(provider, ctx=build()[0], **case)
+                self.assertIn(a.conclusion, tuple(PriorArtConclusion))
+
+    def test_d3_v2_novelty_assertions_are_still_refused(self):
+        with self.assertRaises(FalseNovelty):  # an explicit novelty predicate in V2's own claim
+            self.assess(single_record_provider("Cold storage warehouse hub"),
+                        distinctive_features=["the world's first evaporative racking"])
+        with self.assertRaises(FalseNovelty):  # distinctiveness asserted with nothing found to differ from
+            self.assess(single_record_provider("Unrelated", summary="unrelated"), query="drone racking",
+                        distinctive_features=["evaporative racking"])
+        a = self.assess(single_record_provider("Cold storage warehouse hub"),
+                        distinctive_features=["evaporative racking (the matched hub uses compressors)"])
+        self.assertEqual(a.distinctive_features, ["evaporative racking (the matched hub uses compressors)"])
+        self.assertFalse({"novel", "new", "first", "unprecedented"} & {c.value for c in PriorArtConclusion})
 
 
 class GapTests(unittest.TestCase):
