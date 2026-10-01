@@ -13,6 +13,7 @@ Re-running with the same inputs_hash must produce the same state_hash.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from typing import TYPE_CHECKING, Any
@@ -89,6 +90,9 @@ def build_receipt(r: "RunResult") -> dict:
         "started_at": r.started_at,
         "finished_at": r.finished_at,
     }
+    # The receipt is a record, not a view: copy it, so later changes to the run's graph, plan or ledger (which the
+    # body would otherwise share lists and dicts with) can never alter an issued receipt.
+    body = copy.deepcopy(body)
     body["inputs_hash"] = canonical_hash({
         "contract": body["contract_hash"],
         "evidence": sorted(e["content_hash"] for e in body["evidence"]),

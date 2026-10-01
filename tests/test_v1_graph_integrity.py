@@ -348,6 +348,20 @@ class ValidationTests(unittest.TestCase):
         claim.contradicting.append(claim.supporting[0])
         self.assertProblem("both supports and contradicts")
 
+    def test_issued_receipt_does_not_change_with_the_graph(self):
+        # Was: build_receipt stored the claims' own supporting/contradicting/issues lists, so evidence linked after
+        # the receipt was issued silently rewrote it and verify_receipt then refused it.
+        from lofgren_intelligence.kernel.receipt import verify_receipt
+
+        issued = json.dumps(self.v1_run.receipt, sort_keys=True, default=str)
+        claim = next(c for c in self.g.claims.values() if c.supporting)
+        src = self.g.add_source(Source(SourceKind.DOCUMENT, "later note", uri="inline:later", quality=0.5))
+        ev = self.g.add_evidence(Evidence(src.id, EvidenceKind.DOCUMENT, "A later, fictional note."))
+        self.g.link(ev.id, claim.id, "supports")
+        claim.issues.append("raised later")
+        self.assertEqual(json.dumps(self.v1_run.receipt, sort_keys=True, default=str), issued)
+        self.assertTrue(verify_receipt(self.v1_run.receipt))
+
     def test_no_receipt_from_an_invalid_graph(self):
         from lofgren_intelligence.kernel.pipeline import _finish
         from lofgren_intelligence.models import HeuristicProvider
