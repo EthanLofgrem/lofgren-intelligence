@@ -10,6 +10,7 @@ from lofgren_intelligence.evidence.types import (
     CLAIM_IDENTITY_SCHEMA,
     CLAIM_IDENTITY_VERSION,
     ClaimIdentityError,
+    ClaimPolarityError,
     claim_id,
     claim_identity_key,
     make_id,
@@ -29,6 +30,7 @@ class SerializationTests(unittest.TestCase):
             "subject": "vacancy:phx",
             "value": 11.0,
             "unit": "%",
+            "polarity": 1,
             "scope": {"valid_from": "2026-01-01", "valid_to": "2026-12-31", "geography": "phoenix metro",
                       "lat": 33.4, "lon": -112.0},
         })
@@ -86,6 +88,44 @@ class DeterminismTests(unittest.TestCase):
                 Claim(S, scope=PHOENIX, origin="hypothesis")]
         for other in same:
             self.assertEqual(other.id, base.id)
+
+
+class PolarityTests(unittest.TestCase):
+    def test_same_polarity_same_id(self):
+        for polarity in (1, -1):
+            with self.subTest(polarity=polarity):
+                ids = {Claim(S, value=11.0, unit="%", polarity=polarity, scope=PHOENIX).id for _ in range(10)}
+                self.assertEqual(len(ids), 1)
+
+    def test_opposite_polarity_is_a_different_proposition(self):
+        asserted = Claim(S, value=11.0, unit="%", scope=PHOENIX, polarity=1)
+        negated = Claim(S, value=11.0, unit="%", scope=PHOENIX, polarity=-1)
+        self.assertNotEqual(asserted.id, negated.id)
+        self.assertEqual((claim_identity_key(asserted)["polarity"], claim_identity_key(negated)["polarity"]), (1, -1))
+
+    def test_polarity_is_never_read_from_the_text(self):
+        # A negation in the statement does not change identity; only the explicit field does.
+        key = claim_identity_key(Claim("The site has no rail access (fictional)."))
+        self.assertEqual(key["polarity"], 1)
+
+    def test_unsupported_polarity_fails_closed(self):
+        for bad in (0, 2, -2, True, False, "1", 1.0, None):
+            with self.subTest(polarity=bad), self.assertRaises(ClaimPolarityError):
+                Claim(S, polarity=bad)
+            with self.subTest(polarity=bad, version=1), self.assertRaises(ClaimPolarityError):
+                Claim(S, polarity=bad, identity_version=1)
+        self.assertTrue(issubclass(ClaimPolarityError, ClaimIdentityError))
+
+    def test_version_one_ignores_polarity(self):
+        # The historical rule was statement-only; it is not changed.
+        self.assertEqual(Claim(S, polarity=1, identity_version=1).id, Claim(S, polarity=-1, identity_version=1).id)
+
+    def test_claim_type_is_not_identity(self):
+        # The verifier assigns claim_type after creation to choose a policy; it does not change the proposition.
+        base = Claim(S, value=11.0, unit="%", scope=PHOENIX)
+        for claim_type in ("attribution", "quantitative", "trend", "physical", "general"):
+            with self.subTest(claim_type=claim_type):
+                self.assertEqual(Claim(S, value=11.0, unit="%", scope=PHOENIX, claim_type=claim_type).id, base.id)
 
 
 class VersionTests(unittest.TestCase):

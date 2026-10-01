@@ -181,18 +181,34 @@ _STOPWORDS = {
 #      "subject": explicit subject key or null,
 #      "value": structured value as a float or null,
 #      "unit": structured unit or null,
+#      "polarity": 1 (asserted) or -1 (negated),
 #      "scope": {"valid_from", "valid_to": ISO date/time text or null,
 #                "geography": lowercased, whitespace collapsed, or null,
 #                "lat", "lon": float or null}}
 # Only structure the claim already carries is used; nothing is parsed out of the statement text.
+# claim_type is not part of identity: the verifier assigns it after a claim is created (classify_claim) to choose
+# an evidence-sufficiency policy, so it describes how V1 checks the proposition, not what the proposition says.
 
 CLAIM_IDENTITY_VERSIONS = (1, 2)
 CLAIM_IDENTITY_VERSION = 2
 CLAIM_IDENTITY_SCHEMA = "lofgren.claim-identity/2"
 
 
+CLAIM_POLARITIES = (1, -1)  # 1: the statement is asserted; -1: it is negated. No other value has a meaning.
+
+
 class ClaimIdentityError(ValueError):
     """A claim's identity cannot be computed from its fields (non-finite number, malformed date, unknown version)."""
+
+
+class ClaimPolarityError(ClaimIdentityError):
+    """A claim's polarity is not 1 (asserted) or -1 (negated)."""
+
+
+def check_polarity(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in CLAIM_POLARITIES:
+        raise ClaimPolarityError(f"claim polarity must be 1 (asserted) or -1 (negated), got {value!r}")
+    return value
 
 
 def _collapse(text: str) -> str:
@@ -234,6 +250,7 @@ def claim_identity_key(claim: "Claim") -> dict[str, Any]:
         "subject": claim.subject.strip() or None,
         "value": _identity_number(claim.value, "value"),
         "unit": claim.unit.strip() or None,
+        "polarity": check_polarity(claim.polarity),
         "scope": {"valid_from": _identity_time(s.valid_from, "valid_from"),
                   "valid_to": _identity_time(s.valid_to, "valid_to"),
                   "geography": geography or None,
@@ -296,6 +313,7 @@ class Claim:
         if self.identity_version not in CLAIM_IDENTITY_VERSIONS or isinstance(self.identity_version, bool):
             raise ClaimIdentityError(f"unsupported claim identity version {self.identity_version!r}; "
                                      f"supported: {CLAIM_IDENTITY_VERSIONS}")
+        check_polarity(self.polarity)  # the field's contract holds for every claim, whatever its identity version
         if not self.id:
             self.id = claim_id(self)
 
