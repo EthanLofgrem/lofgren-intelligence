@@ -128,7 +128,7 @@ class ClaimIdentityDefects(unittest.TestCase):
         self.assertEqual(Claim(VACANCY, scope=PHOENIX_2026, question_id="Q-a").id,
                          Claim(VACANCY, scope=PHOENIX_2026, question_id="Q-b").id)
 
-    @known_defect("CLAIM-QUESTION-ASSOCIATION")
+    # Fixed by commit 4 (was CLAIM-QUESTION-ASSOCIATION).
     def test_shared_proposition_keeps_every_question_association(self):
         g, _ = graph_with_source()
         g.add_claim(Claim(VACANCY, scope=PHOENIX_2026, question_id="Q-a"))
@@ -226,19 +226,19 @@ def two_question_run():
 
 
 class QuestionIsolationDefects(unittest.TestCase):
-    @known_defect("ANSWER-CROSS-QUESTION-LEAK")
+    # Fixed by commit 4 (was ANSWER-CROSS-QUESTION-LEAK).
     def test_direct_answer_ranks_only_its_own_claims(self):
         run, qa, _, claim_a, claim_b = two_question_run()
         top = answer(qa, run).claims[0]
         self.assertEqual(top.id, claim_a.id, f"question A's top claim is question B's claim at {top.confidence}")
 
-    @known_defect("ANSWER-FOREIGN-CLAIMS-LISTED")
+    # Fixed by commit 4 (was ANSWER-FOREIGN-CLAIMS-LISTED).
     def test_direct_answer_lists_no_foreign_claims(self):
         run, qa, _, _, claim_b = two_question_run()
         listed = [c.id for c in answer(qa, run).claims]
         self.assertNotIn(claim_b.id, listed, f"question A's answer lists question B's claim {claim_b.id}")
 
-    @known_defect("FINDING-CROSS-QUESTION-LEAK")
+    # Fixed by commit 4 (was FINDING-CROSS-QUESTION-LEAK).
     def test_finding_rests_on_its_own_question(self):
         run, qa, _, claim_a, claim_b = two_question_run()
         finding = next(f for f in build_findings(run) if f.question_id == qa.id)
@@ -254,7 +254,7 @@ class QuestionIsolationDefects(unittest.TestCase):
 class MultiQuestionSynthesisRequirement(unittest.TestCase):
     """Synthesis across questions is legitimate when explicit. The fix for leakage must keep it possible."""
 
-    @known_defect("FINDING-NO-MULTI-QUESTION")
+    # Fixed by commit 4 (was FINDING-NO-MULTI-QUESTION).
     def test_a_finding_can_record_every_question_it_synthesizes(self):
         fields = {f.name for f in dataclasses.fields(Finding)}
         self.assertIn("question_ids", fields, f"Finding records a single question_id only; fields: {sorted(fields)}")

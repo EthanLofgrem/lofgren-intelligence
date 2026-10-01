@@ -395,6 +395,16 @@ def evidence_id(ev: "Evidence") -> str:
                                 f"supported: {EVIDENCE_IDENTITY_VERSIONS}")
 
 
+def question_associations(question_ids: Any, question_id: str | None = None) -> list[str]:
+    """The sorted, distinct question ids a claim or finding is associated with. Fails closed on non-text ids."""
+    if not isinstance(question_ids, (list, tuple)):
+        raise ValueError(f"question_ids must be a list of question ids, got {type(question_ids).__name__}")
+    ids = set(question_ids) | ({question_id} if question_id else set())
+    if not all(isinstance(q, str) and q for q in ids):
+        raise ValueError(f"question ids must be non-empty text, got {sorted(map(repr, ids))}")
+    return sorted(ids)
+
+
 def topic_tokens(text: str) -> list[str]:
     """Content words, lowercased, numbers and stopwords removed."""
     words = re.findall(r"[a-zA-Z][a-zA-Z\-]+", text.lower())
@@ -423,6 +433,9 @@ class Claim:
     sufficiency: str = ""  # name of the evidence policy applied
     issues: list[str] = field(default_factory=list)  # raised by the skeptic pass
     calculation_id: str | None = None  # when the value comes from a calculation
+    # Every research question this proposition was gathered for, sorted. An association, not identity: the same
+    # proposition can serve several questions. `question_id` keeps the first association (legacy field).
+    question_ids: list[str] = field(default_factory=list)
     identity_version: int = CLAIM_IDENTITY_VERSION  # the rule that produced `id` (see claim_id)
     id: str = ""
 
@@ -438,6 +451,7 @@ class Claim:
             raise ClaimIdentityError(f"unsupported claim identity version {self.identity_version!r}; "
                                      f"supported: {CLAIM_IDENTITY_VERSIONS}")
         check_polarity(self.polarity)  # the field's contract holds for every claim, whatever its identity version
+        self.question_ids = question_associations(self.question_ids, self.question_id)
         if not self.id:
             self.id = claim_id(self)
 
@@ -497,6 +511,9 @@ class Unknown:
             self.id = make_id("UNK", self.description, self.question_id, self.capability)
 
 
+FINDING_DERIVATIONS = ("direct", "dependency", "mixed", "synthesis")
+
+
 @dataclass
 class Finding:
     """The answer to one research question, built only from typed state."""
@@ -515,13 +532,40 @@ class Finding:
     affects: list[str] = field(default_factory=list)
     next_best_evidence: str = ""
     issues: list[str] = field(default_factory=list)
+    # Every question this finding draws claims from (always including question_id), and how:
+    #   "direct"      answers question_id from that question's own claims only
+    #   "dependency"  answers question_id only from claims of questions it declares it depends on
+    #   "mixed"       both of the above; claim_scopes says which claim came through which question
+    #   "synthesis"   deliberately combines the claims of two or more named questions
+    # claim_scopes maps each claim id to the question(s) through which the finding may use it.
+    question_ids: list[str] = field(default_factory=list)
+    derivation: str = "direct"
+    claim_scopes: dict[str, list[str]] = field(default_factory=dict)
     id: str = ""
 
     def __post_init__(self) -> None:
         if isinstance(self.scope, dict):
             self.scope = Scope(**self.scope)
+        self.question_ids = question_associations(self.question_ids, self.question_id)
+        if self.derivation not in FINDING_DERIVATIONS:
+            raise ValueError(f"finding derivation must be one of {FINDING_DERIVATIONS}, got {self.derivation!r}")
+        if self.derivation == "direct" and self.question_ids != [self.question_id]:
+            raise ValueError("a direct finding answers exactly its own question; record dependency, mixed or "
+                             f"synthesis derivation to use {self.question_ids}")
+        if self.derivation != "direct" and len(self.question_ids) < 2:
+            raise ValueError(f"a {self.derivation} finding draws on at least two questions")
+        if not isinstance(self.claim_scopes, dict):
+            raise ValueError("claim_scopes maps claim ids to the questions that permit them")
+        if self.derivation != "direct" and set(self.claim_scopes) != set(self.claim_ids):
+            raise ValueError(f"a {self.derivation} finding records the scope of every claim it uses")
+        for cid, scope in self.claim_scopes.items():
+            if cid not in self.claim_ids:
+                raise ValueError(f"claim_scopes names {cid}, which the finding does not use")
+            if not scope or not set(scope) <= set(self.question_ids):
+                raise ValueError(f"claim {cid} is scoped to {scope}, outside the finding's questions")
         if not self.id:
-            self.id = make_id("F", self.question_id)
+            self.id = (make_id("F", "synthesis", *self.question_ids) if self.derivation == "synthesis"
+                       else make_id("F", self.question_id))
 
 
 def to_dict(obj: Any) -> dict[str, Any]:

@@ -172,6 +172,9 @@ class EvidenceGraph:
                 self.link(ev_id, existing.id, EdgeRelation.CONTRADICTS)
             if existing.calculation_id is None and claim.calculation_id is not None:
                 existing.calculation_id = claim.calculation_id
+            # One proposition can serve several questions: keep every association (sorted, so arrival order
+            # does not matter). question_id stays the first association.
+            existing.question_ids = sorted(set(existing.question_ids) | set(claim.question_ids))
         for ev_id in supported_by:
             self.link(ev_id, existing.id, EdgeRelation.SUPPORTS)
         return existing
@@ -302,6 +305,10 @@ class EvidenceGraph:
                 out.append(f"claim {key} is a hypothesis with status {c.status.value}; hypotheses are never verified")
             if c.calculation_id is not None and c.calculation_id not in self.calculations:
                 out.append(f"claim {key} cites missing calculation {c.calculation_id}")
+            if c.question_ids != sorted(set(c.question_ids)):
+                out.append(f"claim {key} question associations are not a sorted, distinct list")
+            if c.question_id is not None and c.question_id not in c.question_ids:
+                out.append(f"claim {key} question_id {c.question_id} is missing from its question associations")
         for key, cx in self.contradictions.items():
             for end in (cx.claim_a, cx.claim_b):
                 if end not in self.claims:
