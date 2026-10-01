@@ -30,7 +30,7 @@ from lofgren_intelligence.discovery.gaps import detect_gaps
 from lofgren_intelligence.discovery.types import UncertaintyReason
 from lofgren_intelligence.evidence import Claim, ClaimOrigin
 from lofgren_intelligence.kernel import export_knowledge_map, export_state, verify_receipt
-from lofgren_intelligence.kernel.knowledge_map import compute_fingerprints
+from lofgren_intelligence.kernel.knowledge_map import compute_fingerprints, knowledge_state_hash
 from lofgren_intelligence.kernel.pipeline import _finish
 from lofgren_intelligence.models import HeuristicProvider
 
@@ -40,6 +40,7 @@ AT = "2026-09-30T12:00:00+00:00"
 
 
 def refingerprint(m: dict) -> dict:
+    m["receipt"]["knowledge_state_hash"] = knowledge_state_hash(m)
     m["fingerprint"] = compute_fingerprints(m)
     return m
 
@@ -87,7 +88,8 @@ class Contexts(unittest.TestCase):
         self.assertIsNone(self.v1.receipt)
         receipt = self.result.receipt
         self.assertEqual(dict(self.ctx.receipt), {k: receipt[k] for k in ("schema", "research_id", "contract_hash",
-                                                                            "inputs_hash", "state_hash")})
+                                                                            "inputs_hash", "state_hash",
+                                                                            "knowledge_state_hash")})
         distinct = {self.ctx.knowledge_map_fingerprint, self.ctx.content_fingerprint, self.v1.knowledge_map_fingerprint,
                     receipt["state_hash"], receipt["inputs_hash"]}
         self.assertEqual(len(distinct), 5)

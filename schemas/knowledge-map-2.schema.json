@@ -78,11 +78,12 @@
         "research_id",
         "contract_hash",
         "inputs_hash",
-        "state_hash"
+        "state_hash",
+        "knowledge_state_hash"
       ],
       "properties": {
         "schema": {
-          "const": "lofgren.research-receipt/1"
+          "const": "lofgren.research-receipt/2"
         },
         "research_id": {
           "type": "string",
@@ -97,6 +98,10 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "state_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "knowledge_state_hash": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         }

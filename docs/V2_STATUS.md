@@ -22,6 +22,12 @@ For a `knowledge-map/2` context, `knowledge_map_fingerprint` is the map's own `K
 both recomputed on load; `receipt` exposes the research id and the receipt's contract, inputs and state hashes.
 None of these is interchangeable with another, and no KMF is computed for `/2`.
 
+The receipt (`lofgren.research-receipt/2`) also carries `knowledge_state_hash`, its commitment to the complete
+state a `/2` map exports. Editing any field of a map and recomputing `KM2-`, `KM2C-` and the map's copy of the
+commitment still fails against the intact receipt. `lofgren.research-receipt/1` receipts still verify but are
+refused as a binding for `/2`. The research id is an unkeyed hash: the binding is as trustworthy as the receipt the
+consumer already holds.
+
 For a `knowledge-map/1` context, `knowledge_map_fingerprint` is `KMF-` followed by the SHA-256 of the canonical JSON of the
 exported map (`sha256/canonical-json-1`):
 

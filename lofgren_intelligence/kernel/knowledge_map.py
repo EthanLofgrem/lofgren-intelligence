@@ -12,7 +12,8 @@ knowledge-map/1 (`kernel.state.export_state`) stays frozen. /2 is a separate, st
     lineage          how sources derive from one another
     contradictions, unknowns (all, with status), calculations
     findings         with question_ids, derivation and claim_scopes
-    receipt          the authoritative V1 receipt this map was exported from (research id and hashes)
+    receipt          the authoritative V1 receipt this map was exported from: research id, contract, inputs and
+                     state hashes, and knowledge_state_hash, the receipt's commitment to every section above
     limitations      what the map cannot establish
     fingerprint      see below
 
@@ -25,8 +26,8 @@ Canonical form
 Fingerprint
     map      "KM2-"  + SHA-256 of the canonical map without `fingerprint`. Identifies this exact export, research id
              included; any change to the map changes it.
-    content  "KM2C-" + the same, also without the per-run fields `research_id`, `receipt.research_id` and
-             `sources[].retrieved_at`. Re-running identical inputs reproduces it. It does not hide real input
+    content  "KM2C-" + the same, also without the per-run fields `research_id`, `receipt.research_id`,
+             `receipt.knowledge_state_hash` and `sources[].retrieved_at`. Re-running identical inputs reproduces it. It does not hide real input
              differences: a source's identity includes its URI, so the same bytes read from another location are
              another source, other evidence ids and another content fingerprint.
 
@@ -59,7 +60,7 @@ from ..evidence.types import (
     to_dict,
 )
 from ..verification.policies import policy_for
-from .receipt import RECEIPT_SCHEMA, verify_receipt
+from .receipt import LEGACY_RECEIPT_SCHEMAS, RECEIPT_SCHEMA, verify_receipt
 
 if TYPE_CHECKING:
     from .pipeline import RunResult
@@ -79,6 +80,7 @@ SECTIONS = {"questions": "Q", "claims": "CL", "evidence": "EV", "sources": "SRC"
             "unknowns": "UNK", "calculations": "CALC", "findings": "F"}
 _TOP = {"schema", "research_id", "objective", "mode", "identity_versions", "evidence_standard", "receipt", *SECTIONS,
         "lineage", "limitations", "fingerprint"}
+_RECEIPT_REF = ("schema", "research_id", "contract_hash", "inputs_hash", "state_hash", "knowledge_state_hash")
 _FACTORS = {"quality", "independent_sources", "recency", "directness", "contradicting_sources", "raw", "calibrated"}
 _REQUIREMENTS = {"name", "min_independent_sources", "min_confidence", "requires_observation"}
 IDENTITY_VERSIONS = {"claim": {"1": "lofgren.claim-identity/1", str(CLAIM_IDENTITY_VERSION): CLAIM_IDENTITY_SCHEMA},
@@ -98,9 +100,11 @@ STANDING_LIMITATIONS = (
     "A finding may use claims gathered for its own question and for the questions it directly declares in "
     "depends_on; claim_scopes records which question each claim came through. Dependencies are not transitive.",
     "The gap question's finding lists every open unknown of the run: it is the run's inventory of what is missing.",
-    "Checked against its receipt, a map is bound field by field to the run, except for fields the receipt does not "
-    "record: claim question_ids and assessment, evidence location and transformations, and source quality. These "
-    "are covered only by the map's own fingerprint, which anyone can recompute.",
+    "Checked against its receipt, every field of this map is bound to the run: the receipt's knowledge_state_hash "
+    "commits to the whole exported state. The receipt's research id is an unkeyed hash, so it proves the receipt "
+    "was not altered after issue, not who issued it: the binding is only as trustworthy as the receipt (or research "
+    "id) the consumer already holds. lofgren.research-receipt/1 receipts carry no commitment and cannot vouch for "
+    "a knowledge-map/2.",
     "A claim's assessment records what the verifier scored and the thresholds of its policy. The skeptic pass may "
     "lower a status afterwards; the claim's issues say why. A claim added after verification has no assessment.",
 )
@@ -169,6 +173,7 @@ def compute_fingerprints(data: Any) -> dict[str, str]:
     content.pop("research_id", None)
     if isinstance(content.get("receipt"), dict):
         content["receipt"].pop("research_id", None)
+        content["receipt"].pop("knowledge_state_hash", None)  # it covers retrieval times
     for s in content.get("sources", []) if isinstance(content.get("sources"), list) else []:
         if isinstance(s, dict):
             s.pop("retrieved_at", None)
@@ -195,11 +200,13 @@ def _parse(data: Any) -> Any:
 
 # ---- export ------------------------------------------------------------------
 
-def export_knowledge_map(r: "RunResult") -> dict:
-    """The knowledge-map/2 of a finished run, in canonical form, fingerprinted."""
-    receipt = r.receipt or {}
-    if not receipt.get("research_id"):
-        raise KnowledgeMapError(["the run has no receipt: only a finished run can be exported"])
+# The receipt-independent part of a map: what the receipt's knowledge_state_hash commits to.
+_NOT_KNOWLEDGE_STATE = ("research_id", "receipt", "fingerprint")
+
+
+def knowledge_state(r: "RunResult") -> dict:
+    """The complete semantic state a knowledge-map/2 exports, in canonical form: every section except the research
+    id, the receipt reference and the fingerprint (which depend on the receipt). `build_receipt` commits to it."""
     g = r.graph
     std = r.contract.evidence_standard
 
@@ -237,17 +244,13 @@ def export_knowledge_map(r: "RunResult") -> dict:
                 "quality": s.quality, "independence_group": s.independence_group,
                 "derived_from": list(s.derived_from)}
 
-    data = {
+    return _sorted_sections(canonicalize({
         "schema": MAP_SCHEMA,
-        "research_id": receipt["research_id"],
         "objective": r.contract.objective,
         "mode": r.contract.mode,
         "identity_versions": copy.deepcopy(IDENTITY_VERSIONS),
         "evidence_standard": {"min_independent_sources": std.min_independent_sources,
                               "min_confidence": std.min_confidence},
-        "receipt": {"schema": receipt.get("schema"), "research_id": receipt["research_id"],
-                    "contract_hash": receipt.get("contract_hash"), "inputs_hash": receipt.get("inputs_hash"),
-                    "state_hash": receipt.get("state_hash")},
         "questions": [{"id": q.id, "text": q.text, "role": q.role, "stage": q.stage, "weight": q.weight,
                        "depends_on": list(q.depends_on), "stop_when": q.stop_when} for q in r.contract.questions],
         "claims": [claim(c) for c in g.claims.values()],
@@ -259,8 +262,25 @@ def export_knowledge_map(r: "RunResult") -> dict:
         "calculations": [to_dict(c) for c in g.calculations.values()],
         "findings": [to_dict(f) for f in r.findings],
         "limitations": list(STANDING_LIMITATIONS),
-    }
-    data = _sorted_sections(canonicalize(data))
+    }))
+
+
+def knowledge_state_hash(data: Any) -> str:
+    """SHA-256 of the canonical knowledge state: a run's (`knowledge_state(r)`) or a map's (the map without its
+    research id, receipt reference and fingerprint), whatever its key or collection order."""
+    state = _sorted_sections(canonicalize(_parse(data)))
+    for key in _NOT_KNOWLEDGE_STATE:
+        state.pop(key, None)
+    return hashlib.sha256(canonical_json(state).encode("utf-8")).hexdigest()
+
+
+def export_knowledge_map(r: "RunResult") -> dict:
+    """The knowledge-map/2 of a finished run, in canonical form, fingerprinted."""
+    receipt = r.receipt or {}
+    if not receipt.get("research_id"):
+        raise KnowledgeMapError(["the run has no receipt: only a finished run can be exported"])
+    data = {**knowledge_state(r), "research_id": receipt["research_id"],
+            "receipt": canonicalize({k: receipt.get(k) for k in _RECEIPT_REF})}
     data["fingerprint"] = compute_fingerprints(data)
     problems = knowledge_map_problems(data, receipt)
     if problems:  # an export that its own validator refuses is a V1 defect: fail closed rather than hand it on
@@ -319,11 +339,11 @@ def json_schema() -> dict:
                                   "additionalProperties": False,
                                   "properties": {"min_independent_sources": {"type": "integer", "minimum": 1},
                                                  "min_confidence": {"type": "number", "minimum": 0, "maximum": 1}}},
-            "receipt": {"type": "object", "additionalProperties": False,
-                        "required": ["schema", "research_id", "contract_hash", "inputs_hash", "state_hash"],
+            "receipt": {"type": "object", "additionalProperties": False, "required": list(_RECEIPT_REF),
                         "properties": {"schema": {"const": RECEIPT_SCHEMA},
                                        "research_id": {"type": "string", "pattern": _RESEARCH_ID.pattern},
-                                       "contract_hash": hex64, "inputs_hash": hex64, "state_hash": hex64}},
+                                       "contract_hash": hex64, "inputs_hash": hex64, "state_hash": hex64,
+                                       "knowledge_state_hash": hex64}},
             **{key: entity(key) for key in SECTIONS},
             "lineage": {"type": "array", "items": {"type": "object", "additionalProperties": False,
                                                    "required": ["source", "derived_from", "relation", "detail"],
@@ -444,7 +464,7 @@ def knowledge_map_problems(data: Any, receipt: Mapping | None = None) -> list[st
     ck.need(isinstance(m["limitations"], list) and bool(m["limitations"]) and
             all(isinstance(x, str) and x.strip() for x in m["limitations"]), f"{w}.limitations",
             "expected a non-empty list of text")
-    _check_receipt_ref(ck, m["receipt"], rid, f"{w}.receipt")
+    _check_receipt_ref(ck, m["receipt"], rid, m, f"{w}.receipt")
     _check_fingerprint(ck, m, f"{w}.fingerprint")
 
     index: dict[str, dict[str, dict]] = {}
@@ -463,19 +483,26 @@ def knowledge_map_problems(data: Any, receipt: Mapping | None = None) -> list[st
     if ck.problems:
         return ck.problems
     _check_entities(ck, m, index)
+    ref = m["receipt"]
+    if isinstance(ref, dict) and isinstance(ref.get("knowledge_state_hash"), str):
+        ck.need(ref["knowledge_state_hash"] == knowledge_state_hash(m), f"{w}.receipt.knowledge_state_hash",
+                "does not match the map's knowledge state")
     if receipt is not None:
         _check_against_receipt(ck, m, receipt)
     return ck.problems
 
 
-def _check_receipt_ref(ck: _Check, ref: Any, rid: Any, w: str) -> None:
+def _check_receipt_ref(ck: _Check, ref: Any, rid: Any, m: dict, w: str) -> None:
     if not ck.need(isinstance(ref, dict), w, "expected an object"):
         return
-    ck.need(set(ref) == {"schema", "research_id", "contract_hash", "inputs_hash", "state_hash"}, w,
-            f"unexpected keys {sorted(ref)}")
-    ck.need(ref.get("schema") == RECEIPT_SCHEMA, f"{w}.schema", f"expected {RECEIPT_SCHEMA!r}")
+    ck.need(set(ref) == set(_RECEIPT_REF), w, f"expected keys {sorted(_RECEIPT_REF)}, got {sorted(ref)}")
+    if ref.get("schema") in LEGACY_RECEIPT_SCHEMAS:
+        ck.problems.append(f"{w}.schema: {ref['schema']} predates the knowledge-state commitment; knowledge-map/2 "
+                           f"is bound only to {RECEIPT_SCHEMA} receipts")
+    else:
+        ck.need(ref.get("schema") == RECEIPT_SCHEMA, f"{w}.schema", f"expected {RECEIPT_SCHEMA!r}")
     ck.need(ref.get("research_id") == rid, f"{w}.research_id", "does not match the map's research_id")
-    for k in ("contract_hash", "inputs_hash", "state_hash"):
+    for k in ("contract_hash", "inputs_hash", "state_hash", "knowledge_state_hash"):
         ck.need(isinstance(ref.get(k), str) and bool(_HASH.match(ref[k])), f"{w}.{k}", "expected a SHA-256 hex digest")
 
 
@@ -736,8 +763,15 @@ def _check_against_receipt(ck: _Check, m: dict, receipt: Mapping) -> None:
     if not ck.need(isinstance(receipt, Mapping) and verify_receipt(dict(receipt)), w,
                    "the receipt given is not intact"):
         return
-    for k in ("schema", "research_id", "contract_hash", "inputs_hash", "state_hash"):
+    if receipt.get("schema") != RECEIPT_SCHEMA:
+        ck.problems.append(f"{w}: a {receipt.get('schema')} receipt carries no knowledge_state_hash, so it cannot "
+                           f"vouch for a knowledge-map/2; only {RECEIPT_SCHEMA} receipts can")
+        return
+    for k in _RECEIPT_REF:
         ck.need(m["receipt"].get(k) == receipt.get(k), f"{w}.{k}", "does not match the receipt")
+    # The authoritative commitment: the receipt's hash of the complete knowledge state, recomputed from this map.
+    ck.need(knowledge_state_hash(m) == receipt.get("knowledge_state_hash"), "knowledge_map",
+            "its knowledge state is not the state the receipt committed to")
     ck.need(m["research_id"] == receipt.get("research_id"), "knowledge_map.research_id",
             "is not the research id of the receipt: this is another run's map")
     ck.need(m["objective"] == receipt.get("objective"), "knowledge_map.objective", "does not match the receipt")

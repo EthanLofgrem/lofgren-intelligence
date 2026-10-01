@@ -644,7 +644,8 @@ class DiscoveryContext:
     @property
     def receipt(self) -> Mapping | None:
         """/2 only: the research receipt the map was matched against (schema, research id, contract, inputs and
-        state hashes), frozen. None for /1, which is bound to no receipt."""
+        state hashes, and knowledge_state_hash, its commitment to the whole exported state), frozen. None for /1,
+        which is bound to no receipt."""
         return self._receipt
 
     @property

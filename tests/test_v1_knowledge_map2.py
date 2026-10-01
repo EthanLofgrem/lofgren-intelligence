@@ -28,6 +28,7 @@ from lofgren_intelligence.kernel.knowledge_map import (
     export_knowledge_map,
     json_schema,
     knowledge_map_problems,
+    knowledge_state_hash,
     validate_knowledge_map,
 )
 
@@ -54,7 +55,9 @@ def sensor_run(path: Path):
 
 
 def refingerprint(m: dict) -> dict:
-    """What an attacker who knows the algorithm would do after editing a map."""
+    """What an attacker who knows the algorithms would do after editing a map: recompute everything the map
+    computes about itself. Only the receipt it was issued with still disagrees."""
+    m["receipt"]["knowledge_state_hash"] = knowledge_state_hash(m)
     m["fingerprint"] = compute_fingerprints(m)
     return m
 
