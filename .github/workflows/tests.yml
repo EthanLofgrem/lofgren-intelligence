@@ -15,8 +15,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: python -m pip install .
       - name: Run tests
         run: python -m unittest discover -s tests -t . -v
+      - name: Installed-package smoke test
+        run: |
+          python -c "import lofgren_intelligence; from lofgren_intelligence.discovery import DiscoveryContext"
+          lofgren --help > /dev/null
       - name: CLI smoke test
         run: |
           python -m lofgren_intelligence estimate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources

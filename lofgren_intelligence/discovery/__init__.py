@@ -39,6 +39,7 @@ from .errors import (
     UnsafeName,
     UnsupportedAlgorithm,
 )
+from .context import DiscoveryContext, ResolvedReference
 from .types import (
     ALL_TYPES,
     SCHEMA_VERSION,
