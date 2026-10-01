@@ -1,0 +1,6 @@
+timestamp,sensor_id,metric,value,unit,lat,lon
+2026-09-01T00:00:00Z,soil-north,soil_moisture,31.5,%,33.4484,-112.0740
+2026-09-08T00:00:00Z,soil-north,soil_moisture,28.0,%,33.4484,-112.0740
+2026-09-15T00:00:00Z,soil-north,soil_moisture,24.2,%,33.4484,-112.0740
+2026-09-22T00:00:00Z,soil-north,soil_moisture,21.9,%,33.4484,-112.0740
+2026-09-29T00:00:00Z,soil-north,soil_moisture,19.4,%,33.4484,-112.0740
