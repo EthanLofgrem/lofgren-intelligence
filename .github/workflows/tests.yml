@@ -40,3 +40,8 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-env/bin/python" -c "import lofgren_intelligence, lofgren_intelligence.discovery.context, lofgren_intelligence.discovery.schemas; print(lofgren_intelligence.__file__)"
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify
+      - name: V1 -> V2 boundary certification
+        run: |
+          python -m lofgren_intelligence certify-boundary
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/lofgren" certify-boundary

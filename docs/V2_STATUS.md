@@ -57,6 +57,18 @@ evidence state, because `knowledge-map/1` does not carry that hash.
 - Malformed values (wrong types, NaN or Infinity, impossible dates, ids of the wrong kind, statuses in the wrong
   section) fail closed.
 
+## V1 -> V2 boundary certification
+
+`lofgren certify-boundary` runs executable scenarios for the eleven code terms of the step-4 gate (identity, graph
+integrity, question isolation, synthesis, knowledge-map/2, receipt commitment, provenance, DiscoveryContext/2,
+adversarial cases, V1 certification). `scripts/boundary_gate.py --sha <commit>`, run in a fresh clone of that commit
+after CI, adds the process terms (full suite in both encodings, package gate and CI from GitHub Actions, clean tree,
+exact SHA) and is the only place that prints `V1ReadyForV2Step4`. Unknown is false.
+
+Current result: FALSE. Pinned defect V1-FUTURE-DATED-EVIDENCE: evidence observed after the verification time is
+scored as the freshest possible (its age is clamped to zero) and can verify a claim. Fixing it changes how V1
+weighs dates, so it awaits an owner decision; no current certification run contains such evidence.
+
 ## Blockers
 
 ### V1 certification blocker: `knowledge-map/2`

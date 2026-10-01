@@ -97,6 +97,8 @@ STANDING_LIMITATIONS = (
     "The receipt's inputs_hash covers evidence content hashes but not source identity or URI: two runs can share "
     "an inputs_hash while their source and evidence ids differ. Compare the content fingerprint instead.",
     "Claim.question_ids is the authoritative question association; the legacy single question_id is not exported.",
+    "Lineage lists only the derivations V1 detected or sources declared. A source with no lineage entry is not "
+    "thereby independent; its independence group is exactly as V1 recorded it.",
     "A finding may use claims gathered for its own question and for the questions it directly declares in "
     "depends_on; claim_scopes records which question each claim came through. Dependencies are not transitive.",
     "The gap question's finding lists every open unknown of the run: it is the run's inventory of what is missing.",

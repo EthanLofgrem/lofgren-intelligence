@@ -127,6 +127,16 @@ def cmd_certify(args: argparse.Namespace) -> int:
     return 0 if cert["v1_ready"] else 1
 
 
+def cmd_certify_boundary(args: argparse.Namespace) -> int:
+    from .boundary_certification import render_boundary, run_boundary_certification
+
+    cert = run_boundary_certification()
+    print(render_boundary(cert))
+    if args.out:
+        Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
+    return 0 if cert["code_terms_certified"] else 1
+
+
 def cmd_passes(args: argparse.Namespace) -> int:
     if args.tle:
         tles = load_tles(args.tle)
@@ -225,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("certify", help="run the V1 certification suite (the gate before V2)")
     p.add_argument("--out", help="write the certification result as JSON")
     p.set_defaults(fn=cmd_certify)
+
+    p = sub.add_parser("certify-boundary", help="certify the V1 -> V2 boundary (code terms of the step-4 gate)")
+    p.add_argument("--out", help="write the boundary certification result as JSON")
+    p.set_defaults(fn=cmd_certify_boundary)
 
     sub.add_parser("satellites", help="list open-data imaging satellites").set_defaults(fn=cmd_satellites)
     sub.add_parser("mcp", help="run as an MCP server over stdio").set_defaults(fn=cmd_mcp)
