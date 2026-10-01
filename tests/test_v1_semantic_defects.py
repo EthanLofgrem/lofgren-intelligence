@@ -88,35 +88,36 @@ def graph_with_source() -> tuple[EvidenceGraph, Source]:
 
 
 class ClaimIdentityDefects(unittest.TestCase):
-    """Claim.id is make_id("CL", statement.lower().strip()): scope and structure play no part."""
+    """Under identity v1, Claim.id was make_id("CL", statement.lower().strip()), so scope and structure played no
+    part. Claim identity v2 fixed the five identity specs below; they are now regression tests."""
 
     def test_identical_proposition_keeps_one_identity(self):
         # Must survive the fix: the same proposition is the same claim.
         self.assertEqual(Claim(VACANCY, scope=PHOENIX_2026).id, Claim(VACANCY.upper(), scope=PHOENIX_2026).id)
 
-    @known_defect("CLAIM-ID-GEOGRAPHY")
+    # Fixed by claim identity v2 (was CLAIM-ID-GEOGRAPHY).
     def test_different_geography_is_a_different_proposition(self):
         a, b = Claim(VACANCY, scope=PHOENIX_2026), Claim(VACANCY, scope=TUCSON_2026)
         self.assertNotEqual(a.id, b.id, f"Phoenix and Tucson claims share id {a.id}")
 
-    @known_defect("CLAIM-ID-PERIOD")
+    # Fixed by claim identity v2 (was CLAIM-ID-PERIOD).
     def test_different_period_is_a_different_proposition(self):
         a, b = Claim(VACANCY, scope=PHOENIX_2026), Claim(VACANCY, scope=PHOENIX_2024)
         self.assertNotEqual(a.id, b.id, f"2026 and 2024 claims share id {a.id}")
 
-    @known_defect("CLAIM-ID-VALUE")
+    # Fixed by claim identity v2 (was CLAIM-ID-VALUE).
     def test_different_structured_value_is_a_different_proposition(self):
         a = Claim(VACANCY, value=11.0, unit="%", scope=PHOENIX_2026)
         b = Claim(VACANCY, value=14.0, unit="%", scope=PHOENIX_2026)
         self.assertNotEqual(a.id, b.id, f"value 11 and value 14 share id {a.id}")
 
-    @known_defect("CLAIM-ID-UNIT")
+    # Fixed by claim identity v2 (was CLAIM-ID-UNIT).
     def test_different_structured_unit_is_a_different_proposition(self):
         a = Claim(VACANCY, value=11.0, unit="%", scope=PHOENIX_2026)
         b = Claim(VACANCY, value=11.0, unit="points", scope=PHOENIX_2026)
         self.assertNotEqual(a.id, b.id, f"units % and points share id {a.id}")
 
-    @known_defect("CLAIM-ID-SUBJECT")
+    # Fixed by claim identity v2 (was CLAIM-ID-SUBJECT).
     def test_different_structured_subject_is_a_different_proposition(self):
         a = Claim(VACANCY, subject="vacancy:phoenix-industrial", scope=PHOENIX_2026)
         b = Claim(VACANCY, subject="vacancy:phoenix-flex", scope=PHOENIX_2026)
@@ -138,16 +139,29 @@ class ClaimIdentityDefects(unittest.TestCase):
 
 
 class GraphIntegrityDefects(unittest.TestCase):
-    @known_defect("GRAPH-FIRST-WINS")
-    def test_conflicting_claim_is_not_silently_dropped(self):
+    # Was GRAPH-FIRST-WINS. Identity v2 gives the Phoenix and Tucson claims different ids, so this scenario no
+    # longer collides; first-wins itself remains for claims with the same identity (see the spec below).
+    def test_claims_with_different_scope_are_both_kept(self):
         g, _ = graph_with_source()
         first = g.add_claim(Claim(VACANCY, scope=PHOENIX_2026))
+        second = g.add_claim(Claim(VACANCY, scope=TUCSON_2026))
+        self.assertIsNot(first, second)
+        self.assertEqual(sorted(c.scope.geography for c in g.claims.values()), ["Phoenix", "Tucson"])
+
+    @known_defect("GRAPH-FIRST-WINS-SAME-PROPOSITION")
+    def test_hypothesis_never_becomes_an_existing_verified_claim(self):
+        # add_claim returns the first claim with an id. A hypothesis with the same proposition as a verified V1
+        # claim is therefore handed back as that verified, extracted claim.
+        from lofgren_intelligence.discovery import Hypothesis, add_hypothesis
+
+        g, _ = graph_with_source()
+        verified = g.add_claim(Claim(VACANCY, scope=PHOENIX_2026, status=ClaimStatus.VERIFIED, confidence=0.9))
         try:
-            second = g.add_claim(Claim(VACANCY, scope=TUCSON_2026))
-        except (ValueError, KeyError, TypeError):
+            hyp = add_hypothesis(g, Hypothesis(VACANCY, scope=dataclasses.asdict(PHOENIX_2026)))
+        except (ValueError, KeyError, TypeError, PermissionError):
             return  # a typed refusal also satisfies the requirement
-        kept = sorted(c.scope.geography for c in g.claims.values())
-        self.assertIn("Tucson", kept, f"add_claim returned the Phoenix claim ({second is first}) and kept only {kept}")
+        self.assertFalse(hyp is verified or hyp.status == ClaimStatus.VERIFIED,
+                         f"add_hypothesis returned the existing {hyp.origin.value} claim with status {hyp.status.value}")
 
     @known_defect("GRAPH-UNKNOWN-RELATION")
     def test_unknown_relation_fails_closed(self):

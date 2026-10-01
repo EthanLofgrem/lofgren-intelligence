@@ -145,7 +145,9 @@ class EvidenceGraph:
             e = {**e, "location": Location(**loc) if loc else None}
             g.evidence[e["id"]] = Evidence(**e)
         for c in data.get("claims", []):
-            c = {**c, "origin": ClaimOrigin(c["origin"]), "status": ClaimStatus(c["status"])}
+            # A claim saved before identity versions existed was identified under version 1. Its stored id is
+            # kept and keeps that meaning; it is never recomputed under a newer rule.
+            c = {"identity_version": 1, **c, "origin": ClaimOrigin(c["origin"]), "status": ClaimStatus(c["status"])}
             g.claims[c["id"]] = Claim(**c)
         for c in data.get("contradictions", []):
             g.contradictions[c["id"]] = Contradiction(**c)

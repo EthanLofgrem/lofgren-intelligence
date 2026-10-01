@@ -10,9 +10,11 @@ into one blob of text.
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -165,6 +167,93 @@ _STOPWORDS = {
 }
 
 
+# ---- claim identity -------------------------------------------------------
+#
+# A claim id names a *proposition*: what the claim says. It is not the question that gathered the claim,
+# nor the evidence that currently supports or contradicts it; those are associations and observations.
+#
+# Version 1 (legacy): the normalized statement only. Kept so that ids in earlier receipts and saved graphs
+# keep their original meaning; they are never recomputed under version 2.
+#
+# Version 2: the canonical JSON of
+#     {"identity": "lofgren.claim-identity/2",
+#      "statement": statement, lowercased, whitespace collapsed,
+#      "subject": explicit subject key or null,
+#      "value": structured value as a float or null,
+#      "unit": structured unit or null,
+#      "scope": {"valid_from", "valid_to": ISO date/time text or null,
+#                "geography": lowercased, whitespace collapsed, or null,
+#                "lat", "lon": float or null}}
+# Only structure the claim already carries is used; nothing is parsed out of the statement text.
+
+CLAIM_IDENTITY_VERSIONS = (1, 2)
+CLAIM_IDENTITY_VERSION = 2
+CLAIM_IDENTITY_SCHEMA = "lofgren.claim-identity/2"
+
+
+class ClaimIdentityError(ValueError):
+    """A claim's identity cannot be computed from its fields (non-finite number, malformed date, unknown version)."""
+
+
+def _collapse(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _identity_number(value: Any, field_name: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ClaimIdentityError(f"claim {field_name} must be a number, got {type(value).__name__}")
+    if not math.isfinite(value):
+        raise ClaimIdentityError(f"claim {field_name} {value!r} is not finite")
+    return float(value)
+
+
+def _identity_time(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ClaimIdentityError(f"scope {field_name} must be ISO date text, got {type(value).__name__}")
+    try:
+        if len(value) == 10:
+            date.fromisoformat(value)
+        else:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ClaimIdentityError(f"scope {field_name} {value!r} is not a valid ISO date or time") from None
+    return value
+
+
+def claim_identity_key(claim: "Claim") -> dict[str, Any]:
+    """The version 2 identity of a claim's proposition, as plain JSON data."""
+    s = claim.scope
+    geography = _collapse(s.geography) if s.geography else ""
+    return {
+        "identity": CLAIM_IDENTITY_SCHEMA,
+        "statement": _collapse(claim.statement),
+        "subject": claim.subject.strip() or None,
+        "value": _identity_number(claim.value, "value"),
+        "unit": claim.unit.strip() or None,
+        "scope": {"valid_from": _identity_time(s.valid_from, "valid_from"),
+                  "valid_to": _identity_time(s.valid_to, "valid_to"),
+                  "geography": geography or None,
+                  "lat": _identity_number(s.lat, "latitude"),
+                  "lon": _identity_number(s.lon, "longitude")},
+    }
+
+
+def claim_id(claim: "Claim") -> str:
+    """The id of a claim under its declared identity version."""
+    if claim.identity_version == 1:
+        return make_id("CL", claim.statement.lower().strip())
+    if claim.identity_version == 2:
+        key = json.dumps(claim_identity_key(claim), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                         allow_nan=False)
+        return make_id("CL", key)
+    raise ClaimIdentityError(f"unsupported claim identity version {claim.identity_version!r}; "
+                             f"supported: {CLAIM_IDENTITY_VERSIONS}")
+
+
 def topic_tokens(text: str) -> list[str]:
     """Content words, lowercased, numbers and stopwords removed."""
     words = re.findall(r"[a-zA-Z][a-zA-Z\-]+", text.lower())
@@ -193,6 +282,7 @@ class Claim:
     sufficiency: str = ""  # name of the evidence policy applied
     issues: list[str] = field(default_factory=list)  # raised by the skeptic pass
     calculation_id: str | None = None  # when the value comes from a calculation
+    identity_version: int = CLAIM_IDENTITY_VERSION  # the rule that produced `id` (see claim_id)
     id: str = ""
 
     def __post_init__(self) -> None:
@@ -203,8 +293,11 @@ class Claim:
             self.scope = Scope(**self.scope)
         if not self.topic:
             self.topic = topic_tokens(self.statement)
+        if self.identity_version not in CLAIM_IDENTITY_VERSIONS or isinstance(self.identity_version, bool):
+            raise ClaimIdentityError(f"unsupported claim identity version {self.identity_version!r}; "
+                                     f"supported: {CLAIM_IDENTITY_VERSIONS}")
         if not self.id:
-            self.id = make_id("CL", self.statement.lower().strip())
+            self.id = claim_id(self)
 
 
 @dataclass
