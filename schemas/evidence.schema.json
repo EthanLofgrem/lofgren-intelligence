@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/evidence.schema.json",
+  "title": "Evidence",
+  "description": "Evidence(source_id: 'str', kind: 'EvidenceKind', content: 'str', data: 'dict[str, Any]' = <factory>, observed_at: 'str | None' = None, location: 'Location | None' = None, valid_from: 'str | None' = None, valid_to: 'str | None' = None, transformations: 'list[str]' = <factory>, content_hash: 'str' = '', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "source_id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "document",
+        "observation",
+        "measurement",
+        "image",
+        "dataset",
+        "time_series",
+        "calculation"
+      ]
+    },
+    "content": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object"
+    },
+    "observed_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "location": {
+      "anyOf": [
+        {
+          "$ref": "location.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "valid_from": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "valid_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "transformations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "content_hash": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_id",
+    "kind",
+    "content"
+  ]
+}

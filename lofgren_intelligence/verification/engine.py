@@ -20,15 +20,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..evidence.graph import EvidenceGraph
-from ..evidence.types import Claim, ClaimOrigin, ClaimStatus, Contradiction, topic_tokens
+from ..evidence.types import Calculation, Claim, ClaimOrigin, ClaimStatus, Contradiction, topic_tokens
 from ..models.provider import DOWN_WORDS, UP_WORDS, trend
 from .calibration import Calibrator
+from .policies import classify_claim, policy_for
 
 DIRECTNESS = {
     ClaimOrigin.OBSERVED: 1.0,
     ClaimOrigin.EXTRACTED: 0.8,
     ClaimOrigin.USER: 0.5,
     ClaimOrigin.INFERRED: 0.4,
+    ClaimOrigin.HYPOTHESIS: 0.2,
 }
 
 # Logistic weights: z = B0 + wQ*Q + wD*(D-1) + wT*T + wR*R - wK*K
@@ -131,17 +133,37 @@ class Verifier:
                 if groups_a and groups_a == groups_b:
                     continue  # same source family: not an independent check
                 rel, reason = relation(a, b)
+                if rel is None:
+                    continue
+                mismatch = scope_mismatch(a, b)
                 if rel == "supports":
+                    if mismatch:
+                        continue  # same subject, different period or place: not a confirmation
                     for e in b.supporting:
                         graph.link(e, a.id, "supports")
                     for e in a.supporting:
                         graph.link(e, b.id, "supports")
-                elif rel == "contradicts":
-                    graph.add_contradiction(Contradiction(a.id, b.id, reason))
-                    for e in b.supporting:
-                        graph.link(e, a.id, "contradicts")
-                    for e in a.supporting:
-                        graph.link(e, b.id, "contradicts")
+                    continue
+                cx = Contradiction(a.id, b.id, reason, resolution=resolution_for(a, b, reason))
+                if a.value is not None and b.value is not None and a.unit == b.unit:
+                    calc = graph.add_calculation(Calculation(
+                        name="relative difference", formula="|a - b| / max(|a|, |b|)",
+                        inputs=[{"name": "a", "value": a.value, "unit": a.unit,
+                                 "evidence_id": a.supporting[0] if a.supporting else None},
+                                {"name": "b", "value": b.value, "unit": b.unit,
+                                 "evidence_id": b.supporting[0] if b.supporting else None}],
+                        result=round(abs(a.value - b.value) / max(abs(a.value), abs(b.value), 1e-9), 4)))
+                    cx.reason += f" (relative difference {calc.result:.1%}, {calc.id})"
+                if mismatch:
+                    # Disagreement across different scopes is a lead, not a conflict.
+                    cx.kind, cx.scope_note, cx.severity = "scope_mismatch", mismatch, 0.3
+                    graph.add_contradiction(cx)
+                    continue
+                graph.add_contradiction(cx)
+                for e in b.supporting:
+                    graph.link(e, a.id, "contradicts")
+                for e in a.supporting:
+                    graph.link(e, b.id, "contradicts")
 
     def score(self, graph: EvidenceGraph, claim: Claim) -> ConfidenceFactors:
         sources = graph.sources_for_claim(claim.id, "supports")
@@ -162,21 +184,53 @@ class Verifier:
         return ConfidenceFactors(q, d, r, t, k, raw, self.calibrator.calibrate(raw))
 
     def status(self, claim: Claim, f: ConfidenceFactors, min_sources: int, min_conf: float) -> ClaimStatus:
+        pol = policy_for(claim.claim_type, min_sources, min_conf)
+        claim.sufficiency = pol.name
+        if claim.origin == ClaimOrigin.HYPOTHESIS:
+            claim.sufficiency = "hypothesis-never-verified"
+            return ClaimStatus.UNVERIFIED  # V2 hypotheses are never promoted to findings
         if f.independent_sources == 0:
             return ClaimStatus.INSUFFICIENT
         if f.contradicting_sources > 0:
             return ClaimStatus.CONTESTED
-        direct = claim.origin == ClaimOrigin.OBSERVED
-        if f.calibrated >= min_conf and (f.independent_sources >= min_sources or direct):
+        if pol.requires_observation and claim.origin != ClaimOrigin.OBSERVED:
+            meets = False
+        else:
+            meets = f.independent_sources >= pol.min_independent_sources
+        if f.calibrated >= pol.min_confidence and meets:
             return ClaimStatus.VERIFIED
         if f.calibrated >= 0.5:
             return ClaimStatus.PARTIALLY_VERIFIED
         return ClaimStatus.SUPPORTED
 
     def verify(self, graph: EvidenceGraph, min_sources: int = 2, min_conf: float = 0.7) -> None:
+        for claim in graph.claims.values():
+            claim.claim_type = classify_claim(claim)
         self.cross_check(graph)
         for claim in graph.claims.values():
             f = self.score(graph, claim)
             self.factors[claim.id] = f
             claim.confidence = round(f.calibrated, 3)
+            claim.confidence_method = "v1-heuristic+calibrated" if self.calibrator.calibrated else "v1-heuristic"
             claim.status = self.status(claim, f, min_sources, min_conf)
+
+
+def scope_mismatch(a: Claim, b: Claim) -> str:
+    """Why two claims about the same subject cover different ground ('' if they don't)."""
+    overlap = a.scope.overlaps_time(b.scope)
+    if overlap is False:
+        return (f"different periods: {a.scope.valid_from}..{a.scope.valid_to} vs "
+                f"{b.scope.valid_from}..{b.scope.valid_to}")
+    if a.scope.same_place(b.scope) is False:
+        return f"different places: {a.scope.geography} vs {b.scope.geography}"
+    return ""
+
+
+def resolution_for(a: Claim, b: Claim, reason: str) -> str:
+    period = a.scope.valid_from[:4] if a.scope.valid_from else "the period in question"
+    place = a.scope.geography or b.scope.geography or "the place in question"
+    if reason.startswith("values differ"):
+        return f"the primary figure for {place}, {period}: official statistics or the original filing"
+    if reason.startswith("opposite direction"):
+        return f"an independent time series for {place} covering {period}, or direct observation (imagery, permits)"
+    return f"primary documentation or direct observation of the disputed fact for {place}, {period}"

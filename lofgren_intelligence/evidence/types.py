@@ -52,6 +52,19 @@ class ClaimOrigin(str, Enum):
     OBSERVED = "observed"  # measured by a sensor or orbital computation
     INFERRED = "inferred"  # produced by a model; weakest standing
     USER = "user"  # asserted by the user; to be checked
+    # Produced by Discovery Intelligence (V2). A hypothesis is never evidence:
+    # the verifier refuses to mark it verified, whatever supports it.
+    HYPOTHESIS = "hypothesis"
+
+
+class ClaimType(str, Enum):
+    """What kind of statement a claim is. Each type has its own sufficiency policy."""
+
+    ATTRIBUTION = "attribution"  # "X said / reported Y": true if X said it
+    QUANTITATIVE = "quantitative"  # carries a number
+    TREND = "trend"  # direction of change
+    PHYSICAL = "physical"  # about the physical world, measurable directly
+    GENERAL = "general"
 
 
 class ClaimStatus(str, Enum):
@@ -71,6 +84,31 @@ class Location:
 
 
 @dataclass
+class Scope:
+    """Where and when a claim applies. Evidence from another time or place is
+    not automatically about the same fact."""
+
+    valid_from: str | None = None  # ISO date
+    valid_to: str | None = None  # ISO date
+    geography: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+
+    def overlaps_time(self, other: "Scope") -> bool | None:
+        """True/False when both have periods, None when unknown."""
+        if not (self.valid_from and other.valid_from):
+            return None
+        a0, a1 = self.valid_from, self.valid_to or self.valid_from
+        b0, b1 = other.valid_from, other.valid_to or other.valid_from
+        return a0 <= b1 and b0 <= a1
+
+    def same_place(self, other: "Scope") -> bool | None:
+        if self.geography and other.geography:
+            return self.geography.lower() == other.geography.lower()
+        return None
+
+
+@dataclass
 class Source:
     kind: SourceKind
     title: str
@@ -81,8 +119,11 @@ class Source:
     license: str = "unknown"
     quality: float = 0.5  # prior reliability of this source, 0..1
     # Sources sharing an independence group are not independent confirmations
-    # of each other (e.g. two articles quoting one press release).
+    # of each other (e.g. two articles quoting one press release). Lineage
+    # analysis may merge groups after collection (see evidence/lineage.py).
     independence_group: str = ""
+    # Provenance links: ids of sources this one copies, quotes or syndicates.
+    derived_from: list[str] = field(default_factory=list)
     id: str = ""
 
     def __post_init__(self) -> None:
@@ -104,12 +145,15 @@ class Evidence:
     valid_from: str | None = None
     valid_to: str | None = None
     transformations: list[str] = field(default_factory=list)
+    content_hash: str = ""
     id: str = ""
 
     def __post_init__(self) -> None:
         self.kind = EvidenceKind(self.kind)
         if isinstance(self.location, dict):
             self.location = Location(**self.location)
+        if not self.content_hash:
+            self.content_hash = hashlib.sha256(self.content.encode()).hexdigest()
         if not self.id:
             self.id = make_id("EV", self.source_id, self.content[:200], self.observed_at)
 
@@ -143,11 +187,20 @@ class Claim:
     # Exact subject key for computed observations (e.g. "passes:40697:33.448,-112.074").
     # Claims with a subject key only ever match claims with the same key.
     subject: str = ""
+    claim_type: ClaimType = ClaimType.GENERAL
+    scope: Scope = field(default_factory=Scope)
+    confidence_method: str = "v1-heuristic"
+    sufficiency: str = ""  # name of the evidence policy applied
+    issues: list[str] = field(default_factory=list)  # raised by the skeptic pass
+    calculation_id: str | None = None  # when the value comes from a calculation
     id: str = ""
 
     def __post_init__(self) -> None:
         self.origin = ClaimOrigin(self.origin)
         self.status = ClaimStatus(self.status)
+        self.claim_type = ClaimType(self.claim_type)
+        if isinstance(self.scope, dict):
+            self.scope = Scope(**self.scope)
         if not self.topic:
             self.topic = topic_tokens(self.statement)
         if not self.id:
@@ -159,12 +212,81 @@ class Contradiction:
     claim_a: str
     claim_b: str
     reason: str
+    # incompatible: both cannot be true in the same scope.
+    # scope_mismatch: they disagree but cover different times or places.
+    kind: str = "incompatible"
+    scope_note: str = ""
+    resolution: str = ""  # the evidence that would settle it
+    severity: float = 1.0  # 0..1, how much it matters to the objective
     id: str = ""
 
     def __post_init__(self) -> None:
         if not self.id:
             a, b = sorted([self.claim_a, self.claim_b])
             self.id = make_id("CX", a, b)
+
+
+@dataclass
+class Calculation:
+    """A derived number with its receipt: formula, inputs, units, result."""
+
+    name: str
+    formula: str
+    inputs: list[dict[str, Any]]  # {name, value, unit, evidence_id}
+    result: float
+    unit: str = ""
+    method: str = "deterministic"
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = make_id("CALC", self.name, self.formula, self.result)
+
+
+@dataclass
+class Unknown:
+    """A gap as executable work: what is missing and how it could be acquired."""
+
+    description: str
+    question_id: str | None = None
+    capability: str = ""
+    source_types: list[str] = field(default_factory=list)
+    expected_gain: float = 0.5  # 0..1 share of the question's uncertainty it would resolve
+    est_cost_usd: float = 0.0
+    needs_approval: bool = False
+    status: str = "open"
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = make_id("UNK", self.description, self.question_id, self.capability)
+
+
+@dataclass
+class Finding:
+    """The answer to one research question, built only from typed state."""
+
+    question_id: str
+    question: str
+    answer: str
+    claim_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    contradiction_ids: list[str] = field(default_factory=list)
+    unknown_ids: list[str] = field(default_factory=list)
+    scope: Scope = field(default_factory=Scope)
+    confidence: float = 0.0
+    confidence_status: str = "provisional"  # provisional | calibrated
+    confidence_method: str = "v1-heuristic"
+    affects: list[str] = field(default_factory=list)
+    next_best_evidence: str = ""
+    issues: list[str] = field(default_factory=list)
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.scope, dict):
+            self.scope = Scope(**self.scope)
+        if not self.id:
+            self.id = make_id("F", self.question_id)
 
 
 def to_dict(obj: Any) -> dict[str, Any]:

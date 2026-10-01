@@ -15,7 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..adapters.base import AdapterRegistry
-from ..intent.compiler import OutcomeContract
+from ..evidence.types import Unknown
+from ..intent.compiler import OutcomeContract, Question
 
 # Work units a single gather call costs, by capability.
 CAPABILITY_WORK_UNITS = {
@@ -26,6 +27,40 @@ CAPABILITY_WORK_UNITS = {
 }
 VALUE_FLOOR = 0.15  # below this expected value a task is not worth its cost
 
+# Where evidence for each capability could come from, if connected.
+CAPABILITY_SOURCES = {
+    "text": ["your documents", "web search", "public records and filings"],
+    "orbital_passes": ["public orbital elements (CelesTrak)"],
+    "imagery_catalog": ["open imagery catalogs (Sentinel-2, Landsat)", "licensed commercial imagery (paid)"],
+    "sensor": ["IoT sensors you own or are authorized to read"],
+}
+
+
+class DependencyCycle(ValueError):
+    pass
+
+
+def question_depths(questions: list[Question]) -> dict[str, int]:
+    """Depth of each question in the dependency graph (0 = no prerequisites)."""
+    by_id = {q.id: q for q in questions}
+    depth: dict[str, int] = {}
+    visiting: set[str] = set()
+
+    def visit(qid: str) -> int:
+        if qid in depth:
+            return depth[qid]
+        if qid in visiting:
+            raise DependencyCycle(f"research questions depend on each other in a cycle at {qid}")
+        visiting.add(qid)
+        deps = [d for d in by_id[qid].depends_on if d in by_id]
+        depth[qid] = 1 + max((visit(d) for d in deps), default=-1)
+        visiting.discard(qid)
+        return depth[qid]
+
+    for q in questions:
+        visit(q.id)
+    return depth
+
 
 @dataclass
 class GatherTask:
@@ -35,6 +70,7 @@ class GatherTask:
     adapter_id: str
     work_units: float
     weight: float
+    depth: int = 0
 
 
 @dataclass
@@ -57,6 +93,7 @@ class ResearchPlan:
 
 def plan_research(contract: OutcomeContract, registry: AdapterRegistry) -> ResearchPlan:
     plan = ResearchPlan()
+    depths = question_depths(contract.questions)
     for q in contract.questions:
         for cap in q.needs:
             adapters = registry.find(cap)
@@ -65,9 +102,34 @@ def plan_research(contract: OutcomeContract, registry: AdapterRegistry) -> Resea
                 continue
             for a in adapters:
                 plan.tasks.append(GatherTask(q.id, q.text, cap, a.id,
-                                             CAPABILITY_WORK_UNITS.get(cap, 1.0), q.weight))
-    plan.tasks.sort(key=lambda t: -(t.weight / t.work_units))
+                                             CAPABILITY_WORK_UNITS.get(cap, 1.0), q.weight, depths[q.id]))
+    # Prerequisites first; within a level, most value per unit of cost first.
+    plan.tasks.sort(key=lambda t: (t.depth, -(t.weight / t.work_units)))
     return plan
+
+
+def gap_unknowns(plan: ResearchPlan, contract: OutcomeContract, rate_usd_per_unit: float) -> list[Unknown]:
+    """Turn each missing capability into an acquisition plan."""
+    weights = {q.id: q.weight for q in contract.questions}
+    total = sum(weights.values()) or 1.0
+    by_cap: dict[str, list[Gap]] = {}
+    for g in plan.gaps:
+        by_cap.setdefault(g.capability, []).append(g)
+    out: list[Unknown] = []
+    for cap, gaps in by_cap.items():
+        n = len(gaps)
+        gain = min(1.0, sum(weights.get(g.question_id, 1.0) for g in gaps) / total)
+        sources = CAPABILITY_SOURCES.get(cap, [cap])
+        out.append(Unknown(
+            description=f"No connected source provides '{cap}' (needed by {n} question{'s' if n > 1 else ''})",
+            question_id=gaps[0].question_id if n == 1 else None,
+            capability=cap,
+            source_types=sources,
+            expected_gain=round(gain, 3),
+            est_cost_usd=round(CAPABILITY_WORK_UNITS.get(cap, 1.0) * n * rate_usd_per_unit, 4),
+            needs_approval=any("paid" in s for s in sources),
+        ))
+    return out
 
 
 class StoppingRule:

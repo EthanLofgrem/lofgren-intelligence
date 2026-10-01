@@ -20,6 +20,8 @@ from . import __version__, build_registry
 from .billing.pricing import PLANS, cheapest_plan, monthly_bill
 from .intent.compiler import compile_intent
 from .kernel.pipeline import estimate_run, run_investigation
+from .kernel.state import export_state
+from .verification.calibration import PredictionLog
 from .models.provider import default_provider
 from .orbital.catalog import IMAGING_SATELLITES, fetch_tles, load_tles
 from .orbital.propagate import PROPAGATOR, find_passes
@@ -31,6 +33,7 @@ def _add_sources(p: argparse.ArgumentParser) -> None:
     p.add_argument("objective", help="what you want to know, verify or accomplish")
     p.add_argument("--files", nargs="*", default=[], help="documents or folders to use as evidence")
     p.add_argument("--url", nargs="*", default=[], dest="urls", help="public web pages to read")
+    p.add_argument("--search", choices=["brave"], help="discover web pages with a search provider (needs BRAVE_API_KEY)")
     p.add_argument("--tle", help="file of orbital elements (TLE) for pass prediction")
     p.add_argument("--fetch-orbits", action="store_true", help="fetch current elements from CelesTrak")
     p.add_argument("--imagery", action="store_true", help="search open Sentinel-2 / Landsat catalogs")
@@ -48,7 +51,7 @@ def _setup(args: argparse.Namespace):
     contract = compile_intent(args.objective, max_spend_usd=args.max_spend, location=location)
     registry = build_registry(files=args.files, urls=args.urls, tle_path=args.tle, fetch_orbits=args.fetch_orbits,
                               imagery=args.imagery, sensor_csvs=args.sensors,
-                              sensors_authorized=args.sensors_authorized)
+                              sensors_authorized=args.sensors_authorized, search=args.search)
     return contract, registry
 
 
@@ -71,7 +74,9 @@ def cmd_estimate(args: argparse.Namespace) -> int:
 
 def cmd_investigate(args: argparse.Namespace) -> int:
     contract, registry = _setup(args)
-    result = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve)
+    log = PredictionLog(args.log) if args.log else None
+    result = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve,
+                               prediction_log=log)
     md = render_markdown(result)
     if args.out:
         Path(args.out).write_text(md)
@@ -79,9 +84,43 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     else:
         print(md)
     if args.json:
-        Path(args.json).write_text(json.dumps(render_json(result), indent=2))
-        print(f"evidence graph written to {args.json}", file=sys.stderr)
+        Path(args.json).write_text(json.dumps(render_json(result), indent=2, default=str))
+        print(f"full run written to {args.json}", file=sys.stderr)
+    if args.receipt:
+        Path(args.receipt).write_text(json.dumps(result.receipt, indent=2, default=str))
+        print(f"research receipt {result.receipt.get('research_id')} written to {args.receipt}", file=sys.stderr)
+    if args.state:
+        Path(args.state).write_text(json.dumps(export_state(result), indent=2, default=str))
+        print(f"knowledge map written to {args.state}", file=sys.stderr)
     return 0 if result.completed else 2
+
+
+def cmd_calibration(args: argparse.Namespace) -> int:
+    log = PredictionLog(args.log)
+    if args.claim:
+        n = log.resolve(args.claim, args.correct == "yes")
+        print(f"recorded outcome for {n} prediction(s) of {args.claim}")
+    summary = log.summary()
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_schemas(args: argparse.Namespace) -> int:
+    from .schemas import write_schemas
+
+    for p in write_schemas(args.out):
+        print(p)
+    return 0
+
+
+def cmd_certify(args: argparse.Namespace) -> int:
+    from .certification import render_certification, run_certification
+
+    cert = run_certification()
+    print(render_certification(cert))
+    if args.out:
+        Path(args.out).write_text(json.dumps(cert, indent=2, default=str))
+    return 0 if cert["v1_ready"] else 1
 
 
 def cmd_passes(args: argparse.Namespace) -> int:
@@ -144,7 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     _add_sources(p)
     p.add_argument("--approve", action="store_true", help="approve actions that need approval")
     p.add_argument("--out", help="write the Markdown report here")
-    p.add_argument("--json", help="write the full evidence graph as JSON here")
+    p.add_argument("--json", help="write the full run (findings, graph, ledger, receipt) as JSON here")
+    p.add_argument("--receipt", help="write the research receipt here")
+    p.add_argument("--state", help="write the V2 knowledge map here")
+    p.add_argument("--log", help="append stated confidences to this prediction log (JSONL)")
     p.set_defaults(fn=cmd_investigate)
 
     p = sub.add_parser("estimate", help="show the contract, plan and price without running")
@@ -164,6 +206,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--standard-units", type=float)
     p.add_argument("--heavy", type=int, default=0)
     p.set_defaults(fn=cmd_pricing)
+
+    p = sub.add_parser("calibration", help="record real outcomes and show calibration (Brier, reliability)")
+    p.add_argument("--log", required=True, help="prediction log written by investigate --log")
+    p.add_argument("--claim", help="claim id whose outcome is now known")
+    p.add_argument("--correct", choices=["yes", "no"], help="did the claim turn out true?")
+    p.set_defaults(fn=cmd_calibration)
+
+    p = sub.add_parser("schemas", help="write the evidence-protocol JSON schemas")
+    p.add_argument("--out", default="schemas")
+    p.set_defaults(fn=cmd_schemas)
+
+    p = sub.add_parser("certify", help="run the V1 certification suite (the gate before V2)")
+    p.add_argument("--out", help="write the certification result as JSON")
+    p.set_defaults(fn=cmd_certify)
 
     sub.add_parser("satellites", help="list open-data imaging satellites").set_defaults(fn=cmd_satellites)
     sub.add_parser("mcp", help="run as an MCP server over stdio").set_defaults(fn=cmd_mcp)

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .types import (
+    Calculation,
     Claim,
     ClaimOrigin,
     ClaimStatus,
@@ -40,6 +41,7 @@ class EvidenceGraph:
     evidence: dict[str, Evidence] = field(default_factory=dict)
     claims: dict[str, Claim] = field(default_factory=dict)
     contradictions: dict[str, Contradiction] = field(default_factory=dict)
+    calculations: dict[str, Calculation] = field(default_factory=dict)
     edges: list[Edge] = field(default_factory=list)
 
     # -- building ---------------------------------------------------------
@@ -77,6 +79,14 @@ class EvidenceGraph:
             self.contradictions[cx.id] = cx
             self._edge(cx.claim_a, cx.claim_b, "conflicts")
         return self.contradictions[cx.id]
+
+    def add_calculation(self, calc: Calculation) -> Calculation:
+        if calc.id not in self.calculations:
+            self.calculations[calc.id] = calc
+            for inp in calc.inputs:
+                if inp.get("evidence_id"):
+                    self._edge(calc.id, inp["evidence_id"], "derived_from")
+        return self.calculations[calc.id]
 
     def _edge(self, src: str, dst: str, relation: str) -> None:
         self.edges.append(Edge(src, dst, relation))
@@ -116,6 +126,7 @@ class EvidenceGraph:
             "evidence": [to_dict(e) for e in self.evidence.values()],
             "claims": [to_dict(c) for c in self.claims.values()],
             "contradictions": [to_dict(c) for c in self.contradictions.values()],
+            "calculations": [to_dict(c) for c in self.calculations.values()],
             "edges": [e.__dict__ for e in self.edges],
         }
 
@@ -133,6 +144,8 @@ class EvidenceGraph:
             g.claims[c["id"]] = Claim(**c)
         for c in data.get("contradictions", []):
             g.contradictions[c["id"]] = Contradiction(**c)
+        for c in data.get("calculations", []):
+            g.calculations[c["id"]] = Calculation(**c)
         g.edges = [Edge(**e) for e in data.get("edges", [])]
         return g
 

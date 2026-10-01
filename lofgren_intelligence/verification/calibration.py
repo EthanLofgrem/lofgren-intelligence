@@ -64,3 +64,77 @@ class Calibrator:
     def load(cls, path: str | Path) -> "Calibrator":
         data = json.loads(Path(path).read_text())
         return cls(data["bins"], data["prior_strength"], [(float(p), bool(o)) for p, o in data["records"]])
+
+
+def brier_score(records: list[tuple[float, bool]]) -> float | None:
+    """Mean squared error of stated confidence against what happened (0 is perfect)."""
+    if not records:
+        return None
+    return sum((p - float(ok)) ** 2 for p, ok in records) / len(records)
+
+
+def reliability_table(records: list[tuple[float, bool]], bins: int = 10) -> list[dict]:
+    """Stated confidence vs observed accuracy per bin: the data behind a reliability curve."""
+    rows = []
+    for b in range(bins):
+        lo, hi = b / bins, (b + 1) / bins
+        group = [(p, ok) for p, ok in records if lo <= p < hi or (b == bins - 1 and p == 1.0)]
+        if group:
+            rows.append({"bin": f"{lo:.1f}-{hi:.1f}", "count": len(group),
+                         "stated": round(sum(p for p, _ in group) / len(group), 3),
+                         "observed": round(sum(ok for _, ok in group) / len(group), 3)})
+    return rows
+
+
+class PredictionLog:
+    """Append-only JSONL log of every confidence the system states.
+
+    Each line: {claim_id, statement, confidence, raw, method, run_id, at, outcome}
+    `outcome` starts null and is filled when the claim is later checked against
+    reality (Outcome Intelligence, V5). Resolved lines feed the Calibrator.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def _read(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+
+    def append(self, entries: list[dict]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a") as fh:
+            for e in entries:
+                fh.write(json.dumps({**e, "outcome": e.get("outcome")}) + "\n")
+
+    def resolve(self, claim_id: str, correct: bool) -> int:
+        rows = self._read()
+        n = 0
+        for r in rows:
+            if r["claim_id"] == claim_id and r.get("outcome") is None:
+                r["outcome"] = bool(correct)
+                n += 1
+        self.path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return n
+
+    def resolved(self) -> list[tuple[float, bool]]:
+        return [(float(r["confidence"]), bool(r["outcome"])) for r in self._read() if r.get("outcome") is not None]
+
+    def pending(self) -> list[dict]:
+        return [r for r in self._read() if r.get("outcome") is None]
+
+    def calibrator(self) -> Calibrator:
+        """Fit on the raw (pre-calibration) scores, so calibration never compounds."""
+        cal = Calibrator()
+        for r in self._read():
+            if r.get("outcome") is not None:
+                cal.record(float(r.get("raw", r["confidence"])), bool(r["outcome"]))
+        return cal
+
+    def summary(self) -> dict:
+        res = self.resolved()
+        cal = self.calibrator()
+        return {"stated": len(self._read()), "resolved": len(res), "brier": brier_score(res),
+                "ece": cal.expected_calibration_error(), "reliability": reliability_table(res),
+                "calibrated": cal.calibrated}

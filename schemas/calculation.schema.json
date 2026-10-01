@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/calculation.schema.json",
+  "title": "Calculation",
+  "description": "A derived number with its receipt: formula, inputs, units, result.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "formula": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "result": {
+      "type": "number"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "method": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "formula",
+    "inputs",
+    "result"
+  ]
+}

@@ -21,3 +21,5 @@ jobs:
         run: |
           python -m lofgren_intelligence estimate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources
           python -m lofgren_intelligence investigate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources > /dev/null
+      - name: V1 certification gate
+        run: python -m lofgren_intelligence certify

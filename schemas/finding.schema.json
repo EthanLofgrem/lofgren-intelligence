@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/finding.schema.json",
+  "title": "Finding",
+  "description": "The answer to one research question, built only from typed state.",
+  "type": "object",
+  "properties": {
+    "question_id": {
+      "type": "string"
+    },
+    "question": {
+      "type": "string"
+    },
+    "answer": {
+      "type": "string"
+    },
+    "claim_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "contradiction_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknown_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope": {
+      "$ref": "scope.schema.json"
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "confidence_status": {
+      "type": "string"
+    },
+    "confidence_method": {
+      "type": "string"
+    },
+    "affects": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_best_evidence": {
+      "type": "string"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "question_id",
+    "question",
+    "answer"
+  ]
+}

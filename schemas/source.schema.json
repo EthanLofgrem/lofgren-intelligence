@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/source.schema.json",
+  "title": "Source",
+  "description": "Source(kind: 'SourceKind', title: 'str', uri: 'str' = '', publisher: 'str' = '', published_at: 'str | None' = None, retrieved_at: 'str' = <factory>, license: 'str' = 'unknown', quality: 'float' = 0.5, independence_group: 'str' = '', derived_from: 'list[str]' = <factory>, id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "web",
+        "document",
+        "user_file",
+        "dataset",
+        "orbital",
+        "imagery",
+        "sensor",
+        "model"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "uri": {
+      "type": "string"
+    },
+    "publisher": {
+      "type": "string"
+    },
+    "published_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retrieved_at": {
+      "type": "string"
+    },
+    "license": {
+      "type": "string"
+    },
+    "quality": {
+      "type": "number"
+    },
+    "independence_group": {
+      "type": "string"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "title"
+  ]
+}

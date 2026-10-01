@@ -17,15 +17,17 @@ from .adapters import (
     DocumentAdapter,
     ImageryCatalogAdapter,
     OrbitalPassAdapter,
+    SearchProvider,
     SensorAdapter,
     WebPageAdapter,
+    WebSearchAdapter,
 )
 from .intent import compile_intent
 from .kernel import RunResult, run_investigation
 from .models import default_provider
 from .report import render_json, render_markdown
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def build_registry(
@@ -37,8 +39,17 @@ def build_registry(
     imagery: bool = False,
     sensor_csvs: list[str | Path] | None = None,
     sensors_authorized: bool = False,
+    search: SearchProvider | str | None = None,
 ) -> AdapterRegistry:
     reg = AdapterRegistry()
+    if search:
+        if isinstance(search, str):
+            from .adapters import BraveSearchProvider
+
+            if search != "brave":
+                raise ValueError(f"unknown search provider '{search}'")
+            search = BraveSearchProvider()
+        reg.register(WebSearchAdapter(search))
     if files or texts:
         reg.register(DocumentAdapter(files, texts))
     if urls:
