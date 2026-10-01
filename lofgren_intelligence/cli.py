@@ -79,18 +79,18 @@ def cmd_investigate(args: argparse.Namespace) -> int:
                                prediction_log=log)
     md = render_markdown(result)
     if args.out:
-        Path(args.out).write_text(md)
+        Path(args.out).write_text(md, encoding="utf-8")
         print(f"report written to {args.out}", file=sys.stderr)
     else:
         print(md)
     if args.json:
-        Path(args.json).write_text(json.dumps(render_json(result), indent=2, default=str))
+        Path(args.json).write_text(json.dumps(render_json(result), indent=2, default=str), encoding="utf-8")
         print(f"full run written to {args.json}", file=sys.stderr)
     if args.receipt:
-        Path(args.receipt).write_text(json.dumps(result.receipt, indent=2, default=str))
+        Path(args.receipt).write_text(json.dumps(result.receipt, indent=2, default=str), encoding="utf-8")
         print(f"research receipt {result.receipt.get('research_id')} written to {args.receipt}", file=sys.stderr)
     if args.state:
-        Path(args.state).write_text(json.dumps(export_state(result), indent=2, default=str))
+        Path(args.state).write_text(json.dumps(export_state(result), indent=2, default=str), encoding="utf-8")
         print(f"knowledge map written to {args.state}", file=sys.stderr)
     return 0 if result.completed else 2
 
@@ -119,7 +119,7 @@ def cmd_certify(args: argparse.Namespace) -> int:
     cert = run_certification()
     print(render_certification(cert))
     if args.out:
-        Path(args.out).write_text(json.dumps(cert, indent=2, default=str))
+        Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
     return 0 if cert["v1_ready"] else 1
 
 
@@ -225,7 +225,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="run as an MCP server over stdio").set_defaults(fn=cmd_mcp)
 
     args = parser.parse_args(argv)
+    _utf8_output()
     return args.fn(args)
+
+
+def _utf8_output() -> None:
+    """Reports and certification use characters such as ≥ and ✓. Where stdout or stderr is not UTF-8
+    (a pipe on a Windows cp1252 locale, for example), switch it to UTF-8 so they print instead of crashing."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
 
 
 if __name__ == "__main__":

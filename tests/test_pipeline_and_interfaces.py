@@ -244,7 +244,7 @@ class CLITests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 code = cli_main(["investigate", OBJECTIVE, "--files", d, "--out", str(out)])
             self.assertEqual(code, 0)
-            self.assertIn("# Lofgren Intelligence report", out.read_text())
+            self.assertIn("# Lofgren Intelligence report", out.read_text(encoding="utf-8"))
 
     def test_build_registry(self):
         reg = build_registry(texts=TEXTS, imagery=True)
