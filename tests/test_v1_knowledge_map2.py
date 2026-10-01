@@ -175,7 +175,7 @@ class Export(unittest.TestCase):
         self.assertRefused(m, "altered after export")
         # Re-fingerprinted, it is a well-formed map, but not the map of this run's receipt.
         self.assertEqual(knowledge_map_problems(refingerprint(m)), [])
-        self.assertRefused(m, "findings differ from the receipt", self.result.receipt)
+        self.assertRefused(m, "claim_ids differ from the receipt", self.result.receipt)
 
     def test_tampering_changes_the_fingerprint(self):
         edits = {
@@ -230,6 +230,39 @@ class Export(unittest.TestCase):
         self.assertRefused(m, "another run's map", self.result.receipt)
         m["research_id"] = m["receipt"]["research_id"] = "RR-not-an-id"
         self.assertRefused(refingerprint(m), "must be a V1 research id")
+
+    # A re-fingerprinted edit is well formed, but every field the receipt records must still match it.
+    def test_receipt_binds_every_field_it_records(self):
+        edits = {
+            "question dependency": (lambda m: next(q for q in m["questions"] if q["depends_on"])["depends_on"].clear(),
+                                    "depends_on differ"),
+            "question text": (lambda m: m["questions"][0].update(text="Another question?"), "text differ"),
+            "unknown status": (lambda m: m["unknowns"][0].update(status="closed"), "status differ"),
+            "source title": (lambda m: m["sources"][0].update(title="Another title"), "title differ"),
+            "evidence time": (lambda m: m["evidence"][0].update(observed_at="2020-01-01"), "observed_at differ"),
+            "claim issues": (lambda m: m["claims"][0]["issues"].append("added"), "issues differ"),
+            "confidence status": (lambda m: m["claims"][0].update(confidence_status="calibrated"),
+                                  "does not match the receipt's verifier"),
+            "evidence standard": (lambda m: m["evidence_standard"].update(min_confidence=0.1),
+                                  "does not match the receipt's contract"),
+            "lineage": (lambda m: m["lineage"].append({"source": m["sources"][0]["id"],
+                                                       "derived_from": m["sources"][1]["id"],
+                                                       "relation": "declared", "detail": ""}), "lineage"),
+        }
+        for name, (edit, fragment) in edits.items():
+            with self.subTest(edit=name):
+                m = self.m()
+                edit(m)
+                self.assertRefused(refingerprint(m), fragment, self.result.receipt)
+
+    def test_claim_fields_are_bound_through_claim_identity(self):
+        for field_name, value in (("value", 99.0), ("unit", "furlongs"), ("polarity", -1), ("subject", "other"),
+                                  ("statement", "Something else (fictional).")):
+            with self.subTest(field=field_name):
+                m = self.m()
+                self.assertNotEqual(m["claims"][0][field_name], value)
+                m["claims"][0][field_name] = value
+                self.assertRefused(refingerprint(m), "does not match the claim it describes")
 
     def test_another_runs_receipt_is_refused(self):
         other = sensor_run(Path(tempfile.mkdtemp()) / "s.csv")

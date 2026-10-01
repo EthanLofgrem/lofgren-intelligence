@@ -2,7 +2,8 @@
 
 V2 turns verified V1 evidence and explicitly represented uncertainty into
 possibilities that can be analysed, challenged, simulated and optimized. It
-reads V1 state only through `kernel.state.export_state`.
+reads V1 state only through an exported knowledge map: `kernel.knowledge_map.export_knowledge_map`
+(knowledge-map/2, with its receipt) or, degraded, `kernel.state.export_state` (knowledge-map/1).
 
 The invariant enforced in code, from the first V2 commit:
 
@@ -41,7 +42,14 @@ from .errors import (
     UnsafeName,
     UnsupportedAlgorithm,
 )
-from .context import DiscoveryContext, ResolvedReference, knowledge_map_fingerprint
+from .context import (
+    AssuranceLevel,
+    ContextAssurance,
+    DiscoveryContext,
+    KnowledgeMapRefused,
+    ResolvedReference,
+    knowledge_map_fingerprint,
+)
 from .types import (
     ALL_TYPES,
     SCHEMA_VERSION,

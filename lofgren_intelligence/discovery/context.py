@@ -1,7 +1,23 @@
 """Immutable V1 knowledge-map boundary for Discovery Intelligence.
 
-V2 reads V1 only through `kernel.state.export_state` (schema `lofgren.knowledge-map/1`). A
-`DiscoveryContext` holds exactly one such map: validated, canonicalized, fingerprinted and frozen.
+V2 reads V1 only through an exported knowledge map. A `DiscoveryContext` holds exactly one map: validated,
+canonicalized, fingerprinted and frozen. Two schemas are accepted, at two assurance levels (`assurance`):
+
+    lofgren.knowledge-map/2  validated_v2  (`kernel.knowledge_map.export_knowledge_map`)
+        Accepted only together with the research receipt it was exported from. The map is checked by
+        `kernel.knowledge_map.validate_knowledge_map` (the same rules V1 applies to its own export): fingerprints
+        recomputed, references, dates, numbers, question dependencies and finding derivations checked, and every
+        hash and id matched against the intact receipt. Its records are kept as exported, never reshaped into
+        /1 sections: CL, EV, SRC, CX, UNK, CALC, F and Q ids all resolve; evidence names its source, and lineage,
+        Claim.question_ids, claim assessments and finding derivations stay inspectable. `knowledge_map_fingerprint`
+        is the map's own KM2- fingerprint and `content_fingerprint` its KM2C- fingerprint; the receipt's hashes
+        are exposed as `receipt`. Unverified claims (including V1 hypotheses) resolve for inspection but cannot be
+        cited by a V2 object.
+    lofgren.knowledge-map/1  degraded_v1  (`kernel.state.export_state`)
+        Backward compatibility, unchanged. Not bound to any receipt; evidence and sources are not exported, so EV
+        ids are attachments only and SRC ids never resolve. Its fingerprint is the legacy KMF- (below).
+
+Everything from here to the end of "Compatibility rule for knowledge-map/1" describes the /1 path.
 
 Reference integrity
     `resolve` / `resolve_many` look up V1 ids (CL, CX, UNK, CALC, F) in this map only. A dangling
@@ -35,10 +51,16 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, fields
+from enum import Enum
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
 
 from ..evidence.types import Scope
+from ..kernel.knowledge_map import FINGERPRINT_ALGORITHM as MAP2_FINGERPRINT_ALGORITHM
+from ..kernel.knowledge_map import MAP_SCHEMA as MAP2_SCHEMA
+from ..kernel.knowledge_map import SECTIONS as MAP2_SECTIONS
+from ..kernel.knowledge_map import KnowledgeMapError, validate_knowledge_map
+from ..kernel.knowledge_map import canonical_json as _map2_json
 from .errors import (
     ContextMismatch,
     DuplicateId,
@@ -111,8 +133,51 @@ OPTIONAL_DEFAULTS = {
 }
 CLAIM_STATUSES = {"known": {"verified"}, "uncertain": {"partially_verified", "supported", "insufficient_evidence"},
                   "contradicted": {"contested"}}
+_STATUS_CATEGORY = {status: category for category, statuses in CLAIM_STATUSES.items() for status in statuses}
 V1_KIND_NAMES = {"CL": "claim", "CX": "contradiction", "UNK": "unknown", "CALC": "calculation", "F": "finding",
-                 "Q": "question", "EV": "evidence"}
+                 "Q": "question", "EV": "evidence", "SRC": "source"}
+# knowledge-map/2: every V1 kind resolves, from the section it is exported in.
+_REFERENCE_SECTIONS_V2 = {"CL": "claims", "EV": "evidence", "SRC": "sources", "CX": "contradictions",
+                          "UNK": "unknowns", "CALC": "calculations", "F": "findings", "Q": "questions"}
+
+
+class AssuranceLevel(str, Enum):
+    VALIDATED_V2 = "validated_v2"  # knowledge-map/2, validated and bound to its intact research receipt
+    DEGRADED_V1 = "degraded_v1"  # knowledge-map/1 compatibility: no receipt binding, no evidence or sources
+
+
+@dataclass(frozen=True)
+class ContextAssurance:
+    """What a context can vouch for about the V1 state it holds. Stated, never inferred."""
+
+    level: AssuranceLevel
+    schema: str
+    receipt_bound: bool  # the map was matched against an intact V1 research receipt
+    provenance_inspectable: bool  # evidence and source records (and lineage) are in the map
+    fingerprint_algorithm: str
+    statement: str
+
+
+_ASSURANCE_V1 = ContextAssurance(
+    AssuranceLevel.DEGRADED_V1, SUPPORTED_SCHEMA, False, False, FINGERPRINT_ALGORITHM,
+    "knowledge-map/1 compatibility. The map is validated and fingerprinted (KMF) but bound to no research receipt: "
+    "nothing here proves it is the state of the V1 run it names. Evidence and sources are not exported; EV ids are "
+    "attachments only.")
+_ASSURANCE_V2 = ContextAssurance(
+    AssuranceLevel.VALIDATED_V2, MAP2_SCHEMA, True, True, MAP2_FINGERPRINT_ALGORITHM,
+    "knowledge-map/2 validated by V1's own rules and matched against its intact research receipt (research id, "
+    "contract, inputs and state hashes, claims, evidence, sources, contradictions and findings). The map's limitations "
+    "still apply.")
+
+
+class KnowledgeMapRefused(MalformedInput):
+    """A knowledge-map/2 that V1's validator refuses, or that is not the map of the receipt given with it."""
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = list(problems)
+        shown = "; ".join(self.problems[:5]) + (f"; and {len(self.problems) - 5} more" if len(self.problems) > 5
+                                                else "")
+        super().__init__(f"knowledge-map/2 refused: {shown}", "knowledge_map")
 
 STANDING_LIMITATIONS = (
     "knowledge_map_fingerprint identifies the exported knowledge-map/1 consumed by this run; it is not V1's "
@@ -427,12 +492,70 @@ class DiscoveryContext:
     Its fingerprint is not the V1 receipt state_hash.
     """
 
-    def __init__(self, knowledge_map: Any) -> None:
+    def __init__(self, knowledge_map: Any, receipt: Mapping | None = None) -> None:
+        data = _parse(knowledge_map)
+        if isinstance(data, Mapping) and data.get("schema") == MAP2_SCHEMA:
+            self._init_v2(data, receipt)
+            return
+        if receipt is not None:
+            raise MalformedInput("knowledge-map/1 cannot be bound to a research receipt: it carries none of the "
+                                 "receipt's hashes. Export knowledge-map/2 for a receipt-bound context.",
+                                 "DiscoveryContext.receipt")
+        self._init_v1(data)
+
+    def _init_v2(self, data: Mapping, receipt: Mapping | None) -> None:
+        if receipt is None:
+            raise MalformedInput("knowledge-map/2 is accepted only with the research receipt it was exported from",
+                                 "DiscoveryContext.receipt")
+        if not isinstance(receipt, Mapping):
+            raise MalformedInput(f"a research receipt is an object, got {type(receipt).__name__}",
+                                 "DiscoveryContext.receipt")
+        canonicalize(data)  # typed refusals for NaN/Infinity, depth and unsafe integers, as for /1
+        try:
+            canonical = validate_knowledge_map(copy.deepcopy(dict(data)), copy.deepcopy(dict(receipt)))
+        except KnowledgeMapError as exc:
+            raise KnowledgeMapRefused(exc.problems) from None
+        text = _map2_json(canonical)
+        if len(text.encode("utf-8")) > MAX_MAP_BYTES:
+            raise InputTooLarge(f"knowledge map larger than {MAX_MAP_BYTES} bytes", "knowledge_map")
+        put = object.__setattr__
+        put(self, "_version", 2)
+        put(self, "_assurance", _ASSURANCE_V2)
+        put(self, "_canonical_json", text)
+        put(self, "_fingerprint", canonical["fingerprint"]["map"])
+        put(self, "_content_fingerprint", canonical["fingerprint"]["content"])
+        put(self, "_receipt", _freeze(canonical["receipt"]))
+        put(self, "_map", _freeze(canonical))
+        put(self, "_objects", {})
+        views: dict[str, tuple] = {}
+        index: dict[str, tuple[str, Mapping]] = {}
+        for key in MAP2_SECTIONS:
+            views[key] = self._map[key]
+            for e in views[key]:
+                index[e["id"]] = (key, e)
+        categories: dict[str, list] = {c: [] for c in CLAIM_STATUSES}
+        evidence: dict[str, set[str]] = {}
+        for c in views["claims"]:
+            if c["status"] in _STATUS_CATEGORY:
+                categories[_STATUS_CATEGORY[c["status"]]].append(c)
+            for ev in c["supporting"]:
+                evidence.setdefault(ev, set()).add(c["id"])
+        put(self, "_views", MappingProxyType(views))
+        put(self, "_categories", MappingProxyType({k: tuple(v) for k, v in categories.items()}))
+        put(self, "_index", MappingProxyType(index))
+        put(self, "_evidence_claims", MappingProxyType({k: tuple(sorted(v)) for k, v in evidence.items()}))
+        put(self, "_limitations", tuple(canonical["limitations"]))
+
+    def _init_v1(self, knowledge_map: Any) -> None:
         canonical = canonical_map(knowledge_map)
         text = canonical_json(canonical)
         if len(text.encode("utf-8")) > MAX_MAP_BYTES:
             raise InputTooLarge(f"knowledge map larger than {MAX_MAP_BYTES} bytes", "knowledge_map")
         put = object.__setattr__
+        put(self, "_version", 1)
+        put(self, "_assurance", _ASSURANCE_V1)
+        put(self, "_content_fingerprint", None)
+        put(self, "_receipt", None)
         put(self, "_canonical_json", text)
         put(self, "_fingerprint", FINGERPRINT_PREFIX + hashlib.sha256(text.encode("utf-8")).hexdigest())
         put(self, "_map", _freeze(canonical))
@@ -462,6 +585,7 @@ class DiscoveryContext:
                         evidence.setdefault(ev, set()).add(e["id"])
             views[key] = tuple(rows)
         put(self, "_views", MappingProxyType(views))
+        put(self, "_categories", MappingProxyType({k: views[k] for k in CLAIM_STATUSES}))
         put(self, "_index", MappingProxyType(index))
         put(self, "_evidence_claims", MappingProxyType({k: tuple(sorted(v)) for k, v in evidence.items()}))
         top_extra = sorted(set(canonical) - _TOP_KNOWN)
@@ -498,12 +622,34 @@ class DiscoveryContext:
         return self._map["mode"]
 
     @property
+    def version(self) -> int:
+        """1 or 2: the knowledge-map schema this context holds."""
+        return self._version
+
+    @property
+    def assurance(self) -> ContextAssurance:
+        return self._assurance
+
+    @property
     def knowledge_map_fingerprint(self) -> str:
+        """The fingerprint of the map this context holds: KMF- for /1 (computed here), KM2- for /2 (the map's own,
+        recomputed and checked). Neither is the receipt's state_hash or inputs_hash."""
         return self._fingerprint
 
     @property
+    def content_fingerprint(self) -> str | None:
+        """/2 only: the map's KM2C- fingerprint, reproducible across reruns of identical inputs. None for /1."""
+        return self._content_fingerprint
+
+    @property
+    def receipt(self) -> Mapping | None:
+        """/2 only: the research receipt the map was matched against (schema, research id, contract, inputs and
+        state hashes), frozen. None for /1, which is bound to no receipt."""
+        return self._receipt
+
+    @property
     def fingerprint_algorithm(self) -> str:
-        return FINGERPRINT_ALGORITHM
+        return self._assurance.fingerprint_algorithm
 
     @property
     def knowledge_map(self) -> Mapping:
@@ -523,15 +669,57 @@ class DiscoveryContext:
         return self._limitations
 
     def claims(self, category: str) -> tuple[Mapping, ...]:
-        """Claims in one section, with documented defaults applied for unexported optional fields."""
+        """Claims by standing: known (verified), uncertain (partially verified, supported, insufficient) or
+        contradicted (contested). Under /1 these are the exported sections, with documented defaults applied; under
+        /2 they are a view over the full claim records, which stay as exported (see `entities("claims")`, which
+        also holds unverified claims)."""
         if category not in CLAIM_STATUSES:
             raise MalformedInput(f"category is one of {sorted(CLAIM_STATUSES)}", "DiscoveryContext.claims")
-        return self._views[category]
+        return self._categories[category]
 
     def entities(self, key: str) -> tuple[Mapping, ...]:
-        if key not in SECTION_PREFIXES:
-            raise MalformedInput(f"collection is one of {sorted(SECTION_PREFIXES)}", "DiscoveryContext.entities")
+        keys = SECTION_PREFIXES if self._version == 1 else MAP2_SECTIONS
+        if key not in keys:
+            raise MalformedInput(f"collection is one of {sorted(keys)} in knowledge-map/{self._version}",
+                                 "DiscoveryContext.entities")
         return self._views[key]
+
+    # -- provenance (knowledge-map/2 only) ---------------------------------------
+    def _need_v2(self, what: str) -> None:
+        if self._version != 2:
+            raise UnknownReference(f"knowledge-map/1 does not export {what}; build the context from "
+                                   "knowledge-map/2", f"DiscoveryContext.{what}")
+
+    def evidence(self, evidence_id: str) -> Mapping:
+        """The exported evidence record (source, content hash, times, location, transformations)."""
+        return self._record(evidence_id, "EV", "evidence")
+
+    def source(self, source_id: str) -> Mapping:
+        """The exported source record (kind, title, URI, publisher, dates, licence, quality, independence group)."""
+        return self._record(source_id, "SRC", "sources")
+
+    def source_of(self, evidence_id: str) -> Mapping:
+        return self.source(self.evidence(evidence_id)["source_id"])
+
+    def lineage(self) -> tuple[Mapping, ...]:
+        """How sources derive from one another, as V1 resolved it. A source absent here has no recorded derivation;
+        that is not evidence of independence."""
+        self._need_v2("lineage")
+        return self._map["lineage"]
+
+    def _record(self, ref: str, prefix: str, section: str) -> Mapping:
+        self._need_v2(section)
+        if not isinstance(ref, str) or not ref.startswith(prefix + "-"):
+            raise UnknownReference(f"{ref!r} is not a {prefix}- id", f"DiscoveryContext.{section}")
+        found = self._index.get(ref)
+        if found is None or found[0] != section:
+            raise UnknownReference(f"{ref} is not in knowledge map {self.research_id}", f"DiscoveryContext.{section}")
+        return found[1]
+
+    def _claim_category(self, section: str, view: Mapping) -> str | None:
+        if self._version == 1:
+            return section if section in CLAIM_STATUSES else None
+        return _STATUS_CATEGORY.get(view["status"]) if section == "claims" else None
 
     def scope_of(self, record: Mapping) -> Scope | None:
         return None if record.get("scope") is None else Scope(**thaw(record["scope"]))
@@ -567,14 +755,18 @@ class DiscoveryContext:
 
     # -- V1 references -----------------------------------------------------------
     def resolve(self, reference_id: str, allowed: tuple[str, ...] = ()) -> ResolvedReference:
-        """Look up a V1 id (CL, CX, UNK, CALC, F). `allowed` restricts the accepted prefixes."""
+        """Look up a V1 id: CL, CX, UNK, CALC, F under /1; also EV, SRC and Q under /2. `allowed` restricts the
+        accepted prefixes."""
         if not isinstance(reference_id, str) or "-" not in reference_id:
             raise UnknownReference(f"{reference_id!r} is not a typed reference", "DiscoveryContext.resolve")
         prefix = reference_id.split("-", 1)[0]
-        if prefix == "EV":
+        if self._version == 1 and prefix == "EV":
             raise UnknownReference("knowledge-map/1 does not export evidence objects; use evidence_claims() only",
                                    "DiscoveryContext.resolve")
-        if prefix not in _REFERENCE_SECTIONS:
+        if self._version == 1 and prefix == "SRC":
+            raise UnknownReference("knowledge-map/1 does not export sources", "DiscoveryContext.resolve")
+        sections = _REFERENCE_SECTIONS if self._version == 1 else _REFERENCE_SECTIONS_V2
+        if prefix not in sections:
             if prefix in V2_IDEA_PREFIXES:
                 raise PromotionRefused(f"{reference_id!r} is a V2 discovery object, not V1 knowledge",
                                        "DiscoveryContext.resolve")
@@ -615,12 +807,14 @@ class DiscoveryContext:
 
     # -- references from V2 objects ---------------------------------------------
     def reference(self, ref: Any, accept: tuple = ("any",), where: str = "reference") -> Mapping | _Obj:
-        """Resolve any id a V2 object may cite: a V1 entity in this map (its view, defaults applied), an EV id
-        attached to a claim here, or a V2 object registered here. Kind rules as in `_RULES`."""
+        """Resolve any id a V2 object may cite: a V1 entity in this map (its view, defaults applied under /1), an EV
+        id (under /1 only as an attachment to a claim; under /2 the evidence record), or a V2 object registered
+        here. Kind rules as in `_RULES`. Under /2 an unverified claim resolves through `resolve` but is never
+        citable: /1 never exported one, and nothing V2 builds may rest on it."""
         if not isinstance(ref, str) or not ref:
             raise MalformedInput("expected a non-empty id", where)
         prefix = ref.split("-", 1)[0]
-        if prefix == "EV":
+        if prefix == "EV" and self._version == 1:
             if ref not in self._evidence_claims:
                 raise UnknownReference(f"{ref} is not attached to a claim in this knowledge map", where)
             self._check_kind("evidence", None, ref, accept, where)
@@ -631,8 +825,13 @@ class DiscoveryContext:
                 raise UnknownReference(f"{ref} is not in knowledge map {self.research_id} "
                                        f"({self._fingerprint[:16]})", where)
             section, view = found
-            self._check_kind(V1_KIND_NAMES[prefix], section if section in CLAIM_STATUSES else None, ref, accept,
-                             where)
+            category = self._claim_category(section, view)
+            if section == "claims" and category is None:
+                if view["origin"] == "hypothesis":
+                    raise PromotionRefused(f"{ref} is a V1 hypothesis; V2 cannot cite it as knowledge", where)
+                raise MalformedInput(f"{ref} is {view['status']} in this knowledge map; only known, uncertain or "
+                                     "contested claims can be cited", where)
+            self._check_kind(V1_KIND_NAMES[prefix], category, ref, accept, where)
             return view
         obj = self._objects.get(ref)
         if obj is None:
@@ -766,6 +965,9 @@ def _check_uncertainty(ctx: DiscoveryContext, obj: Uncertainty) -> None:
 
 def _check_missing(ctx: DiscoveryContext, obj: MissingEvidence) -> None:
     rec = ctx._index[obj.unknown_id][1]
+    if rec["status"] != "open":  # /1 exports open unknowns only; /2 exports every unknown with its status
+        raise ContextMismatch(f"{obj.unknown_id} is {rec['status']!r} in the knowledge map, not open; it is not "
+                              "missing evidence", f"{obj.id}:MissingEvidence.unknown_id")
     _match({"description": rec["description"], "capability": rec["capability"],
             "expected_gain": rec["expected_gain"], "est_cost_usd": rec["est_cost_usd"],
             "needs_approval": rec["needs_approval"], "sources": list(rec["source_types"])},

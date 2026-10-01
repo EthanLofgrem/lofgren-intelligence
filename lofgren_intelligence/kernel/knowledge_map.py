@@ -49,10 +49,12 @@ from ..evidence.types import (
     EVIDENCE_IDENTITY_SCHEMA,
     EVIDENCE_IDENTITY_VERSION,
     FINDING_DERIVATIONS,
+    Claim,
     ClaimOrigin,
     ClaimStatus,
     ClaimType,
     EvidenceKind,
+    Scope,
     SourceKind,
     to_dict,
 )
@@ -96,6 +98,9 @@ STANDING_LIMITATIONS = (
     "A finding may use claims gathered for its own question and for the questions it directly declares in "
     "depends_on; claim_scopes records which question each claim came through. Dependencies are not transitive.",
     "The gap question's finding lists every open unknown of the run: it is the run's inventory of what is missing.",
+    "Checked against its receipt, a map is bound field by field to the run, except for fields the receipt does not "
+    "record: claim question_ids and assessment, evidence location and transformations, and source quality. These "
+    "are covered only by the map's own fingerprint, which anyone can recompute.",
     "A claim's assessment records what the verifier scored and the thresholds of its policy. The skeptic pass may "
     "lower a status afterwards; the claim's issues say why. A claim added after verification has no assessment.",
 )
@@ -541,6 +546,7 @@ def _check_entities(ck: _Check, m: dict, index: dict[str, dict[str, dict]]) -> N
         ck.need(qids == sorted(qids), f"{cw}.question_ids", "must be sorted")
         ck.enum(str(c.get("identity_version")), set(IDENTITY_VERSIONS["claim"]), f"{cw}.identity_version")
         _check_assessment(ck, c, f"{cw}.assessment")
+        _check_claim_identity(ck, c, cw)
 
     for eid, e in evidence.items():
         ew = f"{w}.evidence[{eid}]"
@@ -619,6 +625,21 @@ def _check_entities(ck: _Check, m: dict, index: dict[str, dict[str, dict]]) -> N
 
     for fid, f in index["findings"].items():
         _check_finding(ck, f, f"{w}.findings[{fid}]", questions, claims, evidence, contradictions, unknowns, refs)
+
+
+def _check_claim_identity(ck: _Check, c: dict, cw: str) -> None:
+    """A claim's id must be the id of what the record says: statement, subject, value, unit, polarity and scope
+    under identity version 2 (statement only under version 1). The id is bound to the receipt, so these fields are
+    too."""
+    if ck.problems and any(p.startswith(cw) for p in ck.problems):
+        return  # already malformed; an identity error would only repeat it
+    try:
+        expected = Claim(c["statement"], value=c["value"], unit=c["unit"], polarity=c["polarity"],
+                         subject=c["subject"], scope=Scope(**c["scope"]), identity_version=c["identity_version"]).id
+    except (TypeError, ValueError) as exc:
+        ck.problems.append(f"{cw}: cannot recompute the claim id: {exc}")
+        return
+    ck.need(expected == c["id"], f"{cw}.id", f"does not match the claim it describes (expected {expected})")
 
 
 def _check_assessment(ck: _Check, c: dict, aw: str) -> None:
@@ -722,26 +743,45 @@ def _check_against_receipt(ck: _Check, m: dict, receipt: Mapping) -> None:
     ck.need(m["objective"] == receipt.get("objective"), "knowledge_map.objective", "does not match the receipt")
 
     def by_id(rows: Any) -> dict:
-        return {r["id"]: r for r in canonicalize(rows or [])}
+        return {r["id"]: r for r in canonicalize(rows or []) if isinstance(r, dict) and "id" in r}
 
-    rc = by_id(receipt.get("claims"))
-    ck.need(set(rc) == {c["id"] for c in m["claims"]}, "knowledge_map.claims", "claim ids differ from the receipt")
+    def same(section: str, rows: Any, fields: dict[str, str] | None) -> None:
+        """Every entity of `section` must be in the receipt with the same values. `fields` maps map field ->
+        receipt field; None compares whole records."""
+        theirs, ours = by_id(rows), {e["id"]: e for e in m[section]}
+        if not ck.need(set(theirs) == set(ours), f"knowledge_map.{section}",
+                       f"ids differ from the receipt (only in map: {sorted(set(ours) - set(theirs))[:3]}, only in "
+                       f"receipt: {sorted(set(theirs) - set(ours))[:3]})"):
+            return
+        for i, e in ours.items():
+            r = theirs[i]
+            diff = sorted(k for k in e if e[k] != r.get(k)) if fields is None else                 sorted(k for k, rk in fields.items() if e.get(k) != r.get(rk))
+            if fields is None and set(r) != set(e):
+                diff = sorted(set(diff) | (set(r) ^ set(e)))
+            ck.need(not diff, f"knowledge_map.{section}[{i}]", f"{', '.join(diff)} differ from the receipt")
+
+    contract = canonicalize(receipt.get("contract") or {})
+    ck.need(m["mode"] == contract.get("mode"), "knowledge_map.mode", "does not match the receipt's contract")
+    ck.need(m["evidence_standard"] == contract.get("evidence_standard"), "knowledge_map.evidence_standard",
+            "does not match the receipt's contract")
+    same("questions", contract.get("questions"), {k: k for k in ENTITY_KEYS["questions"]})
+    same("claims", receipt.get("claims"), {
+        "statement": "statement", "origin": "origin", "type": "type", "status": "status", "confidence": "confidence",
+        "confidence_method": "method", "policy": "policy", "scope": "scope", "supporting": "supporting",
+        "contradicting": "contradicting", "issues": "issues", "calculation_id": "calculation_id"})
+    calibrated = bool((receipt.get("verifier") or {}).get("calibrated"))
     for c in m["claims"]:
-        r = rc.get(c["id"])
-        if r is not None:
-            ck.need((c["status"], c["confidence"], c["supporting"], c["contradicting"]) ==
-                    (r.get("status"), r.get("confidence"), r.get("supporting"), r.get("contradicting")),
-                    f"knowledge_map.claims[{c['id']}]", "status, confidence or evidence differ from the receipt")
-    re_ = by_id(receipt.get("evidence"))
-    ck.need({e: r.get("content_hash") for e, r in re_.items()} ==
-            {e["id"]: e["content_hash"] for e in m["evidence"]}, "knowledge_map.evidence",
-            "evidence ids or content hashes differ from the receipt")
-    ck.need(set(by_id(receipt.get("sources"))) == {s["id"] for s in m["sources"]}, "knowledge_map.sources",
-            "source ids differ from the receipt")
-    ck.need(by_id(receipt.get("findings")) == {f["id"]: f for f in m["findings"]}, "knowledge_map.findings",
-            "findings differ from the receipt")
-    ck.need(set(by_id(receipt.get("contradictions"))) == {x["id"] for x in m["contradictions"]},
-            "knowledge_map.contradictions", "contradiction ids differ from the receipt")
+        ck.need(c["confidence_status"] == ("calibrated" if calibrated else "provisional"),
+                f"knowledge_map.claims[{c['id']}].confidence_status", "does not match the receipt's verifier")
+    same("evidence", receipt.get("evidence"), {k: k for k in ("source_id", "kind", "content_hash", "observed_at",
+                                                              "valid_from", "valid_to")})
+    same("sources", receipt.get("sources"), {k: k for k in ("kind", "title", "uri", "publisher", "published_at",
+                                                            "retrieved_at", "license", "independence_group",
+                                                            "derived_from")})
+    for section in ("contradictions", "calculations", "unknowns", "findings"):
+        same(section, receipt.get(section), None)
+    ck.need(sorted(canonicalize(receipt.get("lineage") or []), key=canonical_json) == m["lineage"],
+            "knowledge_map.lineage", "differs from the receipt")
 
 
 def validate_knowledge_map(data: Any, receipt: Mapping | None = None) -> dict:
