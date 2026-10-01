@@ -1,5 +1,7 @@
 # Lofgren Intelligence
 
+Open outcome intelligence system for evidence-driven research, verification, discovery, building, execution, and learning.
+
 **A Lofgren Enterprise project.**
 
 > A governed intelligence layer that senses the physical and digital world, researches problems, verifies evidence, generates new possibilities, designs solutions, builds usable artifacts, executes authorized actions, measures real-world outcomes, and learns from the results.
