@@ -245,6 +245,8 @@ def _finish(result: RunResult, provider: ReasoningProvider) -> None:
             result.stages.append(StageRecord(stage, status, detail))
     result.finished_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     result.provider_info = provider.describe()
+    # No authoritative receipt from an inconsistent graph: validate() raises GraphValidationError.
+    result.graph.validate()
     from .receipt import build_receipt  # late import: the receipt reads the finished result
 
     result.receipt = build_receipt(result)

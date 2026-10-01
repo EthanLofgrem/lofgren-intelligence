@@ -148,31 +148,31 @@ class GraphIntegrityDefects(unittest.TestCase):
         self.assertIsNot(first, second)
         self.assertEqual(sorted(c.scope.geography for c in g.claims.values()), ["Phoenix", "Tucson"])
 
-    @known_defect("GRAPH-FIRST-WINS-SAME-PROPOSITION")
+    # Fixed by commit 3 (was GRAPH-FIRST-WINS-SAME-PROPOSITION): add_claim used to return the stored claim, so a
+    # hypothesis with a verified claim's proposition came back as that verified claim.
     def test_hypothesis_never_becomes_an_existing_verified_claim(self):
-        # add_claim returns the first claim with an id. A hypothesis with the same proposition as a verified V1
-        # claim is therefore handed back as that verified, extracted claim.
         from lofgren_intelligence.discovery import Hypothesis, add_hypothesis
+        from lofgren_intelligence.evidence.graph import HypothesisCollision
 
         g, _ = graph_with_source()
         verified = g.add_claim(Claim(VACANCY, scope=PHOENIX_2026, status=ClaimStatus.VERIFIED, confidence=0.9))
-        try:
-            hyp = add_hypothesis(g, Hypothesis(VACANCY, scope=dataclasses.asdict(PHOENIX_2026)))
-        except (ValueError, KeyError, TypeError, PermissionError):
-            return  # a typed refusal also satisfies the requirement
-        self.assertFalse(hyp is verified or hyp.status == ClaimStatus.VERIFIED,
-                         f"add_hypothesis returned the existing {hyp.origin.value} claim with status {hyp.status.value}")
+        with self.assertRaises(HypothesisCollision) as ctx:
+            add_hypothesis(g, Hypothesis(VACANCY, scope=dataclasses.asdict(PHOENIX_2026)))
+        self.assertEqual((ctx.exception.claim_id, ctx.exception.existing_status), (verified.id, ClaimStatus.VERIFIED))
+        self.assertEqual((len(g.claims), verified.origin, verified.status),
+                         (1, verified.origin, ClaimStatus.VERIFIED))  # nothing changed
 
-    @known_defect("GRAPH-UNKNOWN-RELATION")
+    # Fixed by commit 3 (was GRAPH-UNKNOWN-RELATION): link() filed any non-"supports" relation as contradicting.
     def test_unknown_relation_fails_closed(self):
+        from lofgren_intelligence.evidence.graph import UnknownRelation
+
         g, src = graph_with_source()
         ev = g.add_evidence(Evidence(src.id, EvidenceKind.DOCUMENT, "Vacancy rose in Phoenix (fictional)."))
         claim = g.add_claim(Claim(VACANCY, scope=PHOENIX_2026))
-        try:
-            g.link(ev.id, claim.id, "mentions")
-        except (ValueError, KeyError, TypeError):
-            return
-        self.fail(f"relation 'mentions' was accepted and filed as contradicting={claim.contradicting}")
+        for relation in ("mentions", "provided_by", "conflicts", "derived_from", "SUPPORTS", ""):
+            with self.subTest(relation=relation), self.assertRaises(UnknownRelation):
+                g.link(ev.id, claim.id, relation)
+        self.assertEqual((claim.supporting, claim.contradicting), ([], []))
 
     def test_supports_relation_still_supports(self):
         # Must survive the fix.
@@ -183,14 +183,15 @@ class GraphIntegrityDefects(unittest.TestCase):
 
 
 class EvidenceIdentityDefects(unittest.TestCase):
-    """Evidence.id is make_id("EV", source_id, content[:200], observed_at): the tail of the content is ignored."""
+    """Under evidence identity v1, Evidence.id was make_id("EV", source_id, content[:200], observed_at), so the tail
+    of the content was ignored. Evidence identity v2 fixed this."""
 
     PREFIX = "Fictional sensor log. " + "x" * 178  # exactly 200 characters
 
     def test_prefix_is_two_hundred_characters(self):
         self.assertEqual(len(self.PREFIX), 200)
 
-    @known_defect("EVIDENCE-ID-PREFIX")
+    # Fixed by evidence identity v2 (was EVIDENCE-ID-PREFIX).
     def test_different_content_after_200_characters_is_different_evidence(self):
         g, src = graph_with_source()
         a = Evidence(src.id, EvidenceKind.DOCUMENT, self.PREFIX + " reading 21 C", observed_at="2026-09-01T00:00:00Z")
@@ -198,6 +199,7 @@ class EvidenceIdentityDefects(unittest.TestCase):
         g.add_evidence(a)
         g.add_evidence(b)
         self.assertNotEqual(a.id, b.id, f"different readings share id {a.id}; the graph keeps {len(g.evidence)} of 2")
+        self.assertEqual(len(g.evidence), 2)
 
     def test_identical_evidence_keeps_one_identity(self):
         # Must survive the fix.

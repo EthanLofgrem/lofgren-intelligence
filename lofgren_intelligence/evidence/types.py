@@ -148,16 +148,23 @@ class Evidence:
     valid_to: str | None = None
     transformations: list[str] = field(default_factory=list)
     content_hash: str = ""
+    identity_version: int = 2  # the rule that produced `id` (see evidence_id); EVIDENCE_IDENTITY_VERSION
     id: str = ""
 
     def __post_init__(self) -> None:
         self.kind = EvidenceKind(self.kind)
         if isinstance(self.location, dict):
             self.location = Location(**self.location)
+        if self.identity_version not in EVIDENCE_IDENTITY_VERSIONS or isinstance(self.identity_version, bool):
+            raise EvidenceIdentityError(f"unsupported evidence identity version {self.identity_version!r}; "
+                                        f"supported: {EVIDENCE_IDENTITY_VERSIONS}")
+        full_hash = hashlib.sha256(self.content.encode()).hexdigest()
         if not self.content_hash:
-            self.content_hash = hashlib.sha256(self.content.encode()).hexdigest()
+            self.content_hash = full_hash
+        elif self.identity_version >= 2 and self.content_hash != full_hash:
+            raise EvidenceIdentityError("content_hash does not match the content")
         if not self.id:
-            self.id = make_id("EV", self.source_id, self.content[:200], self.observed_at)
+            self.id = evidence_id(self)
 
 
 _STOPWORDS = {
@@ -269,6 +276,123 @@ def claim_id(claim: "Claim") -> str:
         return make_id("CL", key)
     raise ClaimIdentityError(f"unsupported claim identity version {claim.identity_version!r}; "
                              f"supported: {CLAIM_IDENTITY_VERSIONS}")
+
+
+# ---- evidence identity ----------------------------------------------------
+#
+# An evidence id names one observation: what was recorded, from which source, when, where and with which
+# structured readings.
+#
+# Version 1 (legacy): make_id("EV", source_id, first 200 characters of content, observed_at). Distinct
+# observations could collide; the rule is kept only so that stored v1 ids keep their meaning.
+#
+# Version 2: make_id("EV", canonical JSON of
+#     {"identity": "lofgren.evidence-identity/2",
+#      "source_id", "kind",
+#      "content_sha256": SHA-256 of the full content,
+#      "data": canonical structured data (see canonical_data),
+#      "observed_at", "valid_from", "valid_to": validated ISO date/time text or null,
+#      "location": {"lat", "lon": float or null, "name": text or null} or null})
+# `transformations` is not part of identity: it records how the evidence was processed (provenance), not
+# what was observed. Nothing in identity comes from the clock or from randomness.
+
+EVIDENCE_IDENTITY_VERSIONS = (1, 2)
+EVIDENCE_IDENTITY_VERSION = 2
+EVIDENCE_IDENTITY_SCHEMA = "lofgren.evidence-identity/2"
+_SAFE_INT = 2 ** 53
+_MAX_DATA_DEPTH = 32
+
+
+class EvidenceIdentityError(ValueError):
+    """An evidence observation's identity cannot be computed from its fields."""
+
+
+def canonical_data(value: Any, path: str = "data", _depth: int = 0) -> Any:
+    """Structured data in one spelling: text keys, finite numbers (an integral float within ±2^53 becomes an int),
+    arrays kept in order, and only null, booleans, numbers, text, arrays and objects."""
+    if _depth > _MAX_DATA_DEPTH:
+        raise EvidenceIdentityError(f"{path} is nested deeper than {_MAX_DATA_DEPTH}")
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        if abs(value) > _SAFE_INT:
+            raise EvidenceIdentityError(f"{path} integer {value} is beyond ±2^53")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise EvidenceIdentityError(f"{path} {value!r} is not finite")
+        return int(value) if value.is_integer() and abs(value) <= _SAFE_INT else value
+    if isinstance(value, (list, tuple)):
+        return [canonical_data(v, f"{path}[{i}]", _depth + 1) for i, v in enumerate(value)]
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise EvidenceIdentityError(f"{path} has a non-text key {k!r}")
+            out[k] = canonical_data(v, f"{path}.{k}", _depth + 1)
+        return out
+    raise EvidenceIdentityError(f"{path} holds {type(value).__name__}, which is not structured data")
+
+
+def _identity_location(loc: Any) -> dict[str, Any] | None:
+    if loc is None:
+        return None
+    lat, lon = (_number_or_none(getattr(loc, k), f"location {k}", EvidenceIdentityError) for k in ("lat", "lon"))
+    if lat is not None and not -90.0 <= lat <= 90.0:
+        raise EvidenceIdentityError(f"location latitude {lat} is outside [-90, 90]")
+    if lon is not None and not -180.0 <= lon <= 180.0:
+        raise EvidenceIdentityError(f"location longitude {lon} is outside [-180, 180]")
+    if loc.name is not None and not isinstance(loc.name, str):
+        raise EvidenceIdentityError("location name must be text")
+    return {"lat": lat, "lon": lon, "name": loc.name}
+
+
+def _number_or_none(value: Any, what: str, error: type[ValueError]) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise error(f"{what} must be a finite number, got {value!r}")
+    return float(value)
+
+
+def _evidence_time(value: Any, what: str) -> str | None:
+    try:
+        return _identity_time(value, what)
+    except ClaimIdentityError as exc:
+        raise EvidenceIdentityError(str(exc).replace("scope ", "evidence ", 1)) from None
+
+
+def evidence_identity_key(ev: "Evidence") -> dict[str, Any]:
+    """The version 2 identity of an evidence observation, as plain JSON data."""
+    if not isinstance(ev.source_id, str) or not ev.source_id:
+        raise EvidenceIdentityError("evidence needs a source id")
+    if not isinstance(ev.content, str):
+        raise EvidenceIdentityError("evidence content must be text")
+    if not isinstance(ev.data, dict):
+        raise EvidenceIdentityError(f"evidence data must be an object, got {type(ev.data).__name__}")
+    return {
+        "identity": EVIDENCE_IDENTITY_SCHEMA,
+        "source_id": ev.source_id,
+        "kind": EvidenceKind(ev.kind).value,
+        "content_sha256": hashlib.sha256(ev.content.encode()).hexdigest(),
+        "data": canonical_data(ev.data),
+        "observed_at": _evidence_time(ev.observed_at, "observed_at"),
+        "valid_from": _evidence_time(ev.valid_from, "valid_from"),
+        "valid_to": _evidence_time(ev.valid_to, "valid_to"),
+        "location": _identity_location(ev.location),
+    }
+
+
+def evidence_id(ev: "Evidence") -> str:
+    """The id of an evidence observation under its declared identity version."""
+    if ev.identity_version == 1:
+        return make_id("EV", ev.source_id, ev.content[:200], ev.observed_at)
+    if ev.identity_version == 2:
+        key = json.dumps(evidence_identity_key(ev), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                         allow_nan=False)
+        return make_id("EV", key)
+    raise EvidenceIdentityError(f"unsupported evidence identity version {ev.identity_version!r}; "
+                                f"supported: {EVIDENCE_IDENTITY_VERSIONS}")
 
 
 def topic_tokens(text: str) -> list[str]:
