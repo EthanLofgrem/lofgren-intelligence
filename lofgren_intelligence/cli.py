@@ -159,6 +159,14 @@ def cmd_discover(args: argparse.Namespace) -> int:
 def cmd_certify(args: argparse.Namespace) -> int:
     from .certification import render_certification, run_certification
 
+    if getattr(args, "v3", False):
+        from .production.certification import render_v3_certification, run_v3_certification
+
+        cert = run_v3_certification()
+        print(render_v3_certification(cert))
+        if args.out:
+            Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
+        return 0 if cert["code_terms_certified"] else 1
     if args.v2:
         from .discovery.certification import render_v2_certification, run_v2_certification
 
@@ -291,8 +299,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--handoff", help="write the V3 handoff here (only when a candidate is selected)")
     p.set_defaults(fn=cmd_discover)
 
-    p = sub.add_parser("certify", help="run the V1 certification suite (the gate before V2), or --v2")
-    p.add_argument("--v2", action="store_true", help="run the V2 Discovery certification (code terms of V2ReadyForV3)")
+    p = sub.add_parser("certify", help="run the V1 certification suite, or a later version certification")
+    versions = p.add_mutually_exclusive_group()
+    versions.add_argument("--v2", action="store_true", help="run V2 Discovery certification")
+    versions.add_argument("--v3", action="store_true", help="run V3 Production certification")
     p.add_argument("--out", help="write the certification result as JSON")
     p.set_defaults(fn=cmd_certify)
 
