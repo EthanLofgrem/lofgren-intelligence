@@ -159,6 +159,14 @@ def cmd_discover(args: argparse.Namespace) -> int:
 def cmd_certify(args: argparse.Namespace) -> int:
     from .certification import render_certification, run_certification
 
+    if getattr(args, "v5", False):
+        from .outcome.certification import render_v5_certification, run_v5_certification
+
+        cert = run_v5_certification()
+        print(render_v5_certification(cert))
+        if args.out:
+            Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
+        return 0 if cert["code_terms_certified"] else 1
     if getattr(args, "v4", False):
         from .execution.certification import render_v4_certification, run_v4_certification
 
@@ -312,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     versions.add_argument("--v2", action="store_true", help="run V2 Discovery certification")
     versions.add_argument("--v3", action="store_true", help="run V3 Production certification")
     versions.add_argument("--v4", action="store_true", help="run V4 Execution certification")
+    versions.add_argument("--v5", action="store_true", help="run V5 Outcome certification")
     p.add_argument("--out", help="write the certification result as JSON")
     p.set_defaults(fn=cmd_certify)
 
