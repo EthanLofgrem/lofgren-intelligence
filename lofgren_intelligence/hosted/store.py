@@ -8,6 +8,7 @@ server or narrowly-scoped SECURITY DEFINER RPCs.
 from __future__ import annotations
 
 import os
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
 
@@ -195,6 +196,38 @@ class SupabaseStore:
             if isinstance(value, dict):
                 return bool(next(iter(value.values()), False))
         return bool(result)
+
+    def list_runs(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_runs",
+            query={
+                "select": "*",
+                "user_id": f"eq.{user_id}",
+                "order": "created_at.asc",
+                "limit": str(min(max(1, int(limit)), 1000)),
+            },
+        )
+        return list(rows or [])
+
+    def list_usage(self, user_id: str, limit: int = 5000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_usage_events",
+            query={
+                "select": "*",
+                "user_id": f"eq.{user_id}",
+                "order": "created_at.asc",
+                "limit": str(min(max(1, int(limit)), 5000)),
+            },
+        )
+        return list(rows or [])
+
+    def delete_auth_user(self, user_id: str) -> None:
+        quoted = urllib.parse.quote(user_id, safe="")
+        json_request(
+            f"{self.url}/auth/v1/admin/users/{quoted}",
+            "DELETE",
+            headers=self._headers,
+        )
 
     def record_usage(self, row: dict[str, Any]) -> None:
         self._table("li_usage_events", "POST", body=row, prefer="return=minimal")
