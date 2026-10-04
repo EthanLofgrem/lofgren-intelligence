@@ -89,3 +89,43 @@ def summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         "charge_usd": snapshot["charge_usd"],
         "confidence_status": "provisional",
     }
+
+
+
+def durable_discovery_snapshot(result: Any) -> dict[str, Any]:
+    """Freeze a V2 discovery into a tenant-safe, process-independent snapshot."""
+    from ..discovery.handoff import validate_handoff
+    from ..discovery.receipt import objects_match_receipt, verify_discovery_receipt
+    from ..discovery.report import discovery_summary, render_discovery_markdown
+
+    receipt = json.loads(json.dumps(result.receipt, default=str))
+    handoff = None if result.handoff is None else json.loads(json.dumps(result.handoff, default=str))
+    handoff_problems = [] if handoff is None else validate_handoff(handoff, receipt, result.context)
+
+    return {
+        "discovery_id": receipt.get("discovery_id"),
+        "research_id": result.context.research_id,
+        "summary": discovery_summary(result),
+        "prior_art": [x.to_dict() for x in result.prior_art],
+        "gaps": [] if result.gaps is None else [x.to_dict() for x in result.gaps.gaps],
+        "connections": [] if result.connections is None else [x.to_dict() for x in result.connections.connections],
+        "hypotheses": [x.to_dict() for x in result.hypotheses.all],
+        "requirements": [x.to_dict() for x in result.requirements],
+        "candidates": [x.to_dict() for x in result.candidates.candidates],
+        "simulations": [x.to_dict() for x in result.candidates.simulations],
+        "sensitivities": [x.to_dict() for x in result.candidates.sensitivities],
+        "optimization": None if result.candidates.optimization is None else result.candidates.optimization.to_dict(),
+        "decision": None if result.decision is None else result.decision.to_dict(),
+        "findings": [x.to_dict() for x in result.findings],
+        "verifier_issues": [x.__dict__ for x in result.verifier.issues],
+        "receipt": receipt,
+        "receipt_intact": verify_discovery_receipt(receipt),
+        "receipt_object_problems": objects_match_receipt(receipt, result.context.objects()),
+        "handoff": handoff,
+        "handoff_problems": handoff_problems,
+        "report": render_discovery_markdown(result),
+        "stages": dict(result.stages),
+        "notes": list(result.notes),
+        "usage_units": float(result.ledger.total_units if result.ledger else 0.0),
+        "charge_usd": float(result.ledger.total_usd if result.ledger else 0.0),
+    }
