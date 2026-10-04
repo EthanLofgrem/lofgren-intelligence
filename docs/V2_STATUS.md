@@ -65,9 +65,10 @@ adversarial cases, V1 certification). `scripts/boundary_gate.py --sha <commit>`,
 after CI, adds the process terms (full suite in both encodings, package gate and CI from GitHub Actions, clean tree,
 exact SHA) and is the only place that prints `V1ReadyForV2Step4`. Unknown is false.
 
-Current result: FALSE. Pinned defect V1-FUTURE-DATED-EVIDENCE: evidence observed after the verification time is
-scored as the freshest possible (its age is clamped to zero) and can verify a claim. Fixing it changes how V1
-weighs dates, so it awaits an owner decision; no current certification run contains such evidence.
+Future-dated evidence (LI-V1-HARDEN-07A, formerly the pinned defect V1-FUTURE-DATED-EVIDENCE): evidence dated more
+than 5 minutes (`FUTURE_SKEW`) after the verifier's clock stays in the graph and in provenance but supports,
+contradicts and adds independence or freshness to nothing, and its claim carries a `future-dated:` issue. Up to 5
+minutes ahead is treated as clock skew. The run's verification time (`Verifier.now`) is the clock.
 
 ## Blockers
 

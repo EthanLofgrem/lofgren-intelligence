@@ -23,7 +23,7 @@ import json
 import operator
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -533,26 +533,31 @@ def a_outdated() -> str:
 
 @scenario("AdversarialSuitePassing", "future-dated evidence")
 def a_future() -> str:
-    def verdict(when: str) -> tuple[ClaimStatus, float]:
+    def verdict(when: str):
         g = EvidenceGraph()
         c = g.add_claim(Claim("Industrial construction in the Phoenix metro increased in 2026 (fictional)."))
+        ids = []
         for i in range(2):
             s = g.add_source(Source(SourceKind.DOCUMENT, f"report {i}", uri=f"inline:f{i}", publisher=f"p{i}",
                                     quality=0.8))
             e = g.add_evidence(Evidence(s.id, EvidenceKind.DOCUMENT, f"{c.statement} ({i})", observed_at=when))
             g.link(e.id, c.id, "supports")
+            ids.append(e.id)
         v = Verifier(now=CERT_NOW)
         v.verify(g)
-        return c.status, v.factors[c.id].recency
+        return g, c, v.factors[c.id], ids
 
-    future = (CERT_NOW.replace(year=CERT_NOW.year + 5)).isoformat()
-    status, recency = verdict(future)
-    # Pinned defect V1-FUTURE-DATED-EVIDENCE: evidence observed after the verification time is scored as the
-    # freshest possible (age clamped to 0) and can verify a claim. It must not.
-    assert status != ClaimStatus.VERIFIED, (
-        f"KNOWN DEFECT V1-FUTURE-DATED-EVIDENCE: evidence dated {future[:10]}, after the verification time "
-        f"{CERT_NOW.date()}, verifies the claim with recency {recency:.2f}")
-    return "evidence dated after the verification time cannot verify a claim"
+    future = CERT_NOW.replace(year=CERT_NOW.year + 5).isoformat()
+    g, c, f, ids = verdict(future)
+    assert c.status != ClaimStatus.VERIFIED, f"evidence dated {future[:10]} verified a claim on {CERT_NOW.date()}"
+    assert (f.independent_sources, f.quality) == (0, 0.0), f"future evidence counted: {f}"
+    assert all(e in g.evidence and e in c.supporting for e in ids), "future evidence was not preserved"
+    flagged = [i for i in c.issues if i.startswith("future-dated:")]
+    assert len(flagged) == 2 and all(any(e in i for i in flagged) for e in ids), c.issues
+    _, near, nf, _ = verdict((CERT_NOW + timedelta(minutes=5)).isoformat())
+    assert near.status == ClaimStatus.VERIFIED and nf.independent_sources == 2, "clock-skew tolerance not honoured"
+    return ("evidence dated past the 5-minute skew tolerance is kept and flagged but supports nothing; within the "
+            "tolerance it still counts")
 
 
 @scenario("AdversarialSuitePassing", "wrong geography")

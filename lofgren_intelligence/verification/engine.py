@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..evidence.graph import EvidenceGraph
 from ..evidence.types import Calculation, Claim, ClaimOrigin, ClaimStatus, Contradiction, topic_tokens
@@ -89,16 +89,42 @@ def relation(a: Claim, b: Claim) -> tuple[str | None, str]:
     return "supports", f"same subject (similarity {sim:.2f}) and consistent"
 
 
-def _age_days(stamp: str | None, now: datetime) -> float | None:
+# Evidence dated after the verification time cannot have been observed yet. Up to FUTURE_SKEW ahead is treated as
+# clock skew (age zero); beyond it the evidence stays in the graph but is not eligible to support, contradict, add
+# independence or freshness, and the claim carries a FUTURE_DATED issue naming it.
+FUTURE_SKEW = timedelta(minutes=5)
+FUTURE_DATED = "future-dated"  # issue prefix: "future-dated: EV-... is dated ..., after the verification time ..."
+
+
+def _instant(stamp: str | None) -> datetime | None:
+    """A timestamp as an aware instant; a naive one is read as UTC. None when absent or unreadable."""
     if not stamp:
         return None
     try:
         t = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     except ValueError:
         return None
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=timezone.utc)
-    return max((now - t).total_seconds() / 86400, 0.0)
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+
+def _age_days(stamp: str | None, now: datetime) -> float | None:
+    t = _instant(stamp)
+    if t is None:
+        return None
+    return max((now - t).total_seconds() / 86400, 0.0)  # within FUTURE_SKEW ahead: age zero
+
+
+def evidence_stamp(graph: EvidenceGraph, evidence_id: str) -> str | None:
+    """When an evidence item was observed, or failing that when its source was published."""
+    ev = graph.evidence[evidence_id]
+    return ev.observed_at or graph.sources[ev.source_id].published_at
+
+
+def temporally_eligible(graph: EvidenceGraph, evidence_id: str, now: datetime) -> bool:
+    """False only for evidence dated more than FUTURE_SKEW after `now`, the verification time. Undated evidence is
+    eligible: nothing says it lies in the future."""
+    t = _instant(evidence_stamp(graph, evidence_id))
+    return t is None or t <= now + FUTURE_SKEW
 
 
 @dataclass
@@ -120,6 +146,10 @@ class Verifier:
         self.calibrator = calibrator or Calibrator()
         self.now = now or datetime.now(timezone.utc)
         self.factors: dict[str, ConfidenceFactors] = {}
+
+    def eligible(self, graph: EvidenceGraph, evidence_ids: list[str]) -> list[str]:
+        """The evidence that may bear on a claim at this verification time, in order."""
+        return [e for e in evidence_ids if temporally_eligible(graph, e, self.now)]
 
     def _groups(self, graph: EvidenceGraph, evidence_ids: list[str]) -> set[str]:
         return {graph.sources[graph.evidence[e].source_id].independence_group for e in evidence_ids}
@@ -166,15 +196,20 @@ class Verifier:
                     graph.link(e, b.id, "contradicts")
 
     def score(self, graph: EvidenceGraph, claim: Claim) -> ConfidenceFactors:
-        sources = graph.sources_for_claim(claim.id, "supports")
+        # Only temporally eligible evidence counts, for support, independence, freshness and contradiction alike.
+        supporting = self.eligible(graph, claim.supporting)
+        contradicting = self.eligible(graph, claim.contradicting)
+        seen: dict[str, object] = {}
+        for e in supporting:  # the sources of the eligible support, as graph.sources_for_claim orders them
+            src = graph.sources[graph.evidence[e].source_id]
+            seen[src.id] = src
+        sources = list(seen.values())
         q = sum(s.quality for s in sources) / len(sources) if sources else 0.0
-        d = len(self._groups(graph, claim.supporting))
-        k = len(self._groups(graph, claim.contradicting) - self._groups(graph, claim.supporting))
+        d = len(self._groups(graph, supporting))
+        k = len(self._groups(graph, contradicting) - self._groups(graph, supporting))
         ages = []
-        for e in claim.supporting:
-            ev = graph.evidence[e]
-            src = graph.sources[ev.source_id]
-            ages.append(_age_days(ev.observed_at or src.published_at, self.now))
+        for e in supporting:
+            ages.append(_age_days(evidence_stamp(graph, e), self.now))
         rec = [math.exp(-a / 730) for a in ages if a is not None]
         r = sum(rec) / len(rec) if rec else 0.7
         t = DIRECTNESS[claim.origin]
@@ -213,6 +248,11 @@ class Verifier:
             claim.confidence = round(f.calibrated, 3)
             claim.confidence_method = "v1-heuristic+calibrated" if self.calibrator.calibrated else "v1-heuristic"
             claim.status = self.status(claim, f, min_sources, min_conf)
+            future = [e for e in claim.supporting + claim.contradicting if not temporally_eligible(graph, e, self.now)]
+            if future:
+                claim.issues = sorted(set(claim.issues) | {
+                    f"{FUTURE_DATED}: {e} is dated {evidence_stamp(graph, e)}, after the verification time "
+                    f"{self.now.isoformat()}; it was not used as evidence" for e in future})
 
 
 def scope_mismatch(a: Claim, b: Claim) -> str:

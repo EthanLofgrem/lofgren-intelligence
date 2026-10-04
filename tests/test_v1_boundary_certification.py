@@ -1,8 +1,8 @@
 """The V1 -> V2 boundary certification itself (boundary certification, phase B).
 
-These tests pin what the certification reports, so it cannot drift silently: every scenario passes except the
-pinned defect V1-FUTURE-DATED-EVIDENCE, which keeps AdversarialSuitePassing (and the gate) FALSE. When that defect is
-fixed, test_future_dated_evidence_is_a_pinned_defect fails and must be updated with the fix.
+These tests pin what the certification reports, so it cannot drift silently: every scenario passes, every code
+term is TRUE and the command exits 0. V1-FUTURE-DATED-EVIDENCE, pinned here as a defect until LI-V1-HARDEN-07A, is
+now a passing adversarial scenario (tests/test_v1_future_evidence.py covers the rule in detail).
 """
 
 from __future__ import annotations
@@ -40,17 +40,19 @@ class BoundaryCertification(unittest.TestCase):
         adversarial = {s["scenario"] for s in self.cert["scenarios"] if s["term"] == "AdversarialSuitePassing"}
         self.assertTrue(required <= adversarial, required - adversarial)
 
-    def test_all_scenarios_pass_except_the_pinned_defect(self):
+    def test_all_scenarios_pass(self):
         failed = sorted(s["scenario"] for s in self.cert["scenarios"] if not s["passed"])
-        self.assertEqual(failed, ["future-dated evidence"], [self.by_name[n]["detail"] for n in failed])
+        self.assertEqual(failed, [], [self.by_name[n]["detail"] for n in failed])
+        adversarial = [s for s in self.cert["scenarios"] if s["term"] == "AdversarialSuitePassing"]
+        self.assertEqual(len(adversarial), 14)
 
-    def test_future_dated_evidence_is_a_pinned_defect(self):
-        detail = self.by_name["future-dated evidence"]["detail"]
-        self.assertIn("KNOWN DEFECT V1-FUTURE-DATED-EVIDENCE", detail)
-        self.assertFalse(self.cert["terms"]["AdversarialSuitePassing"])
-        self.assertFalse(self.cert["code_terms_certified"])
-        others = {t: v for t, v in self.cert["terms"].items() if t != "AdversarialSuitePassing"}
-        self.assertTrue(all(others.values()), others)
+    def test_future_dated_evidence_passes(self):
+        # Fixed by LI-V1-HARDEN-07A (was the pinned defect V1-FUTURE-DATED-EVIDENCE).
+        check = self.by_name["future-dated evidence"]
+        self.assertTrue(check["passed"], check["detail"])
+        self.assertNotIn("KNOWN DEFECT", check["detail"])
+        self.assertTrue(all(self.cert["terms"].values()), self.cert["terms"])
+        self.assertTrue(self.cert["code_terms_certified"])
 
     def test_a_crash_is_a_failure(self):
         def boom() -> str:
@@ -61,14 +63,14 @@ class BoundaryCertification(unittest.TestCase):
 
     def test_render_and_cli(self):
         text = bc.render_boundary(self.cert)
-        self.assertIn("BoundaryCodeTerms = FALSE", text)
+        self.assertIn("BoundaryCodeTerms = TRUE", text)
         self.assertNotIn("V1ReadyForV2Step4", text)  # only the gate script may print the verdict
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "boundary.json"
             with redirect_stdout(io.StringIO()):
                 code = main(["certify-boundary", "--out", str(out)])
-            self.assertEqual(code, 1)
-            self.assertFalse(json.loads(out.read_text(encoding="utf-8"))["code_terms_certified"])
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(out.read_text(encoding="utf-8"))["code_terms_certified"])
 
 
 class GateScript(unittest.TestCase):
