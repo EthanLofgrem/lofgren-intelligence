@@ -109,7 +109,7 @@ lofgren certify --v2
 
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
 
-Lofgren Intelligence is also an MCP server, so it plugs into the AI a person already uses.
+Lofgren Intelligence has both a local stdio MCP server and a hosted MCP service under release certification. V1 and V2 are certified in the core. The hosted integration now exposes those capabilities through authenticated, tenant-scoped, durable service code, but it is **not public-ready** until the database, OAuth, cross-client, Stripe sandbox, backup/restore, deployment and exact-SHA release evidence gates pass.
 
 ```bash
 # Claude Code
@@ -128,7 +128,7 @@ Tools return structured data, not narrative (contract `lofgren.mcp/2`):
 - **Research (V1):** `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `export_knowledge_map`, `render_report`, `satellite_passes`, `pricing`.
 - **Discovery (V2):** `discover`, `find_prior_art`, `find_discovery_gaps`, `find_connections`, `generate_hypotheses`, `generate_candidates`, `simulate_candidate`, `analyze_sensitivity`, `optimize_solution`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff`, `render_discovery_report`.
 
-Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. Runs and discoveries live for the MCP session only; this is a local server, not yet a hosted multi-user service.
+Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server keeps runs/discoveries for its process lifetime. The hosted service uses durable tenant-scoped run and discovery storage and is being certified separately before public release.
 
 ## How a finding earns its status
 
