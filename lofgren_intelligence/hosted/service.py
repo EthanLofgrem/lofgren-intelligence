@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from .. import build_registry
@@ -12,6 +13,9 @@ from ..evidence.types import to_dict
 from ..intent.compiler import compile_intent
 from ..kernel.pipeline import estimate_run, run_investigation
 from ..models.provider import default_provider
+from ..orbital.catalog import IMAGING_SATELLITES, fetch_tles
+from ..orbital.propagate import PROPAGATOR, find_passes
+from ..orbital.tle import parse_tle_text
 from ..research.planner import gap_unknowns, plan_research
 from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
@@ -224,6 +228,32 @@ class PublicService:
     def render_report(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         snap = self._snapshot(user_id, a["run_id"])
         return {"run_id": a["run_id"], "format": "markdown", "report": snap["report"]}
+
+    def satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
+        if a.get("tle_text"):
+            tles = parse_tle_text(str(a["tle_text"]))
+        elif a.get("fetch"):
+            tles = fetch_tles([s.norad_id for s in IMAGING_SATELLITES])
+        else:
+            raise PublicServiceError("provide tle_text or fetch=true")
+        start = datetime.now(timezone.utc)
+        rows = []
+        for tle in tles:
+            rows.extend(find_passes(
+                tle,
+                float(a["lat"]),
+                float(a["lon"]),
+                start,
+                float(a.get("hours", 24)),
+                float(a.get("min_elevation_deg", 30)),
+            ))
+        rows.sort(key=lambda p: p.rise)
+        return {
+            "propagator": PROPAGATOR,
+            "kind": "prediction (not a provider acquisition schedule)",
+            "from": start.isoformat(),
+            "passes": [p.to_dict() for p in rows],
+        }
 
     def pricing(self, a: dict[str, Any]) -> dict[str, Any]:
         d: dict[str, Any] = {"plans": {k: p.__dict__ for k, p in PLANS.items()}}
