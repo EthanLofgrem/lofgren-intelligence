@@ -96,6 +96,35 @@ class FakeStore:
     def record_stripe_event(self, row):
         self.billing_events[row["stripe_event_id"]] = dict(row)
 
+    def get_entitlement_by_subscription(self, subscription_id):
+        if self.entitlement.get("stripe_subscription_id") == subscription_id:
+            return self.entitlement
+        return None
+
+    def apply_stripe_entitlement_event(
+        self, *, event_id, event_type, payload_hash, user_id, customer_id,
+        subscription_id, active, plan_id, quota_units_per_week
+    ):
+        if event_id in self.billing_events:
+            return False
+        self.billing_events[event_id] = {
+            "stripe_event_id": event_id,
+            "event_type": event_type,
+            "payload_hash": payload_hash,
+        }
+        if user_id is not None:
+            self.entitlement = {
+                **self.entitlement,
+                "user_id": user_id,
+                "kind": "paid" if active else "paid_required",
+                "active": active,
+                "plan_id": plan_id,
+                "quota_units_per_week": quota_units_per_week if active else 0,
+                "stripe_customer_id": customer_id or self.entitlement.get("stripe_customer_id"),
+                "stripe_subscription_id": subscription_id or self.entitlement.get("stripe_subscription_id"),
+            }
+        return True
+
     def set_paid_entitlement(self, user_id, **kwargs):
         self.entitlement = {
             **self.entitlement,
@@ -107,6 +136,9 @@ class FakeStore:
             "stripe_customer_id": kwargs["customer_id"],
             "stripe_subscription_id": kwargs["subscription_id"],
         }
+
+    def cost_samples(self, limit=5000):
+        return []
 
 
 class OAuthTests(unittest.TestCase):
@@ -211,7 +243,7 @@ class StripeWebhookTests(unittest.TestCase):
             "type": "checkout.session.completed",
             "data": {"object": {
                 "id": "cs_test", "customer": "cus_test", "subscription": "sub_test",
-                "client_reference_id": "u1", "metadata": {"li_user_id": "u1"},
+                "client_reference_id": "u1", "metadata": {"li_user_id": "u1"}, "payment_status": "paid",
             }},
         }
         raw = json.dumps(event, separators=(",", ":")).encode()
@@ -226,6 +258,42 @@ class StripeWebhookTests(unittest.TestCase):
             self.assertEqual(apply_webhook(store, parsed), "processed")
             self.assertEqual(store.entitlement["kind"], "paid")
             self.assertEqual(apply_webhook(store, parsed), "duplicate")
+
+
+
+    def test_failed_invoice_disables_paid_access_and_subscription_update_recovers(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({
+            "stripe_subscription_id": "sub_test",
+            "stripe_customer_id": "cus_test",
+            "active": True,
+        })
+        with patch.dict(os.environ, {
+            "LI_PAID_PLAN_ID": "researcher",
+            "LI_PAID_WEEKLY_UNITS": "2000",
+        }, clear=False):
+            failed = {
+                "id": "evt_failed",
+                "type": "invoice.payment_failed",
+                "data": {"object": {"customer": "cus_test", "subscription": "sub_test"}},
+            }
+            self.assertEqual(apply_webhook(store, failed), "processed")
+            self.assertEqual(store.entitlement["kind"], "paid_required")
+            self.assertFalse(store.entitlement["active"])
+
+            recovered = {
+                "id": "evt_recovered",
+                "type": "customer.subscription.updated",
+                "data": {"object": {
+                    "id": "sub_test",
+                    "customer": "cus_test",
+                    "status": "active",
+                    "metadata": {"li_user_id": "u1"},
+                }},
+            }
+            self.assertEqual(apply_webhook(store, recovered), "processed")
+            self.assertEqual(store.entitlement["kind"], "paid")
+            self.assertTrue(store.entitlement["active"])
 
 
 class CostingTests(unittest.TestCase):
