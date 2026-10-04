@@ -368,3 +368,27 @@ revoke all on function public.li_apply_stripe_entitlement_event(text,text,text,u
   from public, anon, authenticated;
 grant execute on function public.li_apply_stripe_entitlement_event(text,text,text,uuid,text,text,boolean,text,numeric)
   to service_role;
+
+
+create table if not exists public.li_discoveries (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  discovery_id text not null,
+  research_id text not null,
+  objective text not null,
+  outcome text not null,
+  summary jsonb not null,
+  snapshot jsonb not null,
+  receipt jsonb not null,
+  handoff jsonb,
+  usage_units numeric not null default 0 check (usage_units >= 0),
+  created_at timestamptz not null default now(),
+  primary key (user_id, discovery_id),
+  foreign key (user_id, research_id) references public.li_runs(user_id, run_id) on delete cascade
+);
+
+create index if not exists li_discoveries_user_created_idx
+  on public.li_discoveries(user_id, created_at desc);
+
+alter table public.li_discoveries enable row level security;
+revoke all on table public.li_discoveries from anon, authenticated;
+grant select, insert, update, delete on public.li_discoveries to service_role;
