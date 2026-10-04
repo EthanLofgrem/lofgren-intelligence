@@ -320,6 +320,8 @@ def build_artifact(
         "artifact_verified": True,
         "acceptance_passed": True,
         "source_discovery_id": handoff["discovery_receipt_id"],
+        "expected_outcomes": handoff.get("expected_outcomes", []),
+        "acceptance_criteria": handoff.get("acceptance_criteria", []),
         "risks": handoff.get("risks", []),
         "dependencies": handoff.get("dependencies", []),
     }
