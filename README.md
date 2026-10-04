@@ -4,9 +4,9 @@ Open outcome intelligence system for evidence-driven research, verification, dis
 
 **A Lofgren Enterprise project.**
 
-> A governed intelligence layer that senses the physical and digital world, researches problems, verifies evidence, generates new possibilities, designs solutions, builds usable artifacts, executes authorized actions, measures real-world outcomes, and learns from the results.
+> Lofgren Intelligence is designed as a governed intelligence layer that can grow from sensing and verified research into discovery, artifact creation, authorized execution, outcome measurement, and governed learning. **Today, the certified implementation is V1 Evidence Intelligence; V2 is partial and V3–V6 are not yet certified public capabilities.**
 
-Most AI tools stop at an answer. Lofgren Intelligence is built to carry an objective the whole way to an outcome:
+Most AI tools stop at an answer. Lofgren Intelligence is being built version by version to carry an objective the whole way to an outcome. The sequence below is the architecture, not a claim that every stage is currently available:
 
 ```
 Intent → Plan → Sense → Research → Verify → Imagine → Simulate → Optimize → Produce
@@ -15,7 +15,7 @@ Intent → Plan → Sense → Research → Verify → Imagine → Simulate → O
 
 It is not another chatbot and not another model. Models (Claude, GPT and others) are replaceable suppliers of reasoning. This layer owns what makes results trustworthy: the plan, the evidence, the verification, the authority to act, and the memory of what actually worked.
 
-## Status: V1 — Evidence Intelligence
+## Status: V1 — Evidence Intelligence (certified); V2 partial; V3–V6 planned
 
 This release runs the first six stages end to end:
 
@@ -88,7 +88,7 @@ lofgren certify
 
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
 
-Lofgren Intelligence is also an MCP server, so it plugs into the AI a person already uses.
+Lofgren Intelligence has a certified-core local stdio MCP surface and a separate hosted/public MCP build. The local developer server below is usable now. The hosted service is not public-ready until its database, OAuth, tenancy, quota, economic, Stripe-sandbox, deployment and cross-client certification gates pass.
 
 ```bash
 # Claude Code
