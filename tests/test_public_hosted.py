@@ -324,10 +324,10 @@ class EconomicGateTests(unittest.TestCase):
     def test_paid_plan_gate_uses_p95_cost_not_average(self):
         samples = [
             {"units": 1, "known_cost_usd": 0.001, "unpriced_components": []}
-            for _ in range(95)
+            for _ in range(94)
         ] + [
             {"units": 1, "known_cost_usd": 0.02, "unpriced_components": []}
-            for _ in range(5)
+            for _ in range(6)
         ]
         with patch.dict(os.environ, {
             "LI_PAID_MONTHLY_USD": "49.99",
