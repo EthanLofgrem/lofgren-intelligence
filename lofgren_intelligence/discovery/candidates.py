@@ -11,7 +11,8 @@ For every candidate:
     simulation    the outcome model run on its parameters (Monte Carlo when distributions are declared)
     sensitivity   elasticities, break-even points, failure thresholds and robustness
     measures      technical feasibility, economic feasibility, expected value and robustness, kept separate:
-                  technical = share of simulated draws that break no constraint; economic = share that meet the
+                  technical = share of simulated draws that break none of the *stated* constraints (so 1.0 when
+                  none is stated: it never vouches for constraints nobody declared); economic = share that meet the
                   success relation; expected value = mean of the value metric. A measure given in the design
                   space is used when the engine cannot derive it, and says so.
 
@@ -319,9 +320,8 @@ def _evaluate_one(context, framed, space, spec, i, hypotheses, res, base_values,
         cand.sensitivity = {"sensitivity_id": sens.id, "elasticities": sens.elasticities,
                             "break_even": sens.break_even}
         cand.robustness = sens.robustness
-        evaluable = [v for v in sim.failure_states.values()]
-        if evaluable:
-            cand.technical_feasibility = round(1 - max(evaluable), 6)
+        # Share of draws that break none of the stated constraints (1.0 when none is stated: nothing stated breaks).
+        cand.technical_feasibility = round(1 - max(sim.failure_states.values(), default=0.0), 6)
         if space.success is not None:
             cand.economic_feasibility = sim.uncertainty["success_share"]
         cand.expected_outcome = (f"simulated {space.value_metric}: mean {sim.outcomes[space.value_metric]['mean']:g}, "

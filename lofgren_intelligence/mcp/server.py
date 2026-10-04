@@ -22,10 +22,12 @@ from typing import Any, Callable, TextIO
 
 from .. import __version__, build_registry
 from ..billing.pricing import PLANS, cheapest_plan, estimate, monthly_bill
+from ..discovery.errors import DiscoveryError
 from ..evidence.types import to_dict
 from ..intent.compiler import compile_intent
 from ..kernel.pipeline import RunResult, estimate_run, run_investigation
 from ..kernel.receipt import verify_receipt
+from ..kernel.knowledge_map import export_knowledge_map
 from ..kernel.state import export_state
 from ..models.provider import default_provider
 from ..orbital.catalog import IMAGING_SATELLITES, fetch_tles, load_tles
@@ -35,12 +37,19 @@ from ..report.markdown import render_markdown
 from ..research.planner import gap_unknowns, plan_research
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
+CONTRACT = "lofgren.mcp/2"  # V1 tools unchanged; V2 discovery tools and export_knowledge_map added
 INSTRUCTIONS = (
     "Lofgren Intelligence is an evidence layer. Typical flow: `compile_objective` -> `plan_research` "
     "(shows price) -> `investigate` (returns a run_id and typed findings) -> `get_finding`, "
     "`find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`. `verify_claim` tests one "
     "statement. `render_report` gives a human-readable view. Confidence is provisional until calibrated; treat "
-    "'contested' and 'supported' (single-source) findings as unsettled, and never present a hypothesis as a finding."
+    "'contested' and 'supported' (single-source) findings as unsettled, and never present a hypothesis as a finding. "
+    "Discovery (V2): `discover` takes a run_id plus an optional structured design space and returns a discovery_id, "
+    "an outcome and typed candidates; `generate_hypotheses`, `find_connections`, `find_discovery_gaps`, "
+    "`generate_candidates`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff` and "
+    "`render_discovery_report` read a discovery; `find_prior_art`, `simulate_candidate`, `analyze_sensitivity` and "
+    "`optimize_solution` run ad hoc. Simulated values are predictions, hypotheses are not established, and a "
+    "prior-art miss never means novelty. Contract " + CONTRACT + "."
 )
 
 _SOURCE_PROPS: dict[str, Any] = {
@@ -133,6 +142,94 @@ TOOLS: list[dict[str, Any]] = [
      "description": "Plans, and the monthly bill for a given usage on each plan.",
      "inputSchema": _obj([], {"standard_units": {"type": "number"}, "heavy_jobs": {"type": "integer"}})},
 ]
+_DISC = {"discovery_id": {"type": "string", "description": "The discovery_id returned by discover."}}
+_DESIGN = {"type": "object", "description": "Structured design space: model, value_metric, success, distributions, "
+                                            "assumptions, constraints, candidates, optimization, decision_rule, "
+                                            "simulation (see docs/DISCOVERY.md)."}
+_PRIOR_ART = {"type": "object", "description": "Prior-art fixture: subject, queries, records, coverage "
+                                               "{sources, domains, time_range, limitations}."}
+
+
+def _out_schema(required: list[str], props: dict | None = None) -> dict:
+    return {"type": "object", "required": required, "properties": props or {}}
+
+
+_KINDED = {"kind": {"type": "string"}}
+DISCOVERY_TOOLS: list[dict[str, Any]] = [
+    {"name": "export_knowledge_map",
+     "description": "The run's knowledge-map/2 (lofgren.knowledge-map/2): claims with question associations and "
+                    "assessments, evidence and source provenance, lineage, findings with derivation, fingerprints and "
+                    "the research receipt it is bound to.",
+     "inputSchema": _obj(["run_id"], _RUN),
+     "outputSchema": _out_schema(["schema", "research_id", "fingerprint", "receipt"])},
+    {"name": "discover",
+     "description": "Run V2 Discovery on a finished V1 run: frame, prior art, gaps, hypotheses and counter-hypotheses, "
+                    "connections, candidates with simulation, sensitivity and optimization, the discovery verifier, an "
+                    "explicit decision, a receipt and (when a candidate is selected) a V3 handoff.",
+     "inputSchema": _obj(["run_id", "objective"], {**_RUN, "objective": {"type": "string"}, "design": _DESIGN,
+                                                    "prior_art": _PRIOR_ART}),
+     "outputSchema": _out_schema(["discovery_id", "outcome", "candidates", "hypotheses", "findings", "kind"],
+                                 {"outcome": {"type": "string"}, "kind": {"const": "discovery"}})},
+    {"name": "find_prior_art",
+     "description": "Search a prior-art corpus and conclude only what its coverage supports: match found, no match "
+                    "within coverage (never novelty), or incomplete.",
+     "inputSchema": _obj(["run_id", "subject", "queries", "records", "coverage"],
+                         {**_RUN, "subject": {"type": "string"}, "queries": {"type": "array"},
+                          "records": {"type": "array"}, "coverage": {"type": "object"},
+                          "domains": {"type": "array"}, "time_range": {"type": "array"}}),
+     "outputSchema": _out_schema(["kind", "conclusion", "statement"])},
+    {"name": "find_discovery_gaps",
+     "description": "The gaps of a discovery, typed, with basis (unknown, contradiction, search absence) and capped "
+                    "confidence for search absences.",
+     "inputSchema": _obj(["discovery_id"], _DISC), "outputSchema": _out_schema(["kind", "gaps"])},
+    {"name": "find_connections",
+     "description": "Connections of a discovery: observed (same evidence), derived (same place/period, order, shared "
+                    "variable) or speculative (feeds hypotheses only).",
+     "inputSchema": _obj(["discovery_id"], _DISC), "outputSchema": _out_schema(["kind", "connections"])},
+    {"name": "generate_hypotheses",
+     "description": "Hypotheses and counter-hypotheses of a discovery with their evidence requirements. Never facts.",
+     "inputSchema": _obj(["discovery_id"], _DISC),
+     "outputSchema": _out_schema(["kind", "confidence_kind", "hypotheses", "requirements"])},
+    {"name": "generate_candidates",
+     "description": "Candidates of a discovery with separate measures (technical, economic, expected value, "
+                    "robustness), statuses and the decision rule. Order is not ranking.",
+     "inputSchema": _obj(["discovery_id"], _DISC), "outputSchema": _out_schema(["kind", "candidates", "decision"])},
+    {"name": "simulate_candidate",
+     "description": "Simulate one parameter set with a structured model (deterministic, or Monte Carlo with a seed). "
+                    "Results are predictions with kind 'simulated'.",
+     "inputSchema": _obj(["run_id", "model", "parameters"],
+                         {**_RUN, "model": {"type": "object"}, "parameters": {"type": "object"},
+                          "distributions": {"type": "object"}, "success": {"type": "object"},
+                          "seed": {"type": "integer"}, "iterations": {"type": "integer"}}),
+     "outputSchema": _out_schema(["kind", "confidence_kind", "simulation"])},
+    {"name": "analyze_sensitivity",
+     "description": "One-at-a-time sensitivity of a model around a parameter set: elasticities, break-even points, "
+                    "failure thresholds, robust ranges and robustness.",
+     "inputSchema": _obj(["run_id", "model", "parameters"],
+                         {**_RUN, "model": {"type": "object"}, "parameters": {"type": "object"},
+                          "success": {"type": "object"}}),
+     "outputSchema": _out_schema(["kind", "sensitivity"])},
+    {"name": "optimize_solution",
+     "description": "Solve a structured optimization problem (exhaustive, exact simplex or grid) and re-check the "
+                    "answer independently. 'optimal' only with a proof; grid search is never optimal.",
+     "inputSchema": _obj(["run_id", "problem"], {**_RUN, "problem": {"type": "object"}}),
+     "outputSchema": _out_schema(["kind", "status", "proof", "verified"])},
+    {"name": "verify_discovery",
+     "description": "Re-check a discovery: verifier issues, receipt integrity, receipt-object agreement and handoff "
+                    "validation.",
+     "inputSchema": _obj(["discovery_id"], _DISC),
+     "outputSchema": _out_schema(["kind", "receipt_intact", "issues", "handoff_problems"])},
+    {"name": "get_discovery_receipt",
+     "description": "The discovery receipt (lofgren.discovery-receipt/1) and whether it is intact.",
+     "inputSchema": _obj(["discovery_id"], _DISC), "outputSchema": _out_schema(["kind", "intact", "receipt"])},
+    {"name": "create_v3_handoff",
+     "description": "The validated V3 handoff (lofgren.v3-handoff/1) for the selected candidate, or why there is none.",
+     "inputSchema": _obj(["discovery_id"], _DISC), "outputSchema": _out_schema(["kind", "ready"])},
+    {"name": "render_discovery_report",
+     "description": "Human-readable Markdown view of a discovery.",
+     "inputSchema": _obj(["discovery_id"], _DISC)},
+]
+TOOLS = TOOLS + DISCOVERY_TOOLS
 # Older tool names kept working for existing clients.
 ALIASES = {"compile_intent": "compile_objective", "estimate_cost": "plan_research"}
 
@@ -149,6 +246,7 @@ def _out(data: Any) -> dict:
 class Server:
     def __init__(self) -> None:
         self.runs: dict[str, RunResult] = {}
+        self.discoveries: dict[str, Any] = {}
         self.handlers: dict[str, Callable[[dict], dict]] = {
             "compile_objective": self.t_compile_objective,
             "plan_research": self.t_plan_research,
@@ -163,6 +261,20 @@ class Server:
             "render_report": self.t_render_report,
             "satellite_passes": self.t_satellite_passes,
             "pricing": self.t_pricing,
+            "export_knowledge_map": self.t_export_knowledge_map,
+            "discover": self.t_discover,
+            "find_prior_art": self.t_find_prior_art,
+            "find_discovery_gaps": self.t_find_discovery_gaps,
+            "find_connections": self.t_find_connections,
+            "generate_hypotheses": self.t_generate_hypotheses,
+            "generate_candidates": self.t_generate_candidates,
+            "simulate_candidate": self.t_simulate_candidate,
+            "analyze_sensitivity": self.t_analyze_sensitivity,
+            "optimize_solution": self.t_optimize_solution,
+            "verify_discovery": self.t_verify_discovery,
+            "get_discovery_receipt": self.t_get_discovery_receipt,
+            "create_v3_handoff": self.t_create_v3_handoff,
+            "render_discovery_report": self.t_render_discovery_report,
         }
         for alias, target in ALIASES.items():
             self.handlers[alias] = self.handlers[target]
@@ -301,6 +413,139 @@ class Server:
         d["example_estimate"] = estimate("payg", 40).as_dict()
         return _out(d)
 
+    # -- discovery (V2) --------------------------------------------------------
+    def _context(self, a: dict):
+        """A fresh, validated knowledge-map/2 context for a session run (one per call: discoveries never share
+        a registry)."""
+        from ..discovery.context import DiscoveryContext
+
+        run = self._get_run(a)
+        return DiscoveryContext(export_knowledge_map(run), run.receipt)
+
+    def _get_discovery(self, a: dict):
+        d = self.discoveries.get(a.get("discovery_id", ""))
+        if d is None:
+            raise ToolError(f"unknown discovery_id {a.get('discovery_id')}; discoveries live for this server session only")
+        return d
+
+    def t_export_knowledge_map(self, a: dict) -> dict:
+        return _out(export_knowledge_map(self._get_run(a)))
+
+    def t_discover(self, a: dict) -> dict:
+        from ..discovery.pipeline import run_discovery
+        from ..discovery.report import discovery_summary
+
+        result = run_discovery(self._context(a), a["objective"], design=a.get("design"), prior_art=a.get("prior_art"))
+        did = result.receipt["discovery_id"]
+        self.discoveries[did] = result
+        return _out({"kind": "discovery", "contract": CONTRACT, **discovery_summary(result)})
+
+    def t_find_prior_art(self, a: dict) -> dict:
+        from ..discovery.pipeline import _prior_art_provider
+        from ..discovery.prior_art import assess_prior_art
+
+        ctx = self._context(a)
+        provider, spec = _prior_art_provider({k: a[k] for k in ("records", "coverage") if k in a})
+        assessment, meta = assess_prior_art(ctx, a["subject"], list(a["queries"]), provider,
+                                            domains=a.get("domains", ()), time_range=tuple(a.get("time_range", (None, None))))
+        return _out({"kind": "prior_art_assessment", "id": assessment.id, "conclusion": assessment.conclusion.value,
+                     "statement": assessment.statement, "matches": assessment.matches,
+                     "limitations": assessment.limitations, "unsearched_areas": assessment.unsearched_areas})
+
+    def t_find_discovery_gaps(self, a: dict) -> dict:
+        d = self._get_discovery(a)
+        gaps = d.gaps.gaps if d.gaps else ()
+        return _out({"kind": "gaps", "discovery_id": a["discovery_id"], "gaps": [g.to_dict() for g in gaps]})
+
+    def t_find_connections(self, a: dict) -> dict:
+        d = self._get_discovery(a)
+        conns = d.connections.connections if d.connections else ()
+        return _out({"kind": "connections", "discovery_id": a["discovery_id"],
+                     "connections": [{**c.to_dict(), "confidence_kind": "hypothesis" if c.strength.value == "speculative"
+                                      else "evidence"} for c in conns]})
+
+    def t_generate_hypotheses(self, a: dict) -> dict:
+        d = self._get_discovery(a)
+        return _out({"kind": "hypotheses", "confidence_kind": "hypothesis", "discovery_id": a["discovery_id"],
+                     "hypotheses": [h.to_dict() for h in d.hypotheses.all],
+                     "requirements": [q.to_dict() for q in d.requirements]})
+
+    def t_generate_candidates(self, a: dict) -> dict:
+        d = self._get_discovery(a)
+        return _out({"kind": "candidates", "confidence_kind": "candidate_robustness", "discovery_id": a["discovery_id"],
+                     "candidates": [c.to_dict() for c in d.candidates.candidates],
+                     "decision": d.decision.to_dict() if d.decision else None, "outcome": d.outcome.value})
+
+    def _adhoc(self, a: dict):
+        from ..discovery import DiscoveryObjective
+        from ..discovery.candidates import DesignSpace, evaluate_candidates
+        from ..discovery.frame import frame_problem
+
+        ctx = self._context(a)
+        framed = frame_problem(ctx, ctx.ensure(DiscoveryObjective("Ad hoc analysis", ctx.research_id)))
+        if framed.frame is None:
+            raise ToolError("the run established nothing to frame (insufficient evidence)")
+        space = DesignSpace.from_json({"model": a["model"], "success": a.get("success"),
+                                       "distributions": a.get("distributions", {}),
+                                       "simulation": {k: a[k] for k in ("seed", "iterations") if k in a},
+                                       "candidates": [{"description": "Ad hoc parameter set",
+                                                       "parameters": a["parameters"]}]})
+        return evaluate_candidates(ctx, framed, space)
+
+    def t_simulate_candidate(self, a: dict) -> dict:
+        res = self._adhoc(a)
+        if not res.simulations:
+            raise ToolError("the parameters do not give every model input a value: " + "; ".join(
+                c.uncertainty for c in res.candidates))
+        return _out({"kind": "simulated", "confidence_kind": "simulation_uncertainty",
+                     "simulation": res.simulations[0].to_dict()})
+
+    def t_analyze_sensitivity(self, a: dict) -> dict:
+        res = self._adhoc(a)
+        if not res.sensitivities:
+            raise ToolError("the parameters do not give every model input a value")
+        s = res.sensitivities[0]
+        return _out({"kind": "sensitivity", "confidence_kind": "candidate_robustness", "sensitivity": s.to_dict(),
+                     "swings": res.sensitivity_tables.get(s.candidate_id, {})})
+
+    def t_optimize_solution(self, a: dict) -> dict:
+        from ..discovery.optimize import optimize, problem_from_json
+
+        ctx = self._context(a)
+        problem = ctx.ensure(problem_from_json(a["problem"]))
+        r = optimize(ctx, problem)
+        return _out({"kind": "optimization_result", "confidence_kind": "candidate_robustness", **r.to_dict()})
+
+    def t_verify_discovery(self, a: dict) -> dict:
+        from ..discovery.handoff import validate_handoff
+        from ..discovery.receipt import objects_match_receipt, verify_discovery_receipt
+
+        d = self._get_discovery(a)
+        return _out({"kind": "discovery_verification", "receipt_intact": verify_discovery_receipt(d.receipt),
+                     "receipt_object_problems": objects_match_receipt(d.receipt, d.context.objects()),
+                     "issues": [i.__dict__ for i in d.verifier.issues],
+                     "handoff_problems": validate_handoff(d.handoff, d.receipt, d.context) if d.handoff else []})
+
+    def t_get_discovery_receipt(self, a: dict) -> dict:
+        from ..discovery.receipt import verify_discovery_receipt
+
+        d = self._get_discovery(a)
+        return _out({"kind": "discovery_receipt", "intact": verify_discovery_receipt(d.receipt), "receipt": d.receipt})
+
+    def t_create_v3_handoff(self, a: dict) -> dict:
+        d = self._get_discovery(a)
+        if d.handoff is None:
+            return _out({"kind": "v3_handoff", "ready": False, "outcome": d.outcome.value,
+                         "reason": f"no candidate was selected (outcome {d.outcome.value})",
+                         "requirements": [q.description for q in d.requirements]})
+        return _out({"kind": "v3_handoff", "ready": True, "handoff": d.handoff})
+
+    def t_render_discovery_report(self, a: dict) -> dict:
+        from ..discovery.report import render_discovery_markdown
+
+        md = render_discovery_markdown(self._get_discovery(a))
+        return {"text": md, "structured": {"discovery_id": a["discovery_id"], "format": "markdown", "report": md}}
+
     # -- protocol ------------------------------------------------------------
     def handle(self, msg: dict) -> dict | None:
         method, mid = msg.get("method"), msg.get("id")
@@ -326,7 +571,7 @@ class Server:
                     out = self.handlers[name](args)
                     result = {"content": [{"type": "text", "text": out["text"]}],
                               "structuredContent": out["structured"], "isError": False}
-                except (ToolError, KeyError, ValueError, FileNotFoundError) as exc:
+                except (ToolError, KeyError, ValueError, FileNotFoundError, DiscoveryError) as exc:
                     result = {"content": [{"type": "text", "text": f"error: {exc}"}], "isError": True}
             else:
                 return _error(mid, -32601, f"method not found: {method}")
