@@ -32,12 +32,12 @@ from typing import Any, Iterable, Mapping
 
 from .context import DiscoveryContext
 from .errors import MalformedInput, UnknownReference
-from .expr import Relation
+from .expr import Relation, Var
 from .frame import FrameResult
 from .optimize import optimize, problem_from_json
 from .principles import ground_constraint, state_assumption
 from .sensitivity import analyze_sensitivity
-from .simulate import ExpressionModel, MonteCarloModel, check_constraints, simulate
+from .simulate import ExpressionModel, MonteCarloModel, check_constraints, check_distribution, simulate
 from .types import (
     Assumption,
     Candidate,
@@ -118,6 +118,7 @@ class DesignSpace:
 
     model: ExpressionModel | None = None
     value_metric: str | None = None
+    facts: dict = field(default_factory=dict)  # variable -> V1 known claim id whose value and unit it takes
     success: Relation | None = None
     distributions: dict = field(default_factory=dict)
     assumptions: list[dict] = field(default_factory=list)
@@ -131,8 +132,8 @@ class DesignSpace:
     @staticmethod
     def from_json(data: Mapping | None) -> "DesignSpace":
         data = dict(data or {})
-        known = {"model", "value_metric", "success", "distributions", "assumptions", "constraints", "candidates",
-                 "optimization", "decision_rule", "simulation"}
+        known = {"model", "value_metric", "facts", "success", "distributions", "assumptions", "constraints",
+                 "candidates", "optimization", "decision_rule", "simulation"}
         extra = set(data) - known
         if extra:
             raise MalformedInput(f"unknown design-space fields {sorted(extra)}", "DesignSpace")
@@ -154,7 +155,14 @@ class DesignSpace:
                 raise MalformedInput(f"{key} is a list", f"DesignSpace.{key}")
         if data.get("distributions") and model is None:
             raise MalformedInput("distributions need a model", "DesignSpace.distributions")
-        return DesignSpace(model, value_metric, success, mapping(data.get("distributions", {}), "DesignSpace.distributions"),
+        distributions = mapping(data.get("distributions", {}), "DesignSpace.distributions")
+        for name, spec in distributions.items():  # unsupported kinds fail here, before anything runs
+            check_distribution(name, spec)
+        facts = mapping(data.get("facts", {}), "DesignSpace.facts")
+        for var, cid in facts.items():
+            Var(var)
+            text(cid, f"DesignSpace.facts.{var}")
+        return DesignSpace(model, value_metric, facts, success, distributions,
                            list(data.get("assumptions", [])), list(data.get("constraints", [])), list(candidates),
                            data.get("optimization"), DecisionRule.from_json(data.get("decision_rule")),
                            integer(sim.get("seed", DEFAULT_SEED), "DesignSpace.simulation.seed", 0, 2 ** 63 - 1),
@@ -227,6 +235,16 @@ def evaluate_candidates(context: DiscoveryContext, framed: FrameResult, space: D
     res.assumptions, res.constraints = ground_design(context, space, at)
     base_values = {a.name: a.value for a in res.assumptions if a.name and a.value is not None}
     base_units = {a.name: a.unit for a in res.assumptions if a.name}
+    fact_support: list[str] = []
+    for var, cid in sorted(space.facts.items()):
+        # Only a V1 known claim with a value can set a variable; uncertain or contested values must be assumptions.
+        claim = context.reference(cid, ("claim:known",), f"DesignSpace.facts.{var}")
+        if claim["value"] is None:
+            raise MalformedInput(f"{cid} states no value to bind to {var}", f"DesignSpace.facts.{var}")
+        if var in base_values:
+            raise MalformedInput(f"{var} is set by both a fact and an assumption", f"DesignSpace.facts.{var}")
+        base_values[var], base_units[var] = float(claim["value"]), claim["unit"] or ""
+        fact_support.append(cid)
     objective_text = framed.objective.objective
 
     specs = list(space.candidates)
@@ -248,14 +266,15 @@ def evaluate_candidates(context: DiscoveryContext, framed: FrameResult, space: D
 
     for i, spec in enumerate(specs):
         res.candidates.append(_evaluate_one(context, framed, space, spec, i, hypotheses, res, base_values,
-                                            base_units, objective_text, at))
+                                            base_units, objective_text, at, fact_support))
     _mark_dominated(res.candidates)
     if decide_now:
         res.decision = decide(context, res.candidates, space.decision_rule, at)
     return res
 
 
-def _evaluate_one(context, framed, space, spec, i, hypotheses, res, base_values, base_units, objective_text, at):
+def _evaluate_one(context, framed, space, spec, i, hypotheses, res, base_values, base_units, objective_text, at,
+                  fact_support=()):
     w = f"DesignSpace.candidates[{i}]"
     if not isinstance(spec, Mapping):
         raise MalformedInput("a candidate is an object", w)
@@ -267,7 +286,10 @@ def _evaluate_one(context, framed, space, spec, i, hypotheses, res, base_values,
         raise MalformedInput(f"unknown candidate fields {sorted(extra)}", w)
     description = check_no_novelty_claim(text(spec.get("description"), f"{w}.description"), f"{w}.description")
     params = {k: _param(k, v) for k, v in mapping(spec.get("parameters", {}), f"{w}.parameters").items()}
-    support = sorted(set(spec.get("evidence_support", [])))
+    overridden = set(params) & set(space.facts)
+    if overridden:
+        raise MalformedInput(f"{sorted(overridden)} are measured V1 facts; a candidate cannot set them", f"{w}.parameters")
+    support = sorted(set(spec.get("evidence_support", [])) | set(fact_support))
     linked = sorted(set(spec.get("hypotheses", [])) | set(_linked_hypotheses(hypotheses, set(support))))
     cand = context.register(Candidate(
         description, originating_gap=objective_text, problem=text(spec.get("problem", ""), f"{w}.problem",
@@ -387,7 +409,15 @@ def _reason(c: Candidate, rule: DecisionRule) -> str | None:
     return None
 
 
-def decide(context: DiscoveryContext, candidates: list[Candidate], rule: DecisionRule, at: str) -> DiscoveryDecision:
+def decide(context: DiscoveryContext, candidates: list[Candidate], rule: DecisionRule, at: str,
+           withhold: tuple[DiscoveryOutcome, str] | None = None) -> DiscoveryDecision:
+    """Apply `rule`. With `withhold` (outcome, reason), no candidate is selected whatever its measures: the
+    evidence state forbids a selection, and every candidate records why."""
+    if withhold is not None:
+        outcome, why = withhold
+        return context.ensure(DiscoveryDecision(rule.text, None, {c.id: _reason(c, rule) or why for c in candidates},
+                                                outcome, "", derived_from=sorted(c.id for c in candidates),
+                                                created_at=at))
     eligible = sorted((c for c in candidates if _reason(c, rule) is None),
                       key=lambda c: (-getattr(c, rule.maximize), c.id))
     alternatives = {}

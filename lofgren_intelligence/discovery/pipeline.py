@@ -199,7 +199,12 @@ def run_discovery(context: DiscoveryContext, objective: str, *, design: Mapping 
     ledger.record("verify", "verification", "discovery.verifier", 0.2, detail=f"{len(result.verifier.issues)} issues")
 
     if space is not None:
-        result.decision = decide(context, result.candidates.candidates, space.decision_rule, at)
+        withhold = None
+        if framed.frame.contradiction_ids and not framed.known_facts:
+            # Nothing is known and the evidence conflicts: no plan may be selected on assumptions alone.
+            withhold = (DiscoveryOutcome.CONTRADICTED, "the V1 evidence is contested and nothing is known; settle "
+                                                       "the contradictions before selecting")
+        result.decision = decide(context, result.candidates.candidates, space.decision_rule, at, withhold)
         result.candidates.decision = result.decision
     result.outcome = _outcome(result, space)
     rule = result.decision.rule if result.decision else "no decision: " + result.outcome.value
@@ -264,7 +269,13 @@ def build_handoff(result: DiscoveryResult) -> dict | None:
     ctx, cands = result.context, result.candidates
     scenario = next((s for s in cands.scenarios if s.candidate_id == sel.id), None)
     by_id = {c.id: c for c in cands.candidates}
-    specs = [{"name": k, "value": v["value"], "unit": v.get("unit", ""), "tolerance": None, "source_id": scenario.id}
+    facts = dict((result.receipt.get("config", {}).get("design", {}) or {}).get("facts", {}))
+    by_name = {a.name: a.id for a in cands.assumptions if a.name}
+
+    def source(name: str) -> str:  # a measured V1 fact, a stated assumption, or the candidate's own choice
+        return facts.get(name) or by_name.get(name) or scenario.id
+
+    specs = [{"name": k, "value": v["value"], "unit": v.get("unit", ""), "tolerance": None, "source_id": source(k)}
              for k, v in sorted((scenario.parameters if scenario else {}).items())]
     sim = next((s for s in cands.simulations if s.candidate_id == sel.id), None)
     expected = [{"metric": m, **{k: s[k] for k in ("mean", "p5", "p50", "p95", "unit")}, "kind": "simulated",
