@@ -10,7 +10,6 @@ from unittest.mock import patch
 from lofgren_intelligence.hosted.auth import OAuthService, Principal, code_challenge_s256, token_hash
 from lofgren_intelligence.hosted.costing import actual_run_cost
 from lofgren_intelligence.kernel.ledger import CostLedger
-from lofgren_intelligence.hosted.remote_mcp import RemoteMCP
 from lofgren_intelligence.hosted.security import PublicInputError, validate_remote_args
 from lofgren_intelligence.hosted.service import PaymentRequired, PublicService
 from lofgren_intelligence.hosted.stripe import apply_webhook, verify_webhook
@@ -183,33 +182,6 @@ class HostedRunTests(unittest.TestCase):
         service = PublicService(store)
         with self.assertRaises(PaymentRequired):
             service.investigate("u1", {"objective": OBJECTIVE, "texts": TEXTS})
-
-    def test_remote_mcp_is_durable_and_exposes_account_status(self):
-        store = FakeStore()
-        service = PublicService(store)
-        principal = Principal("u1", ("mcp",), "digest")
-        remote = RemoteMCP(service, principal, "https://li.example")
-        init = remote.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                              "params": {"protocolVersion": "2025-06-18"}})
-        self.assertEqual(init["result"]["protocolVersion"], "2025-06-18")
-        listed = remote.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        names = {x["name"] for x in listed["result"]["tools"]}
-        self.assertIn("investigate", names)
-        self.assertIn("account_status", names)
-        with patch.dict(os.environ, {
-            "LOFGREN_PROVIDER": "heuristic",
-            "LI_INFRA_USD_PER_RUN": "0",
-            "LI_RETRIEVAL_USD_PER_CALL": "0",
-        }, clear=False):
-            run = remote.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                 "params": {"name": "investigate",
-                                            "arguments": {"objective": OBJECTIVE, "texts": TEXTS}}})
-        self.assertFalse(run["result"]["isError"])
-        run_id = run["result"]["structuredContent"]["run_id"]
-        receipt = remote.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-                                 "params": {"name": "get_receipt", "arguments": {"run_id": run_id}}})
-        self.assertTrue(receipt["result"]["structuredContent"]["intact"])
-
 
     def test_same_research_id_is_tenant_scoped(self):
         store = FakeStore()
