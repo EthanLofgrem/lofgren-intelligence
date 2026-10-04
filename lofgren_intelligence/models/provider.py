@@ -88,6 +88,17 @@ class ReasoningProvider(ABC):
     def extract_claims(self, text: str, objective: str) -> list[dict]:
         """Return [{statement, value, unit, polarity}] factual claims found in text."""
 
+    def propose_hypotheses(self, frame: dict) -> list[dict]:
+        """Optional: propose hypothesis text for a discovery frame.
+
+        `frame` is plain data ({objective, known, uncertain, contradictions, gaps}, all text). Return
+        [{statement, mechanism}]. Proposals are ideas, never evidence: discovery records them with
+        origin "provider:<name>", ignores any other keys (such as claimed evidence or ids), and treats them
+        as unsupported until they are tied to V1 claim ids. The default proposes nothing; the discovery
+        engine's own strategies are deterministic and need no provider.
+        """
+        return []
+
 
 ModelProvider = ReasoningProvider  # backwards-compatible name
 

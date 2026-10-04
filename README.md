@@ -4,7 +4,9 @@ Open outcome intelligence system for evidence-driven research, verification, dis
 
 **A Lofgren Enterprise project.**
 
-> A governed intelligence layer that senses the physical and digital world, researches problems, verifies evidence, generates new possibilities, designs solutions, builds usable artifacts, executes authorized actions, measures real-world outcomes, and learns from the results.
+> A governed intelligence layer designed to sense the physical and digital world, research problems, verify evidence, generate new possibilities, design solutions, build usable artifacts, execute authorized actions, measure real-world outcomes, and learn from the results.
+>
+> **Built today:** V1 (research and verification) and V2 (discovery: hypotheses, candidates, simulation, sensitivity, optimization, decision and a V3 handoff). Building artifacts (V3), executing actions (V4), measuring outcomes (V5) and learning from them (V6) are designed but not built yet.
 
 Most AI tools stop at an answer. Lofgren Intelligence is built to carry an objective the whole way to an outcome:
 
@@ -15,9 +17,9 @@ Intent → Plan → Sense → Research → Verify → Imagine → Simulate → O
 
 It is not another chatbot and not another model. Models (Claude, GPT and others) are replaceable suppliers of reasoning. This layer owns what makes results trustworthy: the plan, the evidence, the verification, the authority to act, and the memory of what actually worked.
 
-## Status: V1 — Evidence Intelligence
+## Status: V1 — Evidence Intelligence and V2 — Discovery Intelligence
 
-This release runs the first six stages end to end:
+V1 runs the first six stages end to end:
 
 | Stage | What V1 does |
 | --- | --- |
@@ -28,7 +30,20 @@ This release runs the first six stages end to end:
 | **Verify** | Cross-checks claims across *independent* sources, records contradictions instead of averaging them away, and scores confidence from source quality, independence, recency, directness and contradiction. |
 | **Report** | A cited report: verified, partially verified, contested and single-source findings, contradictions, what is missing, the full loop status, and the cost. |
 
-Later stages are declared in the kernel already and show as "arrives in V2…V5" in every report. See [docs/ROADMAP.md](docs/ROADMAP.md).
+V2 (release 0.3.0) runs the next three over V1's verified state (see [docs/DISCOVERY.md](docs/DISCOVERY.md)):
+
+| Stage | What V2 does |
+| --- | --- |
+| **Imagine** | Frames the problem from V1's knowledge map, checks prior art (a miss is never called novelty), finds gaps and connections, and proposes hypotheses with counter-hypotheses, each with the evidence that would test it. Candidate solutions come from a structured design space, never from prose. |
+| **Simulate** | Runs structured models over each candidate (seeded Monte Carlo), then sensitivity analysis: elasticities, break-even points, failure thresholds, robustness. Results are predictions, never observations. |
+| **Optimize** | Exhaustive integer search, an exact-rational simplex with an optimality certificate, or a grid search that can only report "feasible"; every answer is re-checked independently. |
+
+A discovery verifier then lowers anything unsupported, an explicit recorded rule decides, and the result is a
+tamper-evident discovery receipt plus, when a candidate is selected, a validated V3 handoff. V2 never writes to V1's
+evidence, never turns an idea into a fact, and cannot execute anything. It passes its own gate, `lofgren certify --v2`
+([docs/V2_CERTIFICATION.md](docs/V2_CERTIFICATION.md)).
+
+Later stages are declared in the kernel and show as not yet available in every report. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Release 0.2.0: V1 hardened for V2
 
@@ -82,13 +97,19 @@ lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
 BRAVE_API_KEY=... lofgren investigate "..." --search brave
 LOFGREN_PROVIDER=openai-compatible LOFGREN_BASE_URL=http://localhost:11434/v1 LOFGREN_MODEL=llama3.1 lofgren investigate "..."
 
-# The gate before V2
+# Discovery (V2): research, then frame, hypothesize, simulate, optimize and decide
+lofgren discover "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources \
+  --goal "Choose a warehouse size (fictional)" --design design.json --handoff handoff.json
+
+# The gates: V1, the V1 -> V2 boundary, and V2
 lofgren certify
+lofgren certify-boundary
+lofgren certify --v2
 ```
 
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
 
-Lofgren Intelligence is also an MCP server, so it plugs into the AI a person already uses.
+Lofgren Intelligence has both a local stdio MCP server and a hosted MCP service under release certification. V1 and V2 are certified in the core. The hosted integration now exposes those capabilities through authenticated, tenant-scoped, durable service code, but it is **not public-ready** until the database, OAuth, cross-client, Stripe sandbox, backup/restore, deployment and exact-SHA release evidence gates pass.
 
 ```bash
 # Claude Code
@@ -102,7 +123,12 @@ command = "lofgren"
 args = ["mcp"]
 ```
 
-Tools return structured data, not narrative: `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `render_report`, `satellite_passes`, `pricing`.
+Tools return structured data, not narrative (contract `lofgren.mcp/2`):
+
+- **Research (V1):** `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `export_knowledge_map`, `render_report`, `satellite_passes`, `pricing`.
+- **Discovery (V2):** `discover`, `find_prior_art`, `find_discovery_gaps`, `find_connections`, `generate_hypotheses`, `generate_candidates`, `simulate_candidate`, `analyze_sensitivity`, `optimize_solution`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff`, `render_discovery_report`.
+
+Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server keeps runs/discoveries for its process lifetime. The hosted service uses durable tenant-scoped run and discovery storage and is being certified separately before public release.
 
 ## How a finding earns its status
 
@@ -141,7 +167,8 @@ lofgren_intelligence/
   billing/       work units, job classes, plans, bill formula
   report/        Markdown and JSON reports
   mcp/           MCP server (stdio), structured tools
-  discovery/     V2 entry contracts: Hypothesis, Candidate, promotion guard
+  discovery/     V2 Discovery: context, framing, prior art, gaps, connections, hypotheses, candidates,
+                 simulation, sensitivity, optimization, verifier, receipt, V3 handoff, pipeline, certification
   certification.py  the V1Ready gate (lofgren certify)
   schemas.py     JSON Schemas for the evidence protocol
   cli.py         the `lofgren` command
@@ -164,6 +191,7 @@ python -m unittest discover -s tests -t .
 - [Lofgren Enterprise integration](docs/LOFGREN_ENTERPRISE.md)
 - [Evidence protocol](docs/EVIDENCE_PROTOCOL.md)
 - [V1 certification: the gate before V2](docs/V1_CERTIFICATION.md)
+- [Discovery Intelligence (V2)](docs/DISCOVERY.md) · [V2 certification: the gate before V3](docs/V2_CERTIFICATION.md)
 - [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
 
 ## License

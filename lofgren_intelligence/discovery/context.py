@@ -75,8 +75,11 @@ from .expr import Unit
 from .types import (
     Assumption,
     Candidate,
+    Connection,
     Constraint,
     CounterHypothesis,
+    DiscoveryDecision,
+    DiscoveryFinding,
     DiscoveryObjective,
     EvidenceRequirement,
     Gap,
@@ -85,7 +88,12 @@ from .types import (
     MissingEvidence,
     PriorArt,
     PriorArtAssessment,
+    OptimizationProblem,
+    OptimizationResult,
     ProblemFrame,
+    Scenario,
+    SensitivityResult,
+    Simulation,
     Uncertainty,
     V2_IDEA_PREFIXES,
     _Obj,
@@ -484,6 +492,18 @@ _RULES: dict[type, dict[str, tuple]] = {
                 "prior_art_assessment_id": (PriorArtAssessment,)},
 }
 _RULES[CounterHypothesis] = {**_RULES[Hypothesis], "counters": (Hypothesis,)}
+_RULES.update({
+    # Endpoints are anything in this context (V1 entities, evidence, V2 objects); a connection can only join
+    # what exists here, so it cannot launder an id from elsewhere.
+    Connection: {"a": ("any",), "b": ("any",), "evidence_ids": ("any",)},
+    Scenario: {"candidate_id": (Candidate,), "assumption_ids": (Assumption,)},
+    Simulation: {"candidate_id": (Candidate,), "assumptions": (Assumption,)},
+    SensitivityResult: {"candidate_id": (Candidate,), "fragile_assumptions": (Assumption,)},
+    OptimizationProblem: {},
+    OptimizationResult: {"problem_id": (OptimizationProblem,)},
+    DiscoveryFinding: {"rests_on": ("any",)},
+    DiscoveryDecision: {"selected_candidate_id": (Candidate,)},
+})
 
 
 class DiscoveryContext:
@@ -869,7 +889,7 @@ class DiscoveryContext:
         name = type(obj).__name__
         rules = _RULES.get(type(obj))
         if rules is None:
-            raise MalformedInput(f"{name} cannot be registered in a step 2 context yet", "DiscoveryContext")
+            raise MalformedInput(f"{name} is not a registrable discovery object", "DiscoveryContext")
         for field_name, accept in rules.items():
             value = getattr(obj, field_name)
             refs = value if isinstance(value, list) else [value]
@@ -996,5 +1016,10 @@ def _check_assessment(ctx: DiscoveryContext, obj: PriorArtAssessment) -> None:
                                  f"{obj.id}:PriorArtAssessment.search_ids")
 
 
-_SEMANTIC = {DiscoveryObjective: _check_objective, KnownFact: _check_known_fact, Uncertainty: _check_uncertainty,
+def _check_decision(ctx: DiscoveryContext, obj: DiscoveryDecision) -> None:
+    for cid in obj.alternatives:
+        ctx.reference(cid, (Candidate,), f"{obj.id}:DiscoveryDecision.alternatives")
+
+
+_SEMANTIC = {DiscoveryDecision: _check_decision, DiscoveryObjective: _check_objective, KnownFact: _check_known_fact, Uncertainty: _check_uncertainty,
              MissingEvidence: _check_missing, Constraint: _check_constraint, PriorArtAssessment: _check_assessment}
