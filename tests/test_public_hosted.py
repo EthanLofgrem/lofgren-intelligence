@@ -85,6 +85,19 @@ class FakeStore:
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
 
+    def list_runs(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.runs.items() if uid == user_id][:limit]
+
+    def list_usage(self, user_id, limit=5000):
+        return [row for row in self.usage if row["user_id"] == user_id][:limit]
+
+    def delete_auth_user(self, user_id):
+        self.deleted_user = user_id
+        self.account = None
+        self.entitlement = None
+        self.runs = {k: v for k, v in self.runs.items() if k[0] != user_id}
+        self.usage = [row for row in self.usage if row["user_id"] != user_id]
+
     def record_usage(self, row):
         self.usage.append(dict(row))
 
@@ -223,6 +236,27 @@ class HostedRunTests(unittest.TestCase):
         store.save_run({"run_id": "RR-SAME", "user_id": "u2", "snapshot": {"owner": "u2"}})
         self.assertEqual(store.get_run("u1", "RR-SAME")["snapshot"]["owner"], "u1")
         self.assertEqual(store.get_run("u2", "RR-SAME")["snapshot"]["owner"], "u2")
+
+
+    def test_account_export_is_tenant_scoped(self):
+        store = FakeStore()
+        store.save_run({"user_id": "u1", "run_id": "RR-1", "snapshot": {"owner": "u1"}})
+        store.save_run({"user_id": "u2", "run_id": "RR-2", "snapshot": {"owner": "u2"}})
+        service = PublicService(store)
+        exported = service.export_account_data("u1")
+        self.assertEqual([x["run_id"] for x in exported["runs"]], ["RR-1"])
+
+    def test_account_delete_requires_exact_phrase_and_cancels_paid_subscription_first(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({"stripe_subscription_id": "sub_test", "stripe_customer_id": "cus_test"})
+        service = PublicService(store)
+        with self.assertRaises(Exception):
+            service.delete_account("u1", "DELETE")
+        with patch("lofgren_intelligence.hosted.service.cancel_subscription") as cancel:
+            out = service.delete_account("u1", "DELETE MY LOFGREN INTELLIGENCE ACCOUNT")
+        cancel.assert_called_once_with("sub_test")
+        self.assertTrue(out["deleted"])
+        self.assertEqual(store.deleted_user, "u1")
 
 
 class PublicSecurityTests(unittest.TestCase):
