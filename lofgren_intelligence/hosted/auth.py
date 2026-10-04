@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import secrets
 import time
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,6 +22,10 @@ from .store import SupabaseStore
 
 class AuthError(RuntimeError):
     pass
+
+
+_PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+_PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 def token_hash(value: str) -> str:
@@ -100,6 +105,8 @@ class OAuthService:
     ) -> str:
         if not client_id or not redirect_uri or not code_challenge:
             raise AuthError("client_id, redirect_uri and code_challenge are required")
+        if not _PKCE_CHALLENGE.fullmatch(code_challenge):
+            raise AuthError("PKCE S256 code_challenge must be 43 base64url characters")
         self._client(client_id, redirect_uri)
         user = self.store.verify_supabase_user(supabase_access_token)
         user_id = str(user["id"])
@@ -158,6 +165,8 @@ class OAuthService:
         redirect_uri: str,
     ) -> dict[str, Any]:
         self._client(client_id, redirect_uri)
+        if not _PKCE_VERIFIER.fullmatch(code_verifier):
+            raise AuthError("PKCE code_verifier must be 43-128 unreserved characters")
         row = self.store.consume_oauth_code(token_hash(code))
         if not row:
             raise AuthError("authorization code is invalid, expired or already used")
