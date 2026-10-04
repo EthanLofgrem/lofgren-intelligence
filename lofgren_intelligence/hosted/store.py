@@ -210,6 +210,18 @@ class SupabaseStore:
         )
         return float(sum(float(r.get("units") or 0.0) for r in (rows or [])))
 
+    def cost_samples(self, limit: int = 5000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_usage_events",
+            query={
+                "select": "units,known_cost_usd,unpriced_components,created_at",
+                "units": "gt.0",
+                "order": "created_at.desc",
+                "limit": str(int(limit)),
+            },
+        )
+        return list(rows or [])
+
     def stripe_event_seen(self, event_id: str) -> bool:
         rows = self._table(
             "li_billing_events",
