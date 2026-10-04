@@ -6,6 +6,9 @@ import html
 import json
 import os
 import urllib.parse
+import logging
+import time
+import uuid
 from typing import Any
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -20,6 +23,9 @@ from .mcp_sdk import build_mcp
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
 from .stripe import StripeError, apply_webhook, verify_webhook
+
+
+_LOG = logging.getLogger("lofgren_intelligence.public")
 
 
 def public_base() -> str:
@@ -247,6 +253,44 @@ async def landing(request: Request) -> Response:
     return HTMLResponse(page)
 
 
+class RequestTelemetry:
+    """Emit content-free structured request telemetry with a correlation id."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        request_id = str(uuid.uuid4())
+        started = time.perf_counter()
+        status = 500
+
+        async def wrapped(message: Any) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = int(message["status"])
+                headers = list(message.get("headers", []))
+                headers.append((b"x-request-id", request_id.encode("ascii")))
+                message["headers"] = headers
+            await send(message)
+
+        try:
+            await self.app(scope, receive, wrapped)
+        finally:
+            _LOG.info(
+                "public_request",
+                extra={
+                    "request_id": request_id,
+                    "method": scope.get("method"),
+                    "path": scope.get("path"),
+                    "status": status,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+
+
 class SecurityHeaders:
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -314,4 +358,4 @@ def build_app():
         expose_headers=["Mcp-Session-Id", "WWW-Authenticate"],
         max_age=600,
     )
-    return SecurityHeaders(app)
+    return RequestTelemetry(SecurityHeaders(app))
