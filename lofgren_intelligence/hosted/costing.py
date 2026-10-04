@@ -25,7 +25,10 @@ def _rate(name: str) -> float | None:
     raw = os.environ.get(name)
     if raw in (None, ""):
         return None
-    return float(raw)
+    value = float(raw)
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
 
 
 def actual_run_cost(provider_info: dict[str, Any], ledger: Any) -> CostResult:
@@ -36,13 +39,17 @@ def actual_run_cost(provider_info: dict[str, Any], ledger: Any) -> CostResult:
     known = 0.0
     missing: list[str] = []
 
-    if calls and (input_tokens or output_tokens):
-        rin = _rate("LI_MODEL_INPUT_USD_PER_M_TOKENS")
-        rout = _rate("LI_MODEL_OUTPUT_USD_PER_M_TOKENS")
-        if rin is None or rout is None:
-            missing.append("model_token_rates")
+    provider_name = str((provider_info or {}).get("name") or "")
+    if provider_name not in {"", "heuristic"} and calls:
+        if input_tokens or output_tokens:
+            rin = _rate("LI_MODEL_INPUT_USD_PER_M_TOKENS")
+            rout = _rate("LI_MODEL_OUTPUT_USD_PER_M_TOKENS")
+            if rin is None or rout is None:
+                missing.append("model_token_rates")
+            else:
+                known += input_tokens / 1_000_000 * rin + output_tokens / 1_000_000 * rout
         else:
-            known += input_tokens / 1_000_000 * rin + output_tokens / 1_000_000 * rout
+            missing.append("model_usage")
 
     retrieval_calls = 0
     external_known = 0.0
@@ -51,7 +58,8 @@ def actual_run_cost(provider_info: dict[str, Any], ledger: Any) -> CostResult:
             if e.kind == "retrieval":
                 retrieval_calls += 1
             if e.kind == "external_data":
-                external_known += float(getattr(e, "external_usd", 0.0) or 0.0)
+                ledger_rate = float(getattr(ledger, "rate_usd_per_unit", 0.0) or 0.0)
+                external_known += max(0.0, float(e.usd) - float(e.work_units) * ledger_rate)
     known += external_known
     if retrieval_calls:
         rr = _rate("LI_RETRIEVAL_USD_PER_CALL")
