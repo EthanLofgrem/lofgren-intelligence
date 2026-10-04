@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lofgren-intelligence"
-version = "0.4.0"
-description = "Governed outcome intelligence: certified evidence, discovery, and verified artifact production."
+version = "0.5.0"
+description = "Governed outcome intelligence: certified evidence, discovery, production, and authorized execution."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
