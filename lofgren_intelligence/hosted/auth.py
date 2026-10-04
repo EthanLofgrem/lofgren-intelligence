@@ -13,6 +13,7 @@ import hmac
 import secrets
 import time
 import re
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -102,12 +103,16 @@ class OAuthService:
         redirect_uri: str,
         code_challenge: str,
         scope: str,
+        resource: str,
     ) -> str:
         if not client_id or not redirect_uri or not code_challenge:
             raise AuthError("client_id, redirect_uri and code_challenge are required")
         if not _PKCE_CHALLENGE.fullmatch(code_challenge):
             raise AuthError("PKCE S256 code_challenge must be 43 base64url characters")
         self._client(client_id, redirect_uri)
+        expected_resource = os.environ.get("LI_PUBLIC_BASE_URL", "").rstrip("/") + "/mcp"
+        if not expected_resource.startswith("http") or resource != expected_resource:
+            raise AuthError("invalid OAuth resource")
         user = self.store.verify_supabase_user(supabase_access_token)
         user_id = str(user["id"])
         self.store.activate_account(user_id, user.get("email"))
@@ -120,12 +125,13 @@ class OAuthService:
                 "redirect_uri": redirect_uri,
                 "code_challenge": code_challenge,
                 "scope": scope or "mcp",
+                "resource": resource,
                 "expires_at": (now() + timedelta(minutes=10)).isoformat(),
             }
         )
         return raw
 
-    def _issue_tokens(self, user_id: str, client_id: str, scope: str) -> dict[str, Any]:
+    def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str) -> dict[str, Any]:
         access = new_opaque("lit_")
         refresh = new_opaque("lir_")
         access_lifetime = timedelta(hours=1)
@@ -136,6 +142,7 @@ class OAuthService:
                 "user_id": user_id,
                 "client_id": client_id,
                 "scope": scope or "mcp",
+                "resource": resource,
                 "expires_at": (now() + access_lifetime).isoformat(),
             }
         )
@@ -145,6 +152,7 @@ class OAuthService:
                 "user_id": user_id,
                 "client_id": client_id,
                 "scope": scope or "mcp",
+                "resource": resource,
                 "expires_at": (now() + refresh_lifetime).isoformat(),
             }
         )
@@ -175,7 +183,7 @@ class OAuthService:
         expected = str(row.get("code_challenge") or "")
         if not hmac.compare_digest(code_challenge_s256(code_verifier), expected):
             raise AuthError("PKCE verification failed")
-        return self._issue_tokens(str(row["user_id"]), client_id, str(row.get("scope") or "mcp"))
+        return self._issue_tokens(str(row["user_id"]), client_id, str(row.get("scope") or "mcp"), str(row.get("resource") or ""))
 
     def refresh(self, *, refresh_token: str, client_id: str) -> dict[str, Any]:
         self._client(client_id)
@@ -184,7 +192,7 @@ class OAuthService:
             raise AuthError("refresh token is invalid, expired or already used")
         if row.get("client_id") != client_id:
             raise AuthError("refresh token client mismatch")
-        return self._issue_tokens(str(row["user_id"]), client_id, str(row.get("scope") or "mcp"))
+        return self._issue_tokens(str(row["user_id"]), client_id, str(row.get("scope") or "mcp"), str(row.get("resource") or ""))
 
     def authenticate(self, bearer: str) -> Principal:
         if not bearer:
