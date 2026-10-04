@@ -9,6 +9,7 @@ import urllib.parse
 import logging
 import time
 import uuid
+import secrets
 from typing import Any
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -183,11 +184,17 @@ async def oauth_authorize(request: Request) -> Response:
     safe_params = json.dumps(params).replace("<", "\\u003c")
     safe_url = json.dumps(supabase_url).replace("<", "\\u003c")
     safe_key = json.dumps(public_key).replace("<", "\\u003c")
+    nonce = secrets.token_urlsafe(18)
+    supabase_origin = urllib.parse.urlunsplit((
+        urllib.parse.urlsplit(supabase_url).scheme,
+        urllib.parse.urlsplit(supabase_url).netloc,
+        "", "", "",
+    ))
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect Lofgren Intelligence</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<style>
+<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style nonce="{nonce}">
 body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh}}
 main{{width:min(92vw,480px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
 h1{{font-size:24px;margin:0 0 6px}}p{{color:#aeb8c7}}input,button{{width:100%;box-sizing:border-box;padding:12px;margin:8px 0;border-radius:9px}}
@@ -202,8 +209,7 @@ small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
 <button id="signup">Create account</button>
 <div id="status"></div>
 <small>Activated accounts 1–1000 receive quota-limited Founding Free access. Account 1001 onward requires a paid entitlement.</small>
-<script>
-const cfg={safe_params};
+<script nonce="{nonce}">\nconst cfg={safe_params};
 const sb=supabase.createClient({safe_url},{safe_key});
 const status=document.querySelector('#status');
 const email=document.querySelector('#email');
@@ -218,7 +224,17 @@ document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Si
 document.querySelector('#signup').onclick=async()=>{{try{{status.textContent='Creating account…';const x=await sb.auth.signUp({{email:email.value,password:password.value,options:{{emailRedirectTo:location.href}}}});if(x.error)throw x.error;if(x.data.session)await complete(x.data.session);else status.textContent='Check your email to confirm the account, then return here.'}}catch(e){{status.textContent=e.message}}}};
 existing().catch(e=>status.textContent=e.message);
 </script></main></body></html>"""
-    return HTMLResponse(page)
+    csp = (
+        "default-src 'none'; "
+        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"style-src 'nonce-{nonce}'; "
+        f"connect-src 'self' {supabase_origin}; "
+        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return HTMLResponse(page, headers={
+        "Content-Security-Policy": csp,
+        "Cache-Control": "no-store",
+    })
 
 
 async def stripe_webhook(request: Request) -> Response:
