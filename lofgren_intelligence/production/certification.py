@@ -89,8 +89,9 @@ def run_v3_certification() -> dict:
     )))
 
     def deterministic():
-        a = _build()
-        b = _build()
+        context, discovery = _fixture()
+        a = build_artifact(discovery.handoff, discovery_receipt=discovery.receipt, context=context)
+        b = build_artifact(discovery.handoff, discovery_receipt=discovery.receipt, context=context)
         assert a.artifact["fingerprint"] == b.artifact["fingerprint"]
         assert a.artifact_id == b.artifact_id
         assert a.receipt["receipt_hash"] == b.receipt["receipt_hash"]
