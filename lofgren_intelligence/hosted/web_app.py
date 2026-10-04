@@ -21,6 +21,7 @@ from starlette.routing import Route
 from .. import __version__
 from .auth import AuthError, OAuthService
 from .mcp_sdk import build_mcp
+from .service import PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
 from .stripe import StripeError, apply_webhook, verify_webhook
