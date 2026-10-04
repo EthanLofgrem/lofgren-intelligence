@@ -279,4 +279,10 @@ def build_mcp(base_url: str) -> MCPServer:
         user_id, service = _caller()
         return service.checkout(user_id, base)
 
+    @mcp.tool()
+    def billing_portal() -> dict[str, Any]:
+        """Open Stripe-hosted subscription management for a paid account."""
+        user_id, service = _caller()
+        return service.billing_portal(user_id, base)
+
     return mcp
