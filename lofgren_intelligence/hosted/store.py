@@ -229,6 +229,33 @@ class SupabaseStore:
             headers=self._headers,
         )
 
+    def save_discovery(self, row: dict[str, Any]) -> None:
+        self._table("li_discoveries", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
+
+    def get_discovery(self, user_id: str, discovery_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_discoveries",
+            query={
+                "select": "*",
+                "user_id": f"eq.{user_id}",
+                "discovery_id": f"eq.{discovery_id}",
+                "limit": "1",
+            },
+        )
+        return rows[0] if rows else None
+
+    def list_discoveries(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_discoveries",
+            query={
+                "select": "*",
+                "user_id": f"eq.{user_id}",
+                "order": "created_at.asc",
+                "limit": str(min(max(1, int(limit)), 1000)),
+            },
+        )
+        return list(rows or [])
+
     def record_usage(self, row: dict[str, Any]) -> None:
         self._table("li_usage_events", "POST", body=row, prefer="return=minimal")
 
