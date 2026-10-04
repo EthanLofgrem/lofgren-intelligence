@@ -23,7 +23,7 @@ from .economics import certify_paid_plan
 from .security import validate_remote_args
 from .snapshots import durable_snapshot, summary
 from .store import SupabaseStore, utcnow
-from .stripe import create_checkout
+from .stripe import create_billing_portal, create_checkout
 
 
 class PublicServiceError(RuntimeError):
@@ -278,9 +278,25 @@ class PublicService:
             raise PublicServiceError("entitlement missing")
         if ent.get("kind") == "founding_free":
             raise PublicServiceError("Founding Free accounts do not need checkout")
+        if ent.get("kind") != "paid_required":
+            raise PublicServiceError("account already has a paid entitlement; use billing portal")
         session = create_checkout(
             user_id,
             success_url=base_url.rstrip("/") + "/billing/success?session_id={CHECKOUT_SESSION_ID}",
             cancel_url=base_url.rstrip("/") + "/billing/cancelled",
         )
         return {"checkout_url": session.get("url"), "session_id": session.get("id")}
+
+
+    def billing_portal(self, user_id: str, base_url: str) -> dict[str, Any]:
+        ent = self.store.get_entitlement(user_id)
+        if not ent or ent.get("kind") != "paid":
+            raise PublicServiceError("billing portal requires an active paid entitlement")
+        customer_id = str(ent.get("stripe_customer_id") or "")
+        if not customer_id:
+            raise PublicServiceError("paid entitlement is missing its Stripe customer id")
+        session = create_billing_portal(
+            customer_id,
+            return_url=base_url.rstrip("/") + "/",
+        )
+        return {"portal_url": session.get("url"), "session_id": session.get("id")}
