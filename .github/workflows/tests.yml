@@ -29,6 +29,8 @@ jobs:
           python -m lofgren_intelligence investigate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources > /dev/null
       - name: V1 certification gate
         run: python -m lofgren_intelligence certify
+      - name: V2 discovery certification
+        run: python -m lofgren_intelligence certify --v2
       - name: Static check
         run: python -m compileall -q lofgren_intelligence
       - name: Package smoke test (clean wheel, installed and run outside the source tree)
@@ -40,6 +42,7 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-env/bin/python" -c "import lofgren_intelligence, lofgren_intelligence.discovery.context, lofgren_intelligence.discovery.schemas; print(lofgren_intelligence.__file__)"
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify
+          "$RUNNER_TEMP/wheel-env/bin/lofgren" certify --v2
       - name: V1 -> V2 boundary certification
         run: |
           python -m lofgren_intelligence certify-boundary
