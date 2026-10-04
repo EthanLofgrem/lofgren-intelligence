@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from ..evidence.types import Evidence, EvidenceKind, Source, SourceKind, topic_tokens
 from .base import Adapter, GatherResult
+from .net import safe_urlopen, validate_public_url
 
 if TYPE_CHECKING:
     from ..intent.compiler import OutcomeContract, Question
@@ -126,7 +127,7 @@ class WebPageAdapter(_PassageAdapter):
     description = "Public web pages fetched by URL (read-only, no crawling)."
 
     def __init__(self, urls: list[str] | None = None, quality: float = 0.5, timeout: float = 15.0) -> None:
-        self.urls = list(urls or [])
+        self.urls = [validate_public_url(u) for u in (urls or [])]
         self.quality = quality
         self.timeout = timeout
         self._cache: dict[str, str] = {}
@@ -137,7 +138,7 @@ class WebPageAdapter(_PassageAdapter):
     def _fetch(self, url: str) -> str:
         if url not in self._cache:
             req = urllib.request.Request(url, headers={"User-Agent": "lofgren-intelligence/0.1 (research)"})
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - user-named URL
+            with safe_urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read(2_000_000).decode(resp.headers.get_content_charset() or "utf-8", "replace")
             self._cache[url] = strip_html(raw)
         return self._cache[url]
