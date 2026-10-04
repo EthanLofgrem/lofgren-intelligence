@@ -237,6 +237,95 @@ existing().catch(e=>status.textContent=e.message);
     })
 
 
+def _supabase_session_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise StoreError("Supabase user session is required")
+    return auth.split(" ", 1)[1].strip()
+
+
+async def account_export(request: Request) -> Response:
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        data = PublicService(store).export_account_data(str(user["id"]))
+        return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=lofgren-intelligence-data.json"})
+    except (StoreError, PublicServiceError) as exc:
+        return _error(401, "unauthorized", str(exc))
+
+
+async def account_delete(request: Request) -> Response:
+    try:
+        body = await _json_body(request, 10_000)
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).delete_account(
+            str(user["id"]),
+            str(body.get("confirmation") or ""),
+        )
+        return JSONResponse(result)
+    except (StoreError, PublicServiceError, StripeError, ValueError) as exc:
+        return _error(400, "account_deletion_refused", str(exc))
+
+
+async def account_page(request: Request) -> Response:
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    public_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+    if not supabase_url or not public_key:
+        return _error(503, "account_management_not_configured")
+    nonce = secrets.token_urlsafe(18)
+    safe_url = json.dumps(supabase_url).replace("<", "\\u003c")
+    safe_key = json.dumps(public_key).replace("<", "\\u003c")
+    origin = urllib.parse.urlunsplit((
+        urllib.parse.urlsplit(supabase_url).scheme,
+        urllib.parse.urlsplit(supabase_url).netloc,
+        "", "", "",
+    ))
+    page = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lofgren Intelligence account</title>
+<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style nonce="{nonce}">
+body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh}}
+main{{width:min(92vw,600px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
+input,button{{width:100%;box-sizing:border-box;padding:12px;margin:8px 0;border-radius:9px}}
+input{{background:#0e1218;color:white;border:1px solid #344054}}button{{background:#2563eb;color:white;border:0;font-weight:700}}
+.danger{{background:#b42318}}small,#status{{color:#aeb8c7}}
+</style></head><body><main>
+<h1>Account &amp; privacy</h1>
+<p>Sign in to export your Lofgren Intelligence account/research data or permanently delete your account.</p>
+<input id="email" type="email" autocomplete="email" placeholder="Email">
+<input id="password" type="password" autocomplete="current-password" placeholder="Password">
+<button id="signin">Sign in</button>
+<button id="export" disabled>Export my data</button>
+<input id="confirm" placeholder="Type DELETE MY LOFGREN INTELLIGENCE ACCOUNT">
+<button id="delete" class="danger" disabled>Permanently delete account</button>
+<div id="status"></div>
+<small>Deletion cancels an attached paid subscription before identity and LI data are removed. If cancellation fails, deletion stops.</small>
+<script nonce="{nonce}">
+const sb=supabase.createClient({safe_url},{safe_key});
+const status=document.querySelector('#status');
+const email=document.querySelector('#email');
+const password=document.querySelector('#password');
+const exp=document.querySelector('#export');
+const del=document.querySelector('#delete');
+let session=null;
+function ready(s){{session=s;exp.disabled=!s;del.disabled=!s;status.textContent=s?'Signed in.':'';}}
+document.querySelector('#signin').onclick=async()=>{{try{{const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;ready(x.data.session)}}catch(e){{status.textContent=e.message}}}};
+exp.onclick=async()=>{{try{{const r=await fetch('/account/export',{{headers:{{authorization:'Bearer '+session.access_token}}}});if(!r.ok)throw new Error((await r.json()).error_description||'export failed');const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='lofgren-intelligence-data.json';a.click();URL.revokeObjectURL(a.href)}}catch(e){{status.textContent=e.message}}}};
+del.onclick=async()=>{{try{{if(confirm.value!=='DELETE MY LOFGREN INTELLIGENCE ACCOUNT')throw new Error('Confirmation phrase does not match.');const r=await fetch('/account/delete',{{method:'POST',headers:{{'content-type':'application/json',authorization:'Bearer '+session.access_token}},body:JSON.stringify({{confirmation:confirm.value}})}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'deletion failed');await sb.auth.signOut();ready(null);status.textContent='Account deleted.'}}catch(e){{status.textContent=e.message}}}};
+sb.auth.getSession().then(x=>ready(x.data.session));
+</script></main></body></html>"""
+    csp = (
+        "default-src 'none'; "
+        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"style-src 'nonce-{nonce}'; "
+        f"connect-src 'self' {origin}; "
+        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return HTMLResponse(page, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
+
+
 async def stripe_webhook(request: Request) -> Response:
     raw = await request.body()
     if len(raw) > 2_000_000:
@@ -264,7 +353,7 @@ async def landing(request: Request) -> Response:
 <body><h1>Lofgren Intelligence</h1><p>Evidence-driven research and verification through MCP.</p>
 <p><strong>Certified public capability:</strong> V1 Evidence Intelligence. Later versions are not represented as complete until their own gates pass.</p>
 <p>MCP endpoint: <code>{html.escape(base)}/mcp</code></p>
-<p><a href="/healthz">Health</a> · <a href="/.well-known/oauth-authorization-server">OAuth metadata</a></p>
+<p><a href="/healthz">Health</a> · <a href="/.well-known/oauth-authorization-server">OAuth metadata</a> · <a href="/account">Account &amp; privacy</a></p>
 </body></html>"""
     return HTMLResponse(page)
 
@@ -348,6 +437,9 @@ def build_app():
         Route("/oauth/authorize/complete", oauth_complete, methods=["POST"]),
         Route("/oauth/token", oauth_token, methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
+        Route("/account", account_page, methods=["GET"]),
+        Route("/account/export", account_export, methods=["GET"]),
+        Route("/account/delete", account_delete, methods=["POST"]),
         Route("/billing/success", billing_success, methods=["GET"]),
         Route("/billing/cancelled", billing_cancelled, methods=["GET"]),
     ]
