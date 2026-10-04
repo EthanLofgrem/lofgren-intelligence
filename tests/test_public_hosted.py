@@ -14,6 +14,7 @@ from lofgren_intelligence.kernel.ledger import CostLedger
 from lofgren_intelligence.hosted.security import PublicInputError, validate_remote_args
 from lofgren_intelligence.hosted.service import PaymentRequired, PublicService
 from lofgren_intelligence.hosted.stripe import apply_webhook, verify_webhook
+from lofgren_intelligence.discovery.fixtures import warehouse_design
 
 from .helpers import TEXTS
 
@@ -33,6 +34,7 @@ class FakeStore:
         self.access_tokens = {}
         self.refresh_tokens = {}
         self.runs = {}
+        self.discoveries = {}
         self.usage = []
         self.billing_events = {}
         self.verified_user = {"id": "u1", "email": "u@example.com"}
@@ -82,6 +84,15 @@ class FakeStore:
     def get_run(self, user_id, run_id):
         return self.runs.get((user_id, run_id))
 
+    def save_discovery(self, row):
+        self.discoveries[(row["user_id"], row["discovery_id"])] = dict(row)
+
+    def get_discovery(self, user_id, discovery_id):
+        return self.discoveries.get((user_id, discovery_id))
+
+    def list_discoveries(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.discoveries.items() if uid == user_id][:limit]
+
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
 
@@ -96,6 +107,7 @@ class FakeStore:
         self.account = None
         self.entitlement = None
         self.runs = {k: v for k, v in self.runs.items() if k[0] != user_id}
+        self.discoveries = {k: v for k, v in self.discoveries.items() if k[0] != user_id}
         self.usage = [row for row in self.usage if row["user_id"] != user_id]
 
     def record_usage(self, row):
@@ -259,6 +271,51 @@ class HostedRunTests(unittest.TestCase):
         self.assertEqual(store.deleted_user, "u1")
 
 
+class HostedDiscoveryTests(unittest.TestCase):
+    def _research(self, store):
+        with patch.dict(os.environ, {
+            "LOFGREN_PROVIDER": "heuristic",
+            "LI_INFRA_USD_PER_RUN": "0",
+            "LI_RETRIEVAL_USD_PER_CALL": "0",
+            "LI_PUBLIC_MAX_DISCOVERY_UNITS": "100",
+        }, clear=False):
+            return PublicService(store).investigate("u1", {"objective": OBJECTIVE, "texts": TEXTS})
+
+    def test_v2_discovery_is_durable_across_service_instances(self):
+        store = FakeStore(quota=1000)
+        run = self._research(store)
+        first = PublicService(store)
+        out = first.discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        self.assertEqual(out["kind"], "discovery")
+        self.assertTrue(out["discovery_id"].startswith("DR-"))
+        second = PublicService(store)
+        receipt = second.get_discovery_receipt("u1", {"discovery_id": out["discovery_id"]})
+        self.assertTrue(receipt["intact"])
+        report = second.render_discovery_report("u1", {"discovery_id": out["discovery_id"]})
+        self.assertIn("Discovery", report["report"])
+        verification = second.verify_discovery("u1", {"discovery_id": out["discovery_id"]})
+        self.assertTrue(verification["receipt_intact"])
+
+    def test_same_discovery_id_is_tenant_scoped(self):
+        store = FakeStore()
+        row = {"user_id": "u1", "discovery_id": "DR-SAME", "snapshot": {"owner": "u1"}}
+        store.save_discovery(row)
+        store.save_discovery({"user_id": "u2", "discovery_id": "DR-SAME", "snapshot": {"owner": "u2"}})
+        self.assertEqual(store.get_discovery("u1", "DR-SAME")["snapshot"]["owner"], "u1")
+        self.assertEqual(store.get_discovery("u2", "DR-SAME")["snapshot"]["owner"], "u2")
+
+    def test_account_export_contains_only_callers_discoveries(self):
+        store = FakeStore()
+        store.save_discovery({"user_id": "u1", "discovery_id": "DR-1", "snapshot": {}})
+        store.save_discovery({"user_id": "u2", "discovery_id": "DR-2", "snapshot": {}})
+        exported = PublicService(store).export_account_data("u1")
+        self.assertEqual([x["discovery_id"] for x in exported["discoveries"]], ["DR-1"])
+
+
 class PublicSecurityTests(unittest.TestCase):
     def test_remote_rejects_server_file_paths(self):
         with self.assertRaises(PublicInputError):
@@ -387,6 +444,8 @@ class MigrationContractTests(unittest.TestCase):
         self.assertNotIn("nextval('public.li_activation_seq')", sql)
         self.assertIn("primary key (user_id, run_id)", sql)
         self.assertIn("li_take_rate_limit", sql)
+        self.assertIn("create table if not exists public.li_discoveries", sql.lower())
+        self.assertIn("primary key (user_id, discovery_id)", sql)
 
 
 if __name__ == "__main__":
