@@ -19,6 +19,7 @@ from ..orbital.tle import parse_tle_text
 from ..research.planner import gap_unknowns, plan_research
 from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
+from .economics import certify_paid_plan
 from .security import validate_remote_args
 from .snapshots import durable_snapshot, summary
 from .store import SupabaseStore, utcnow
@@ -269,6 +270,9 @@ class PublicService:
     def checkout(self, user_id: str, base_url: str) -> dict[str, Any]:
         if os.environ.get("LI_BILLING_ENABLED", "").lower() not in {"1", "true", "yes"}:
             raise PublicServiceError("billing checkout is not enabled")
+        gate = certify_paid_plan(self.store.cost_samples())
+        if not gate.passed:
+            raise PublicServiceError("paid plan has not passed the P95 economic certification gate")
         ent = self.store.get_entitlement(user_id)
         if not ent:
             raise PublicServiceError("entitlement missing")
