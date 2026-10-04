@@ -107,6 +107,16 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
+    def put_oauth_client(self, row: dict[str, Any]) -> None:
+        self._table("li_oauth_clients", "POST", body=row, prefer="return=minimal")
+
+    def get_oauth_client(self, client_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_oauth_clients",
+            query={"select": "*", "client_id": f"eq.{client_id}", "active": "eq.true", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
     def put_oauth_code(self, row: dict[str, Any]) -> None:
         self._table("li_oauth_codes", "POST", body=row, prefer="return=minimal")
 
@@ -130,6 +140,15 @@ class SupabaseStore:
             },
         )
         return rows[0] if rows else None
+
+    def put_refresh_token(self, row: dict[str, Any]) -> None:
+        self._table("li_refresh_tokens", "POST", body=row, prefer="return=minimal")
+
+    def consume_refresh_token(self, refresh_hash: str) -> dict[str, Any] | None:
+        rows = self.rpc("li_consume_refresh_token", {"p_token_hash": refresh_hash})
+        if isinstance(rows, list):
+            return rows[0] if rows else None
+        return rows if isinstance(rows, dict) else None
 
     def revoke_access_token(self, token_hash: str) -> None:
         self._table(
