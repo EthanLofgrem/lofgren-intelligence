@@ -24,12 +24,13 @@ from .store import SupabaseStore
 
 
 INSTRUCTIONS = (
-    "Lofgren Intelligence is a governed evidence and verification layer. "
-    "Current certified public capability is V1 Evidence Intelligence. "
-    "Use compile_objective and plan_research before expensive work; investigate "
-    "or verify_claim creates a durable run. Inspect findings, contradictions, "
-    "gaps, provenance and the receipt before presenting a conclusion. "
-    "Do not describe V2-V6 as completed until their separate certification gates pass."
+    "Lofgren Intelligence is a governed evidence and discovery layer. "
+    "V1 Evidence Intelligence and V2 Discovery Intelligence are certified on the integrated source line. "
+    "Use compile_objective and plan_research before expensive work; investigate or verify_claim creates a durable "
+    "research run. Then discover can produce hypotheses, candidates, simulations, sensitivity, optimization, a "
+    "discovery receipt and a validated V3 handoff. Inspect evidence, contradictions, gaps, provenance and receipts "
+    "before presenting conclusions. Hypotheses are not facts and simulations are predictions. V3-V6 are not yet "
+    "public capabilities."
 )
 
 
@@ -254,6 +255,136 @@ def build_mcp(base_url: str) -> MCPServer:
             "min_elevation_deg": min_elevation_deg,
             "tle_text": tle_text, "fetch": fetch,
         })
+
+    @mcp.tool()
+    def discover(
+        run_id: str,
+        objective: str,
+        design: dict[str, Any] | None = None,
+        prior_art: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run certified V2 Discovery on a durable V1 research run."""
+        user_id, service = _caller()
+        return service.discover(user_id, {
+            "run_id": run_id,
+            "objective": objective,
+            "design": design,
+            "prior_art": prior_art,
+        })
+
+    @mcp.tool()
+    def find_prior_art(
+        run_id: str,
+        subject: str,
+        queries: list[str],
+        records: list[dict[str, Any]],
+        coverage: dict[str, Any],
+        domains: list[str] | None = None,
+        time_range: list[str | None] | None = None,
+    ) -> dict[str, Any]:
+        """Assess prior art within explicit coverage; a miss is never novelty."""
+        user_id, service = _caller()
+        return service.find_prior_art(user_id, {
+            "run_id": run_id,
+            "subject": subject,
+            "queries": queries,
+            "records": records,
+            "coverage": coverage,
+            "domains": domains or [],
+            "time_range": time_range or [None, None],
+        })
+
+    @mcp.tool()
+    def find_discovery_gaps(discovery_id: str) -> dict[str, Any]:
+        """Read durable typed discovery gaps."""
+        user_id, service = _caller()
+        return service.find_discovery_gaps(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def find_connections(discovery_id: str) -> dict[str, Any]:
+        """Read durable observed, derived and speculative discovery connections."""
+        user_id, service = _caller()
+        return service.find_connections(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def generate_hypotheses(discovery_id: str) -> dict[str, Any]:
+        """Read durable hypotheses, counter-hypotheses and evidence requirements."""
+        user_id, service = _caller()
+        return service.generate_hypotheses(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def generate_candidates(discovery_id: str) -> dict[str, Any]:
+        """Read durable candidate evaluations and the explicit decision."""
+        user_id, service = _caller()
+        return service.generate_candidates(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def simulate_candidate(
+        run_id: str,
+        model: dict[str, Any],
+        parameters: dict[str, Any],
+        distributions: dict[str, Any] | None = None,
+        success: dict[str, Any] | None = None,
+        seed: int | None = None,
+        iterations: int | None = None,
+    ) -> dict[str, Any]:
+        """Run a bounded V2 simulation against a durable research context."""
+        user_id, service = _caller()
+        args: dict[str, Any] = {
+            "run_id": run_id, "model": model, "parameters": parameters,
+            "distributions": distributions or {}, "success": success,
+        }
+        if seed is not None:
+            args["seed"] = seed
+        if iterations is not None:
+            args["iterations"] = iterations
+        return service.simulate_candidate(user_id, args)
+
+    @mcp.tool()
+    def analyze_sensitivity(
+        run_id: str,
+        model: dict[str, Any],
+        parameters: dict[str, Any],
+        success: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run V2 sensitivity analysis against a durable research context."""
+        user_id, service = _caller()
+        return service.analyze_sensitivity(user_id, {
+            "run_id": run_id,
+            "model": model,
+            "parameters": parameters,
+            "success": success,
+        })
+
+    @mcp.tool()
+    def optimize_solution(run_id: str, problem: dict[str, Any]) -> dict[str, Any]:
+        """Solve and independently re-check a structured V2 optimization problem."""
+        user_id, service = _caller()
+        return service.optimize_solution(user_id, {"run_id": run_id, "problem": problem})
+
+    @mcp.tool()
+    def verify_discovery(discovery_id: str) -> dict[str, Any]:
+        """Verify durable discovery receipt/object/handoff integrity."""
+        user_id, service = _caller()
+        return service.verify_discovery(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def get_discovery_receipt(discovery_id: str) -> dict[str, Any]:
+        """Read a durable V2 discovery receipt."""
+        user_id, service = _caller()
+        return service.get_discovery_receipt(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def create_v3_handoff(discovery_id: str) -> dict[str, Any]:
+        """Read the validated V3 handoff when V2 selected a candidate."""
+        user_id, service = _caller()
+        return service.create_v3_handoff(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def render_discovery_report(discovery_id: str) -> dict[str, Any]:
+        """Render the durable human-readable V2 discovery report."""
+        user_id, service = _caller()
+        return service.render_discovery_report(user_id, {"discovery_id": discovery_id})
 
     @mcp.tool()
     def pricing(standard_units: float | None = None, heavy_jobs: int = 0) -> dict[str, Any]:
