@@ -1,8 +1,9 @@
-"""Minimal Stripe Billing integration for the hosted service.
+"""Stripe Billing integration for the hosted LI service.
 
-Stripe-hosted Checkout is used. The runtime secret and webhook signing secret
-come only from environment variables. This module never enables live mode by
-itself; deployment configuration controls which Stripe keys are present.
+Checkout is Stripe-hosted. Webhooks are signature-checked and entitlement
+mutation is applied transactionally with the event receipt in Supabase.
+Live charging is still separately gated by LI_BILLING_ENABLED, measured P95
+economics, deployment configuration and owner release authorization.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from .store import SupabaseStore, utcnow
+from .store import SupabaseStore
 
 
 class StripeError(RuntimeError):
@@ -48,7 +49,7 @@ def stripe_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
             "content-type": "application/x-www-form-urlencoded",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed Stripe host
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -67,7 +68,22 @@ def create_checkout(user_id: str, *, success_url: str, cancel_url: str) -> dict[
     return stripe_post("/v1/checkout/sessions", params)
 
 
-def verify_webhook(payload: bytes, signature: str, *, tolerance_s: int = 300, now_s: int | None = None) -> dict[str, Any]:
+def create_billing_portal(customer_id: str, *, return_url: str) -> dict[str, Any]:
+    if not customer_id:
+        raise StripeError("Stripe customer id is required")
+    return stripe_post("/v1/billing_portal/sessions", {
+        "customer": customer_id,
+        "return_url": return_url,
+    })
+
+
+def verify_webhook(
+    payload: bytes,
+    signature: str,
+    *,
+    tolerance_s: int = 300,
+    now_s: int | None = None,
+) -> dict[str, Any]:
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
     if not secret:
         raise StripeError("STRIPE_WEBHOOK_SECRET is not configured")
@@ -102,44 +118,90 @@ def _user_id(obj: dict[str, Any]) -> str | None:
     return metadata.get("li_user_id") or obj.get("client_reference_id")
 
 
+def _subscription_id(obj: dict[str, Any]) -> str | None:
+    value = obj.get("subscription")
+    if isinstance(value, dict):
+        return value.get("id")
+    return value
+
+
+def _lookup_user_for_subscription(store: SupabaseStore, subscription_id: str | None) -> str | None:
+    if not subscription_id:
+        return None
+    row = store.get_entitlement_by_subscription(subscription_id)
+    return str(row["user_id"]) if row and row.get("user_id") else None
+
+
+def _payload_hash(event: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(event, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def apply_webhook(store: SupabaseStore, event: dict[str, Any]) -> str:
+    """Apply one Stripe lifecycle event exactly once.
+
+    Subscription state is authoritative for continuing access. A failed invoice
+    disables access immediately; a later customer.subscription.updated with
+    active/trialing status can restore it. Unrelated Stripe events are still
+    receipted but do not mutate an entitlement.
+    """
     event_id = str(event["id"])
-    if store.stripe_event_seen(event_id):
-        return "duplicate"
     kind = str(event["type"])
     obj = ((event.get("data") or {}).get("object") or {})
-    user_id = _user_id(obj)
-    if kind == "checkout.session.completed":
+    if not isinstance(obj, dict):
+        raise StripeError("Stripe event object must be a JSON object")
+
+    user_id: str | None = _user_id(obj)
+    customer_id: str | None = obj.get("customer")
+    subscription_id: str | None = None
+    mutate = False
+    active = False
+
+    if kind in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         if not user_id:
             raise StripeError("checkout session missing li_user_id")
-        store.set_paid_entitlement(
-            user_id,
-            customer_id=obj.get("customer"),
-            subscription_id=obj.get("subscription"),
-            active=True,
-            plan_id=os.environ.get("LI_PAID_PLAN_ID", "researcher"),
-            quota_units_per_week=float(os.environ.get("LI_PAID_WEEKLY_UNITS", "2000")),
-        )
-    elif kind in {"customer.subscription.updated", "customer.subscription.deleted"}:
+        subscription_id = _subscription_id(obj)
+        if not subscription_id:
+            raise StripeError("checkout session missing subscription")
+        active = str(obj.get("payment_status") or "paid") in {"paid", "no_payment_required"}
+        mutate = True
+
+    elif kind == "checkout.session.async_payment_failed":
         if not user_id:
-            # Subscription webhooks should have metadata set at Checkout creation.
-            raise StripeError("subscription missing li_user_id metadata")
+            raise StripeError("checkout session missing li_user_id")
+        subscription_id = _subscription_id(obj)
+        active = False
+        mutate = True
+
+    elif kind in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+        subscription_id = str(obj.get("id") or "") or None
+        user_id = user_id or _lookup_user_for_subscription(store, subscription_id)
+        if not user_id:
+            raise StripeError("subscription event cannot be mapped to an LI user")
         status = str(obj.get("status") or "")
         active = kind != "customer.subscription.deleted" and status in {"active", "trialing"}
-        store.set_paid_entitlement(
-            user_id,
-            customer_id=obj.get("customer"),
-            subscription_id=obj.get("id"),
-            active=active,
-            plan_id=os.environ.get("LI_PAID_PLAN_ID", "researcher"),
-            quota_units_per_week=float(os.environ.get("LI_PAID_WEEKLY_UNITS", "2000")),
-        )
-    store.record_stripe_event(
-        {
-            "stripe_event_id": event_id,
-            "event_type": kind,
-            "payload_hash": hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            "processed_at": utcnow(),
-        }
+        mutate = True
+
+    elif kind == "invoice.payment_failed":
+        subscription_id = _subscription_id(obj)
+        user_id = _lookup_user_for_subscription(store, subscription_id)
+        if not user_id:
+            raise StripeError("failed invoice cannot be mapped to an LI user")
+        active = False
+        mutate = True
+
+    plan_id = os.environ.get("LI_PAID_PLAN_ID", "researcher")
+    quota = float(os.environ.get("LI_PAID_WEEKLY_UNITS", "2000"))
+    applied = store.apply_stripe_entitlement_event(
+        event_id=event_id,
+        event_type=kind,
+        payload_hash=_payload_hash(event),
+        user_id=user_id if mutate else None,
+        customer_id=str(customer_id) if customer_id else None,
+        subscription_id=subscription_id,
+        active=active,
+        plan_id=plan_id,
+        quota_units_per_week=quota,
     )
-    return "processed"
+    return "processed" if applied else "duplicate"
