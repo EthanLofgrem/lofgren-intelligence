@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from lofgren_intelligence.hosted.auth import OAuthService, Principal, code_challenge_s256, token_hash
 from lofgren_intelligence.hosted.costing import actual_run_cost
+from lofgren_intelligence.hosted.economics import certify_paid_plan
 from lofgren_intelligence.kernel.ledger import CostLedger
 from lofgren_intelligence.hosted.security import PublicInputError, validate_remote_args
 from lofgren_intelligence.hosted.service import PaymentRequired, PublicService
@@ -304,6 +305,41 @@ class CostingTests(unittest.TestCase):
             result = actual_run_cost({"name": "heuristic", "usage": {"calls": 0}}, ledger)
         self.assertAlmostEqual(result.known_cost_usd, 0.75, places=6)
         self.assertTrue(result.fully_priced)
+
+
+class EconomicGateTests(unittest.TestCase):
+    def test_paid_plan_gate_fails_closed_without_samples(self):
+        with patch.dict(os.environ, {
+            "LI_PAID_MONTHLY_USD": "49.99",
+            "LI_PAID_WEEKLY_UNITS": "2000",
+            "LI_PAYMENT_FEE_PERCENT": "0.029",
+            "LI_PAYMENT_FEE_FIXED_USD": "0.30",
+            "LI_ECON_MIN_SAMPLES": "100",
+            "LI_TARGET_GROSS_MARGIN": "0.65",
+        }, clear=False):
+            gate = certify_paid_plan([])
+        self.assertFalse(gate.passed)
+        self.assertIn("insufficient_samples:0/100", gate.reasons)
+
+    def test_paid_plan_gate_uses_p95_cost_not_average(self):
+        samples = [
+            {"units": 1, "known_cost_usd": 0.001, "unpriced_components": []}
+            for _ in range(95)
+        ] + [
+            {"units": 1, "known_cost_usd": 0.02, "unpriced_components": []}
+            for _ in range(5)
+        ]
+        with patch.dict(os.environ, {
+            "LI_PAID_MONTHLY_USD": "49.99",
+            "LI_PAID_WEEKLY_UNITS": "2000",
+            "LI_PAYMENT_FEE_PERCENT": "0.029",
+            "LI_PAYMENT_FEE_FIXED_USD": "0.30",
+            "LI_ECON_MIN_SAMPLES": "100",
+            "LI_TARGET_GROSS_MARGIN": "0.65",
+        }, clear=False):
+            gate = certify_paid_plan(samples)
+        self.assertFalse(gate.passed)
+        self.assertIn("p95_cost_exceeds_margin_ceiling", gate.reasons)
 
 
 class MigrationContractTests(unittest.TestCase):
