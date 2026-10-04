@@ -23,7 +23,7 @@ from .economics import certify_paid_plan
 from .security import validate_remote_args
 from .snapshots import durable_snapshot, summary
 from .store import SupabaseStore, utcnow
-from .stripe import create_billing_portal, create_checkout
+from .stripe import cancel_subscription, create_billing_portal, create_checkout
 
 
 class PublicServiceError(RuntimeError):
@@ -300,3 +300,28 @@ class PublicService:
             return_url=base_url.rstrip("/") + "/",
         )
         return {"portal_url": session.get("url"), "session_id": session.get("id")}
+
+
+    def export_account_data(self, user_id: str) -> dict[str, Any]:
+        account = self.store.get_account(user_id)
+        if not account:
+            raise PublicServiceError("account is not activated")
+        return {
+            "account": account,
+            "entitlement": self.store.get_entitlement(user_id),
+            "runs": self.store.list_runs(user_id),
+            "usage_events": self.store.list_usage(user_id),
+        }
+
+    def delete_account(self, user_id: str, confirmation: str) -> dict[str, Any]:
+        expected = "DELETE MY LOFGREN INTELLIGENCE ACCOUNT"
+        if confirmation != expected:
+            raise PublicServiceError(f"confirmation must exactly equal: {expected}")
+        ent = self.store.get_entitlement(user_id)
+        if ent and ent.get("stripe_subscription_id"):
+            cancel_subscription(str(ent["stripe_subscription_id"]))
+        # Deleting auth.users cascades the LI account, runs, tokens and usage
+        # through the database foreign keys. If subscription cancellation
+        # fails, execution stops before identity/data deletion.
+        self.store.delete_auth_user(user_id)
+        return {"deleted": True}
