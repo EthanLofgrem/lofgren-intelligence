@@ -4,7 +4,7 @@ The dataclasses stay the single source of truth. `write_schemas` writes one sche
 `schemas/discovery/`; a test regenerates them and fails if the committed files drift.
 `validate` checks a plain-JSON object against a generated schema using the standard library only
 (the subset of JSON Schema these schemas use: type, enum, properties, required,
-additionalProperties, items, prefixItems, minItems, maxItems, anyOf, $ref).
+additionalProperties, items, prefixItems, minItems, maxItems, anyOf, $ref, pattern).
 
     python -m lofgren_intelligence.discovery.schemas schemas/discovery
 """
@@ -109,15 +109,86 @@ def schema_for(name: str) -> dict:
     return out
 
 
+_STR, _OBJ, _ARR = {"type": "string"}, {"type": "object"}, {"type": "array"}
+_HASH = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+_NULLABLE_STR = {"anyOf": [_STR, {"type": "null"}]}
+_FINGERPRINT = {"type": "string", "pattern": "^DFP-[0-9a-f]{64}$"}
+_RECEIPT_ID = {"type": "string", "pattern": "^DR-[0-9a-f]{20}$"}
+
+# Document formats V2 emits (structural schemas; the Python validators are authoritative and stricter).
+DOCUMENT_SCHEMAS: dict[str, dict] = {
+    "discovery_receipt": {
+        "title": "DiscoveryReceipt",
+        "description": "lofgren.discovery-receipt/1: what determined a discovery, with a reproducible fingerprint and a "
+                       "tamper-evident id. verify_discovery_receipt is authoritative.",
+        "type": "object", "additionalProperties": False,
+        "required": ["schema", "objective", "evidence", "config", "config_hash", "algorithms", "provider",
+                     "prior_art_provider", "seeds", "decision_rule", "outcome", "selected_candidate_id", "objects",
+                     "ledger", "verifier", "notes", "started_at", "finished_at", "discovery_fingerprint",
+                     "discovery_id"],
+        "properties": {
+            "schema": {"const": "lofgren.discovery-receipt/1"}, "objective": _STR,
+            "evidence": {"type": "object", "required": ["research_id", "knowledge_map_schema", "assurance",
+                                                        "knowledge_map_fingerprint"]},
+            "config": _OBJ, "config_hash": _HASH, "algorithms": _OBJ, "provider": _OBJ, "prior_art_provider": _OBJ,
+            "seeds": _OBJ, "decision_rule": _STR,
+            "outcome": {"enum": ["candidate_selected", "insufficient_evidence", "contradicted", "infeasible",
+                                 "unsupported", "unknown", "requires_research"]},
+            "selected_candidate_id": _NULLABLE_STR, "objects": _OBJ,
+            "ledger": {"type": "object", "required": ["rate_usd_per_unit", "total_units", "total_usd", "entries"]},
+            "verifier": {"type": "object", "required": ["checked", "issues"]}, "notes": _ARR,
+            "started_at": _STR, "finished_at": _STR, "discovery_fingerprint": _FINGERPRINT, "discovery_id": _RECEIPT_ID,
+        },
+    },
+    "v3_handoff": {
+        "title": "V3Handoff",
+        "description": "lofgren.v3-handoff/1: everything V3 needs to build the selected candidate, typed. "
+                       "validate_handoff is authoritative.",
+        "type": "object", "additionalProperties": False,
+        "required": ["schema", "objective", "selected_candidate", "alternatives", "verified_evidence", "hypotheses",
+                     "assumptions", "constraints", "specifications", "expected_outcomes", "acceptance_criteria",
+                     "test_requirements", "unresolved_questions", "risks", "dependencies", "resource_requirements",
+                     "cost_estimates", "evidence_fingerprint", "discovery_fingerprint", "discovery_receipt_id"],
+        "properties": {
+            "schema": {"const": "lofgren.v3-handoff/1"}, "objective": _STR,
+            "selected_candidate": {"type": "object", "required": ["id", "description", "status", "measures"],
+                                   "properties": {"status": {"const": "selected"}}},
+            "alternatives": {"type": "array", "items": {"type": "object", "required": ["id", "reason", "measures"]}},
+            "verified_evidence": {"type": "array", "items": {
+                "type": "object", "required": ["claim_id", "statement", "kind"],
+                "properties": {"kind": {"const": "verified_fact"}}}},
+            "hypotheses": {"type": "array", "items": {"type": "object",
+                                                      "required": ["id", "statement", "status", "kind"],
+                                                      "properties": {"kind": {"const": "hypothesis"}}}},
+            "assumptions": _ARR, "constraints": _ARR,
+            "specifications": {"type": "array", "items": {"type": "object",
+                                                          "required": ["name", "value", "unit", "source_id"]}},
+            "expected_outcomes": {"type": "array", "items": {"type": "object", "required": ["metric", "mean", "kind"],
+                                                             "properties": {"kind": {"const": "simulated"}}}},
+            "acceptance_criteria": {"type": "array", "minItems": 1,
+                                    "items": {"type": "object", "required": ["name", "relation"]}},
+            "test_requirements": _ARR, "unresolved_questions": _ARR, "risks": _ARR, "dependencies": _ARR,
+            "resource_requirements": _OBJ, "cost_estimates": _OBJ, "evidence_fingerprint": _OBJ,
+            "discovery_fingerprint": _FINGERPRINT, "discovery_receipt_id": _RECEIPT_ID,
+        },
+    },
+}
+
+
+def document_schema(name: str) -> dict:
+    return {"$schema": DIALECT, "$id": f"{SCHEMA_BASE}{name}.schema.json", **DOCUMENT_SCHEMAS[name]}
+
+
 def render(name: str) -> str:
-    return json.dumps(schema_for(name), indent=2, ensure_ascii=False) + "\n"
+    body = document_schema(name) if name in DOCUMENT_SCHEMAS else schema_for(name)
+    return json.dumps(body, indent=2, ensure_ascii=False) + "\n"
 
 
 def write_schemas(out_dir: str | Path) -> list[Path]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     paths = []
-    for name in sorted(ALL_TYPES):
+    for name in sorted({*ALL_TYPES, *DOCUMENT_SCHEMAS}):
         p = out / f"{name}.schema.json"
         p.write_text(render(name), encoding="utf-8", newline="\n")
         paths.append(p)
@@ -139,7 +210,7 @@ def _is_type(value: Any, t: str) -> bool:
 
 def validate(name: str, instance: Any) -> list[str]:
     """Problems found validating `instance` against the schema for `name` (empty when valid)."""
-    schema = schema_for(name)
+    schema = document_schema(name) if name in DOCUMENT_SCHEMAS else schema_for(name)
     problems: list[str] = []
     _check(instance, schema, schema.get("$defs", {}), name, problems)
     return problems
@@ -161,6 +232,8 @@ def _check(value: Any, schema: dict, defs: dict, path: str, out: list[str]) -> N
     if t and not _is_type(value, t):
         out.append(f"{path}: expected {t}")
         return
+    if "pattern" in schema and isinstance(value, str) and not re.search(schema["pattern"], value):
+        out.append(f"{path}: {value!r} does not match {schema['pattern']}")
     if isinstance(value, dict) and t == "object":
         props = schema.get("properties", {})
         for k in schema.get("required", []):

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/v3_handoff.schema.json",
+  "title": "V3Handoff",
+  "description": "lofgren.v3-handoff/1: everything V3 needs to build the selected candidate, typed. validate_handoff is authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "objective",
+    "selected_candidate",
+    "alternatives",
+    "verified_evidence",
+    "hypotheses",
+    "assumptions",
+    "constraints",
+    "specifications",
+    "expected_outcomes",
+    "acceptance_criteria",
+    "test_requirements",
+    "unresolved_questions",
+    "risks",
+    "dependencies",
+    "resource_requirements",
+    "cost_estimates",
+    "evidence_fingerprint",
+    "discovery_fingerprint",
+    "discovery_receipt_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lofgren.v3-handoff/1"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "selected_candidate": {
+      "type": "object",
+      "required": [
+        "id",
+        "description",
+        "status",
+        "measures"
+      ],
+      "properties": {
+        "status": {
+          "const": "selected"
+        }
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason",
+          "measures"
+        ]
+      }
+    },
+    "verified_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "claim_id",
+          "statement",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "verified_fact"
+          }
+        }
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "statement",
+          "status",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "hypothesis"
+          }
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array"
+    },
+    "constraints": {
+      "type": "array"
+    },
+    "specifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "value",
+          "unit",
+          "source_id"
+        ]
+      }
+    },
+    "expected_outcomes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "metric",
+          "mean",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "simulated"
+          }
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "relation"
+        ]
+      }
+    },
+    "test_requirements": {
+      "type": "array"
+    },
+    "unresolved_questions": {
+      "type": "array"
+    },
+    "risks": {
+      "type": "array"
+    },
+    "dependencies": {
+      "type": "array"
+    },
+    "resource_requirements": {
+      "type": "object"
+    },
+    "cost_estimates": {
+      "type": "object"
+    },
+    "evidence_fingerprint": {
+      "type": "object"
+    },
+    "discovery_fingerprint": {
+      "type": "string",
+      "pattern": "^DFP-[0-9a-f]{64}$"
+    },
+    "discovery_receipt_id": {
+      "type": "string",
+      "pattern": "^DR-[0-9a-f]{20}$"
+    }
+  }
+}

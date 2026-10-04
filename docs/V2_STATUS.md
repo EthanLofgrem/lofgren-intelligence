@@ -2,7 +2,7 @@
 
 This file records where V2 construction stands against `docs/V2_CONSTRUCTION_DIRECTIVE.md`, and what blocks
 certification. It states what is implemented and tested, not what is certified: nothing in V2 is certified until
-`V2ReadyForV3` passes on one pushed SHA.
+`V2ReadyForV3` passes on one pushed SHA (`scripts/v2_gate.py`, see docs/V2_CERTIFICATION.md).
 
 ## Implemented (tested, not certified)
 
@@ -11,9 +11,7 @@ certification. It states what is implemented and tested, not what is certified: 
 | 1 | Typed V2 objects, typed errors, structured unit-aware expressions, hardening | `discovery/types.py`, `errors.py`, `expr.py` |
 | 2 | `DiscoveryContext` over one immutable knowledge map (`/2` validated and receipt-bound, `/1` degraded), problem framing, prior-art assessment, gaps | `discovery/context.py`, `frame.py`, `prior_art.py`, `gaps.py` |
 | 2-3 | Constraints and assumptions, evidence requirements, JSON Schemas | `discovery/principles.py`, `requirements.py`, `schemas.py`, `schemas/discovery/` |
-
-Not started: connections, hypotheses and counter-hypotheses, candidates, simulation, sensitivity, optimization,
-the discovery verifier, receipts, the V3 handoff, MCP tools, V2 certification.
+| 4-15 | Connections, hypotheses and counter-hypotheses, candidates and decision rule, simulation, sensitivity, optimization, discovery verifier, ledger and receipt, V3 handoff, pipeline and reports, MCP tools (`lofgren.mcp/2`), adversarial suite, V2 certification, docs and CI | `connections.py`, `hypotheses.py`, `candidates.py`, `simulate.py`, `sensitivity.py`, `optimize.py`, `verifier.py`, `receipt.py`, `handoff.py`, `pipeline.py`, `report.py`, `certification.py`, `mcp/server.py` |
 
 ## The knowledge-map fingerprint
 

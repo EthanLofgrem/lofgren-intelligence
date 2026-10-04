@@ -416,6 +416,15 @@ class Handoff(Base):
         self.assertTrue(all(e["kind"] == "verified_fact" for e in h["verified_evidence"]))
         self.assertTrue(all(o["kind"] == "simulated" for o in h["expected_outcomes"]))
 
+    def test_documents_match_their_schemas(self):
+        from lofgren_intelligence.discovery.schemas import validate as validate_schema
+        r = json.loads(json.dumps(self.result.receipt))
+        h = json.loads(json.dumps(self.result.handoff))
+        self.assertEqual(validate_schema("discovery_receipt", r), [])
+        self.assertEqual(validate_schema("v3_handoff", h), [])
+        self.assertNotEqual(validate_schema("v3_handoff", {**h, "discovery_receipt_id": "DR-x"}), [])
+        self.assertNotEqual(validate_schema("discovery_receipt", {**r, "outcome": "novel"}), [])
+
     def test_refusals(self):
         cases = {
             "schema": (lambda h: h.update(schema="x"), "not a"),
