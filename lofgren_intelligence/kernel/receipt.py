@@ -9,10 +9,23 @@ Two hashes support reproducibility:
   inputs_hash  contract + evidence content + provider/version + verifier settings
   state_hash   the resulting findings and claim statuses
 Re-running with the same inputs_hash must produce the same state_hash.
+
+A third commits the receipt to the run's complete knowledge state (receipt version 2):
+  knowledge_state_hash  SHA-256 of the canonical knowledge state that knowledge-map/2 exports (claims with their
+                        question associations and assessments, evidence, sources, lineage, contradictions,
+                        unknowns, calculations, findings, questions; kernel/knowledge_map.knowledge_state)
+It is per run, not reproducible (it covers retrieval times). A knowledge-map/2 is bound to a receipt through it,
+so editing any exported field and recomputing the map's own fingerprints still fails against the receipt.
+
+Versions. lofgren.research-receipt/1 receipts (no knowledge_state_hash) keep their meaning and still verify with
+verify_receipt; they can never vouch for a knowledge-map/2, which refuses them explicitly. The research id is an
+unkeyed hash: it shows that a receipt was not altered after it was issued, not who issued it, so binding is
+relative to a receipt (or research id) the consumer already trusts.
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from typing import TYPE_CHECKING, Any
@@ -24,7 +37,9 @@ from ..verification.engine import JACCARD_THRESHOLD, OVERLAP_THRESHOLD, VALUE_TO
 if TYPE_CHECKING:
     from .pipeline import RunResult
 
-RECEIPT_SCHEMA = "lofgren.research-receipt/1"
+RECEIPT_SCHEMA = "lofgren.research-receipt/2"
+# Still verifiable with verify_receipt, but carrying no knowledge-state commitment.
+LEGACY_RECEIPT_SCHEMAS = frozenset({"lofgren.research-receipt/1"})
 VERIFIER_SETTINGS = {
     "weights": WEIGHTS,
     "overlap_threshold": OVERLAP_THRESHOLD,
@@ -89,6 +104,9 @@ def build_receipt(r: "RunResult") -> dict:
         "started_at": r.started_at,
         "finished_at": r.finished_at,
     }
+    # The receipt is a record, not a view: copy it, so later changes to the run's graph, plan or ledger (which the
+    # body would otherwise share lists and dicts with) can never alter an issued receipt.
+    body = copy.deepcopy(body)
     body["inputs_hash"] = canonical_hash({
         "contract": body["contract_hash"],
         "evidence": sorted(e["content_hash"] for e in body["evidence"]),
@@ -96,6 +114,9 @@ def build_receipt(r: "RunResult") -> dict:
         "template": EXTRACTION_TEMPLATE_VERSION,
         "verifier": VERIFIER_SETTINGS,
     })
+    from .knowledge_map import knowledge_state, knowledge_state_hash  # late import: it imports this module
+
+    body["knowledge_state_hash"] = knowledge_state_hash(knowledge_state(r))
     body["state_hash"] = canonical_hash({
         "claims": sorted((c["id"], c["status"], c["confidence"]) for c in body["claims"]),
         "findings": sorted((f["question_id"], f["answer"], tuple(f["claim_ids"])) for f in body["findings"]),

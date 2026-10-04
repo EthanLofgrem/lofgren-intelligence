@@ -24,6 +24,7 @@ from .evidence.types import (
     Source,
     Unknown,
 )
+from .kernel.knowledge_map import json_schema as knowledge_map_schema
 
 SCHEMA_BASE = "https://lofgren.enterprise/schemas/"  # identifier namespace, not a live URL
 TYPES = {"source": Source, "evidence": Evidence, "claim": Claim, "contradiction": Contradiction,
@@ -73,6 +74,9 @@ def write_schemas(out_dir: str | Path) -> list[Path]:
         p = out / f"{name}.schema.json"
         p.write_text(json.dumps(schema_for(name), indent=2) + "\n")
         paths.append(p)
+    p = out / "knowledge-map-2.schema.json"
+    p.write_text(json.dumps(knowledge_map_schema(), indent=2) + "\n")
+    paths.append(p)
     return paths
 
 

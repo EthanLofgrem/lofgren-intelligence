@@ -74,6 +74,8 @@ lofgren pricing --standard-units 1000 --heavy 6
 
 # Receipts, the V2 knowledge map, and calibration
 lofgren investigate "..." --files notes/ --receipt receipt.json --state knowledge-map.json --log predictions.jsonl
+# knowledge-map/2 adds provenance, question associations, finding derivation and fingerprints
+lofgren investigate "..." --files notes/ --state2 knowledge-map-2.json
 lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
 
 # Web discovery (Brave Search API key) and model choice
