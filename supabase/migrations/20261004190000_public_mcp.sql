@@ -105,7 +105,7 @@ create table if not exists public.li_usage_events (
   known_cost_usd numeric not null default 0 check (known_cost_usd >= 0),
   unpriced_components jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
-  foreign key (user_id, run_id) references public.li_runs(user_id, run_id) on delete set null
+  foreign key (user_id, run_id) references public.li_runs(user_id, run_id) on delete cascade
 );
 
 create index if not exists li_usage_user_time_idx on public.li_usage_events(user_id, created_at desc);
