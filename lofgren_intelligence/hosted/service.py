@@ -127,7 +127,7 @@ class PublicService:
 
         # Public safety ceiling independent of user-supplied max_spend.
         public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
-        execution_plan = a.get("plan", "payg")
+        execution_plan = os.environ.get("LI_RUNTIME_PLAN", "payg")
         est = estimate_run(plan, execution_plan)
         if est.total_usd > public_cap:
             raise QuotaExceeded("run exceeds the public per-run cost ceiling")
@@ -267,6 +267,8 @@ class PublicService:
         return d
 
     def checkout(self, user_id: str, base_url: str) -> dict[str, Any]:
+        if os.environ.get("LI_BILLING_ENABLED", "").lower() not in {"1", "true", "yes"}:
+            raise PublicServiceError("billing checkout is not enabled")
         ent = self.store.get_entitlement(user_id)
         if not ent:
             raise PublicServiceError("entitlement missing")
