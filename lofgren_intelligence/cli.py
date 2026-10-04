@@ -117,9 +117,56 @@ def cmd_schemas(args: argparse.Namespace) -> int:
     return 0
 
 
+def _json_file(path: str | None, what: str) -> dict | None:
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot read the {what} file {path}: {exc}") from None
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    from .discovery.pipeline import discover_from_run
+    from .discovery.report import render_discovery_markdown
+
+    contract, registry = _setup(args)
+    run = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve)
+    result = discover_from_run(run, args.goal or args.objective, design=_json_file(args.design, "design"),
+                               prior_art=_json_file(args.prior_art, "prior-art"))
+    md = render_discovery_markdown(result)
+    if args.out:
+        Path(args.out).write_text(md, encoding="utf-8")
+        print(f"discovery report written to {args.out}", file=sys.stderr)
+    else:
+        print(md)
+    for path, data, what in ((args.json, None, "discovery"), (args.receipt, result.receipt, "discovery receipt"),
+                             (args.handoff, result.handoff, "V3 handoff")):
+        if not path:
+            continue
+        if what == "discovery":
+            from .discovery.report import discovery_summary
+
+            data = discovery_summary(result)
+        if data is None:
+            print(f"no {what}: the outcome is {result.outcome.value}", file=sys.stderr)
+            continue
+        Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        print(f"{what} written to {path}", file=sys.stderr)
+    return 0
+
+
 def cmd_certify(args: argparse.Namespace) -> int:
     from .certification import render_certification, run_certification
 
+    if args.v2:
+        from .discovery.certification import render_v2_certification, run_v2_certification
+
+        cert = run_v2_certification()
+        print(render_v2_certification(cert))
+        if args.out:
+            Path(args.out).write_text(json.dumps(cert, indent=2, default=str), encoding="utf-8")
+        return 0 if cert["code_terms_certified"] else 1
     cert = run_certification()
     print(render_certification(cert))
     if args.out:
@@ -232,7 +279,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="schemas")
     p.set_defaults(fn=cmd_schemas)
 
-    p = sub.add_parser("certify", help="run the V1 certification suite (the gate before V2)")
+    p = sub.add_parser("discover", help="research an objective (V1), then run Discovery Intelligence (V2) over it")
+    _add_sources(p)
+    p.add_argument("--goal", help="the discovery objective, if different from the research objective")
+    p.add_argument("--design", help="design space JSON: model, assumptions, constraints, candidates, optimization")
+    p.add_argument("--prior-art", dest="prior_art", help="prior-art fixture JSON: subject, queries, records, coverage")
+    p.add_argument("--approve", action="store_true", help="approve actions that need approval")
+    p.add_argument("--out", help="write the Markdown discovery report here")
+    p.add_argument("--json", help="write the typed discovery summary here")
+    p.add_argument("--receipt", help="write the discovery receipt here")
+    p.add_argument("--handoff", help="write the V3 handoff here (only when a candidate is selected)")
+    p.set_defaults(fn=cmd_discover)
+
+    p = sub.add_parser("certify", help="run the V1 certification suite (the gate before V2), or --v2")
+    p.add_argument("--v2", action="store_true", help="run the V2 Discovery certification (code terms of V2ReadyForV3)")
     p.add_argument("--out", help="write the certification result as JSON")
     p.set_defaults(fn=cmd_certify)
 

@@ -39,7 +39,7 @@ from lofgren_intelligence.discovery.prior_art import (
     assess_prior_art,
 )
 from lofgren_intelligence.discovery.requirements import evidence_requirement, requirement_for_gap
-from lofgren_intelligence.discovery.schemas import render, validate
+from lofgren_intelligence.discovery.schemas import DOCUMENT_SCHEMAS, render, validate
 from lofgren_intelligence.discovery.types import NOVELTY_CLAIMS, SEARCH_ABSENCE_MAX_CONFIDENCE
 
 from .test_v2_context_integrity import AT, FIXTURES, load, objective
@@ -451,8 +451,8 @@ class RequirementTests(unittest.TestCase):
 class SchemaTests(unittest.TestCase):
     def test_committed_schemas_match_the_types(self):
         committed = {p.name for p in SCHEMA_DIR.glob("*.schema.json")}
-        self.assertEqual(committed, {f"{n}.schema.json" for n in ALL_TYPES})
-        for name in ALL_TYPES:
+        self.assertEqual(committed, {f"{n}.schema.json" for n in {*ALL_TYPES, *DOCUMENT_SCHEMAS}})
+        for name in {*ALL_TYPES, *DOCUMENT_SCHEMAS}:
             with self.subTest(type=name):
                 self.assertEqual((SCHEMA_DIR / f"{name}.schema.json").read_text(encoding="utf-8"), render(name))
 

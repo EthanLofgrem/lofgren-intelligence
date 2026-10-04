@@ -19,7 +19,7 @@ Lofgren Intelligence is one kernel that every version extends. V1 through V6 are
                              │                   calibration, status vs. the contract
                           REPORT
                              │
-        V2 Imagine · Simulate · Optimize   (declared, not yet built)
+        V2 Imagine · Simulate · Optimize   (built: lofgren_intelligence/discovery, see docs/DISCOVERY.md)
         V3 Produce · Build · Test
         V4 Authorize · Execute · Operate   (authority engine already gates spend)
         V5 Measure · Learn · Improve       (calibrator already records outcomes)
