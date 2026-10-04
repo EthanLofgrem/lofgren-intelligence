@@ -1,26 +1,44 @@
 #!/usr/bin/env python3
-"""Evaluate public MCP release evidence. Unknown is false."""
+"""Evaluate evidence-backed public MCP release evidence. Unknown is false."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
-from lofgren_intelligence.hosted.certification import TERMS, evaluate_public_mcp
+from lofgren_intelligence.hosted.certification import TERMS, evaluate_public_mcp_manifest
+
+
+def _head() -> str | None:
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return out.stdout.strip() if out.returncode == 0 else None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--evidence", required=True)
+    parser.add_argument("--evidence", required=True, help="release evidence manifest JSON")
     args = parser.parse_args()
-    evidence = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
-    gate = evaluate_public_mcp(evidence)
+    path = Path(args.evidence).resolve()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    gate = evaluate_public_mcp_manifest(
+        manifest,
+        manifest_dir=path.parent,
+        local_head=_head(),
+    )
     print("Lofgren Intelligence Public MCP Gate")
-    print("=" * 42)
+    print("=" * 66)
     for term in TERMS:
-        print(f"{term:38} {'TRUE' if gate.values[term] else 'FALSE'}")
-    print("-" * 42)
+        value = "TRUE" if gate.values[term] else "FALSE"
+        print(f"{term:38} {value:5}  {gate.reasons[term]}")
+    print("-" * 66)
     print(f"TRUE: {gate.passed_count}/{gate.total}")
     print(f"PublicMCPReady = {'TRUE' if gate.ready else 'FALSE'}")
     return 0 if gate.ready else 1
