@@ -53,6 +53,22 @@ def stripe_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def stripe_delete(path: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        "https://api.stripe.com" + path,
+        method="DELETE",
+        headers={"authorization": f"Bearer {_secret()}"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def cancel_subscription(subscription_id: str) -> dict[str, Any]:
+    if not subscription_id:
+        raise StripeError("Stripe subscription id is required")
+    return stripe_delete("/v1/subscriptions/" + urllib.parse.quote(subscription_id, safe=""))
+
+
 def create_checkout(user_id: str, *, success_url: str, cancel_url: str) -> dict[str, Any]:
     params: dict[str, Any] = {
         "mode": "subscription",
