@@ -222,6 +222,17 @@ class SupabaseStore:
         )
         return list(rows or [])
 
+    def get_entitlement_by_subscription(self, subscription_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_entitlements",
+            query={
+                "select": "*",
+                "stripe_subscription_id": f"eq.{subscription_id}",
+                "limit": "1",
+            },
+        )
+        return rows[0] if rows else None
+
     def apply_stripe_entitlement_event(
         self,
         *,
