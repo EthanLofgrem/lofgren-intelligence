@@ -179,6 +179,23 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
+    def take_rate_limit(self, user_id: str, bucket: str = "mcp", limit: int = 60, window_seconds: int = 60) -> bool:
+        result = self.rpc("li_take_rate_limit", {
+            "p_user_id": user_id,
+            "p_bucket": bucket,
+            "p_limit": int(limit),
+            "p_window_seconds": int(window_seconds),
+        })
+        if isinstance(result, bool):
+            return result
+        if isinstance(result, list) and result:
+            value = result[0]
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, dict):
+                return bool(next(iter(value.values()), False))
+        return bool(result)
+
     def record_usage(self, row: dict[str, Any]) -> None:
         self._table("li_usage_events", "POST", body=row, prefer="return=minimal")
 
