@@ -134,9 +134,9 @@ def evaluate_acceptance(handoff: Mapping[str, Any]) -> tuple[AcceptanceResult, .
         check = relation.check(env)
         results.append(AcceptanceResult(
             str(criterion.get("name") or f"criterion-{i + 1}"),
-            bool(check.passed),
-            float(check.left),
-            float(check.right),
+            bool(check.satisfied),
+            float(check.lhs),
+            float(check.rhs),
             float(check.slack),
             str(check.unit),
         ))
