@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Callable
 from ..evidence.types import Evidence, EvidenceKind, Source, SourceKind, topic_tokens, utcnow
 from .base import GatherResult
 from .documents import _PassageAdapter, relevance, split_passages, strip_html
+from .net import safe_urlopen, validate_public_url
 
 if TYPE_CHECKING:
     from ..intent.compiler import OutcomeContract, Question
@@ -63,7 +64,7 @@ class BraveSearchProvider(SearchProvider):
         url = f"{self.endpoint}?{urllib.parse.urlencode({'q': query, 'count': min(limit, 20)})}"
         req = urllib.request.Request(url, headers={"Accept": "application/json",
                                                    "X-Subscription-Token": self.api_key})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - fixed host
+        with safe_urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode())
         return [SearchResult(r.get("title", ""), r.get("url", ""), strip_html(r.get("description", "")),
                              r.get("page_age"))
@@ -146,7 +147,7 @@ class WebSearchAdapter(_PassageAdapter):
     # -- network -------------------------------------------------------------
     def _http_fetch(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - search result URL
+        with safe_urlopen(req, timeout=self.timeout) as resp:
             ctype = resp.headers.get("Content-Type", "")
             if "html" not in ctype and "text" not in ctype:
                 raise ValueError(f"unsupported content type {ctype}")
@@ -154,12 +155,16 @@ class WebSearchAdapter(_PassageAdapter):
         return strip_html(raw)
 
     def _robots_check(self, url: str) -> bool:
+        validate_public_url(url)
         p = urllib.parse.urlsplit(url)
         base = f"{p.scheme}://{p.netloc}"
         if base not in self._robots:
-            rp = urllib.robotparser.RobotFileParser(f"{base}/robots.txt")
+            rp = urllib.robotparser.RobotFileParser()
+            rp.set_url(f"{base}/robots.txt")
             try:
-                rp.read()
+                req = urllib.request.Request(f"{base}/robots.txt", headers={"User-Agent": USER_AGENT})
+                with safe_urlopen(req, timeout=self.timeout) as resp:
+                    rp.parse(resp.read(512_000).decode(resp.headers.get_content_charset() or "utf-8", "replace").splitlines())
                 self._robots[base] = rp
             except Exception:
                 self._robots[base] = None  # unreachable robots.txt: treat as allowed
@@ -179,6 +184,11 @@ class WebSearchAdapter(_PassageAdapter):
         wanted = set(topic_tokens(contract.objective)) | set(topic_tokens(question.text))
         kept = 0
         for hit in hits:
+            try:
+                validate_public_url(hit.url)
+            except ValueError:
+                result.notes.append(f"web_search: unsafe result URL refused: {hit.url}")
+                continue
             url = canonical_url(hit.url)
             if url in self.seen or len(self.seen) >= self.max_pages:
                 continue

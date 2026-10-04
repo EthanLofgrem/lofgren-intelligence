@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
-        run: python -m pip install .
+        run: python -m pip install ".[hosted]"
       - name: Run tests
         run: python -m unittest discover -s tests -t . -v
       - name: Installed-package smoke test
@@ -30,16 +30,19 @@ jobs:
       - name: V1 certification gate
         run: python -m lofgren_intelligence certify
       - name: Static check
-        run: python -m compileall -q lofgren_intelligence
+        run: |
+          python -m compileall -q lofgren_intelligence
+          python -m py_compile api/index.py
       - name: Package smoke test (clean wheel, installed and run outside the source tree)
         run: |
           python -m pip install --upgrade pip build
           python -m build --wheel --outdir "$RUNNER_TEMP/dist" .
           python -m venv "$RUNNER_TEMP/wheel-env"
-          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install "$RUNNER_TEMP"/dist/*.whl
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install "mcp>=2,<3" "$RUNNER_TEMP"/dist/*.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-env/bin/python" -c "import lofgren_intelligence, lofgren_intelligence.discovery.context, lofgren_intelligence.discovery.schemas; print(lofgren_intelligence.__file__)"
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify
+          python "$GITHUB_WORKSPACE/scripts/installed_mcp_smoke.py" "$RUNNER_TEMP/wheel-env/bin/lofgren"
       - name: V1 -> V2 boundary certification
         run: |
           python -m lofgren_intelligence certify-boundary
