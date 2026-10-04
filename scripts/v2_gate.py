@@ -121,18 +121,27 @@ def get(url: str) -> dict:
         return json.load(resp)
 
 
-def ci(repo: str, sha: str) -> tuple[bool, str, bool, str]:
+def ci(repo: str, sha: str, run_id: int | None = None) -> tuple[bool, str, bool, str]:
+    """Evaluate the matrix jobs that constitute CI for an exact SHA.
+
+    When run_id is supplied from a final dependent GitHub Actions job, the
+    workflow itself is still "in_progress". In that mode the gate validates
+    the already-completed Python matrix jobs directly instead of requiring the
+    parent workflow conclusion to exist before the final gate can run.
+    """
     try:
-        runs = get(f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&event=push")["workflow_runs"]
-    except Exception as exc:
-        return False, f"GitHub API unavailable: {exc}", False, "no CI evidence"
-    runs = [r for r in runs if r["name"] == WORKFLOW and r["head_sha"] == sha]
-    if not runs:
-        return False, f"no '{WORKFLOW}' push run for {sha[:7]}", False, "no CI evidence"
-    run = max(runs, key=lambda r: r["run_number"])
-    if run["status"] != "completed":
-        return False, f"run {run['id']} is {run['status']}", False, "CI not finished"
-    try:
+        if run_id is not None:
+            run = get(f"https://api.github.com/repos/{repo}/actions/runs/{run_id}")
+            if run.get("head_sha") != sha:
+                return False, f"run {run_id} head {run.get('head_sha')} != {sha}", False, "wrong run SHA"
+            if run.get("name") != WORKFLOW:
+                return False, f"run {run_id} is not workflow {WORKFLOW}", False, "wrong workflow"
+        else:
+            runs = get(f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&event=push")["workflow_runs"]
+            runs = [r for r in runs if r["name"] == WORKFLOW and r["head_sha"] == sha and r["status"] == "completed"]
+            if not runs:
+                return False, f"no completed '{WORKFLOW}' push run for {sha[:7]}", False, "no CI evidence"
+            run = max(runs, key=lambda r: r["run_number"])
         jobs = get(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/jobs")["jobs"]
     except Exception as exc:
         return False, f"GitHub API unavailable: {exc}", False, "no CI evidence"
@@ -161,9 +170,14 @@ def ci(repo: str, sha: str) -> tuple[bool, str, bool, str]:
             if steps.get(name) != "success":
                 package_problems.append(f"Python {py} step '{name}': {steps.get(name, 'missing')}")
 
-    ci_ok = run["conclusion"] == "success" and not problems
+    if run_id is None:
+        ci_ok = run.get("conclusion") == "success" and not problems
+        run_state = str(run.get("conclusion"))
+    else:
+        ci_ok = not problems
+        run_state = "matrix-complete"
     ci_ev = (
-        f"run {run['id']} {run['conclusion']}"
+        f"run {run['id']} {run_state}"
         + (f"; {'; '.join(problems)}" if problems else f"; Python {', '.join(MATRIX)} all required steps passed")
     )
     pkg_ev = "; ".join(package_problems) or (
@@ -176,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sha", required=True, help="exact 40-hex commit being certified")
     parser.add_argument("--repo", default="EthanLofgrem/lofgren-intelligence")
+    parser.add_argument("--ci-run-id", type=int, help="current GitHub Actions run id for a dependent final gate job")
     args = parser.parse_args(argv)
 
     for stream in (sys.stdout, sys.stderr):
@@ -204,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     terms["V1BoundaryCertified"] = boundary_ok
     evidence["V1BoundaryCertified"] = boundary_ev
 
-    ci_ok, ci_ev, pkg_ok, pkg_ev = ci(args.repo, args.sha)
+    ci_ok, ci_ev, pkg_ok, pkg_ev = ci(args.repo, args.sha, args.ci_run_id)
     terms["GitHubCIPassing"] = ci_ok
     evidence["GitHubCIPassing"] = ci_ev
     terms["PackageGatePassing"] = pkg_ok
