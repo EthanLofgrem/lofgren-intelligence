@@ -212,53 +212,8 @@ def _files(payload: Mapping[str, Any], kind: str) -> tuple[ArtifactFile, ...]:
 
 
 def verify_artifact(artifact: Mapping[str, Any]) -> ArtifactVerification:
-    problems: list[str] = []
-    if artifact.get("schema") != ARTIFACT_SCHEMA:
-        problems.append("artifact schema mismatch")
-    files = artifact.get("files")
-    if not isinstance(files, list) or not files:
-        problems.append("artifact contains no files")
-        files = []
-    seen: set[str] = set()
-    for i, item in enumerate(files):
-        try:
-            path = _safe_path(item["path"])
-        except Exception as exc:
-            problems.append(f"files[{i}] path invalid: {exc}")
-            continue
-        if path in seen:
-            problems.append(f"duplicate file path {path}")
-        seen.add(path)
-        content = item.get("content")
-        if not isinstance(content, str):
-            problems.append(f"{path} content is not text")
-            continue
-        if item.get("sha256") != _file_hash(content):
-            problems.append(f"{path} hash mismatch")
-        if path.endswith(".json"):
-            try:
-                json.loads(content)
-            except Exception as exc:
-                problems.append(f"{path} is invalid JSON: {exc}")
-        if path.endswith(".py"):
-            try:
-                ast.parse(content, filename=path)
-            except SyntaxError as exc:
-                problems.append(f"{path} is invalid Python: {exc.msg}")
-
-    core = {
-        "schema": artifact.get("schema"),
-        "artifact_id": artifact.get("artifact_id"),
-        "kind": artifact.get("kind"),
-        "source_discovery_id": artifact.get("source_discovery_id"),
-        "files": [{k: f.get(k) for k in ("path", "media_type", "sha256")} for f in files],
-        "acceptance": artifact.get("acceptance"),
-    }
-    expected = "AF-" + _digest(core)[:20]
-    if artifact.get("artifact_id") != expected:
-        problems.append("artifact id does not match artifact contents")
-    return ArtifactVerification(not problems, tuple(problems))
-
+    """Independently re-check paths, file hashes, syntax and artifact identity."""
+    return _verify_with_normalized_id(artifact)
 
 def _receipt(artifact: Mapping[str, Any], handoff: Mapping[str, Any], verification: ArtifactVerification) -> dict[str, Any]:
     body = {
