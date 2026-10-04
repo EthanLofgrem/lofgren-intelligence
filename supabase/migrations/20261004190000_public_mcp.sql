@@ -50,6 +50,7 @@ create table if not exists public.li_oauth_codes (
   redirect_uri text not null,
   code_challenge text not null,
   scope text not null default 'mcp',
+  resource text not null,
   expires_at timestamptz not null,
   used_at timestamptz,
   created_at timestamptz not null default now()
@@ -60,6 +61,7 @@ create table if not exists public.li_access_tokens (
   user_id uuid not null references auth.users(id) on delete cascade,
   client_id text not null references public.li_oauth_clients(client_id) on delete cascade,
   scope text not null default 'mcp',
+  resource text not null,
   expires_at timestamptz not null,
   revoked_at timestamptz,
   created_at timestamptz not null default now()
@@ -70,6 +72,7 @@ create table if not exists public.li_refresh_tokens (
   user_id uuid not null references auth.users(id) on delete cascade,
   client_id text not null references public.li_oauth_clients(client_id) on delete cascade,
   scope text not null default 'mcp',
+  resource text not null,
   expires_at timestamptz not null,
   used_at timestamptz,
   created_at timestamptz not null default now()
