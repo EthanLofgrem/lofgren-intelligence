@@ -10,6 +10,13 @@ from typing import Any
 from .. import build_registry
 from ..billing.pricing import PLANS, cheapest_plan, estimate, monthly_bill
 from ..evidence.types import to_dict
+from ..discovery import DiscoveryObjective
+from ..discovery.candidates import DesignSpace, evaluate_candidates
+from ..discovery.context import DiscoveryContext
+from ..discovery.frame import frame_problem
+from ..discovery.optimize import optimize, problem_from_json
+from ..discovery.pipeline import _prior_art_provider, run_discovery
+from ..discovery.prior_art import assess_prior_art
 from ..intent.compiler import compile_intent
 from ..kernel.pipeline import estimate_run, run_investigation
 from ..models.provider import default_provider
@@ -21,7 +28,7 @@ from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
 from .economics import certify_paid_plan
 from .security import validate_remote_args
-from .snapshots import durable_snapshot, summary
+from .snapshots import durable_discovery_snapshot, durable_snapshot, summary
 from .store import SupabaseStore, utcnow
 from .stripe import cancel_subscription, create_billing_portal, create_checkout
 
@@ -230,6 +237,203 @@ class PublicService:
         snap = self._snapshot(user_id, a["run_id"])
         return {"run_id": a["run_id"], "format": "markdown", "report": snap["report"]}
 
+    def _discovery_context(self, user_id: str, run_id: str) -> DiscoveryContext:
+        snap = self._snapshot(user_id, run_id)
+        return DiscoveryContext(snap["knowledge_map2"], snap["receipt"])
+
+    def _discovery_snapshot(self, user_id: str, discovery_id: str) -> dict[str, Any]:
+        row = self.store.get_discovery(user_id, discovery_id)
+        if not row:
+            raise PublicServiceError("unknown discovery_id")
+        snap = row.get("snapshot")
+        if not isinstance(snap, dict):
+            raise PublicServiceError("stored discovery snapshot is invalid")
+        return snap
+
+    def discover(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(a["run_id"])
+        reserve = float(os.environ.get("LI_PUBLIC_MAX_DISCOVERY_UNITS", "100"))
+        decision = access_for_run(self.store, user_id, reserve)
+        if not decision.allowed:
+            if decision.entitlement.get("kind") == "paid_required":
+                raise PaymentRequired(decision.reason)
+            raise QuotaExceeded(decision.reason)
+
+        ctx = self._discovery_context(user_id, run_id)
+        result = run_discovery(
+            ctx,
+            str(a["objective"]),
+            design=a.get("design"),
+            prior_art=a.get("prior_art"),
+        )
+        snap = durable_discovery_snapshot(result)
+        if snap["usage_units"] > reserve:
+            raise QuotaExceeded("discovery exceeded the public bounded-work ceiling")
+
+        self.store.save_discovery({
+            "user_id": user_id,
+            "discovery_id": snap["discovery_id"],
+            "research_id": run_id,
+            "objective": str(a["objective"]),
+            "outcome": snap["summary"]["outcome"],
+            "summary": snap["summary"],
+            "snapshot": snap,
+            "receipt": snap["receipt"],
+            "handoff": snap["handoff"],
+            "usage_units": snap["usage_units"],
+            "created_at": utcnow(),
+        })
+        self.store.record_usage({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "run_id": run_id,
+            "operation": "discover",
+            "units": snap["usage_units"],
+            "known_cost_usd": 0.0,
+            "unpriced_components": ["discovery_compute"],
+            "created_at": utcnow(),
+        })
+        return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
+
+    def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        ctx = self._discovery_context(user_id, str(a["run_id"]))
+        provider, _ = _prior_art_provider({
+            k: a[k] for k in ("records", "coverage") if k in a
+        })
+        assessment, _meta = assess_prior_art(
+            ctx,
+            str(a["subject"]),
+            list(a["queries"]),
+            provider,
+            domains=a.get("domains", ()),
+            time_range=tuple(a.get("time_range", (None, None))),
+        )
+        return {
+            "kind": "prior_art_assessment",
+            "id": assessment.id,
+            "conclusion": assessment.conclusion.value,
+            "statement": assessment.statement,
+            "matches": assessment.matches,
+            "limitations": assessment.limitations,
+            "unsearched_areas": assessment.unsearched_areas,
+        }
+
+    def find_discovery_gaps(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {"kind": "gaps", "discovery_id": a["discovery_id"], "gaps": snap["gaps"]}
+
+    def find_connections(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {"kind": "connections", "discovery_id": a["discovery_id"], "connections": snap["connections"]}
+
+    def generate_hypotheses(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {
+            "kind": "hypotheses",
+            "confidence_kind": "hypothesis",
+            "discovery_id": a["discovery_id"],
+            "hypotheses": snap["hypotheses"],
+            "requirements": snap["requirements"],
+        }
+
+    def generate_candidates(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {
+            "kind": "candidates",
+            "confidence_kind": "candidate_robustness",
+            "discovery_id": a["discovery_id"],
+            "candidates": snap["candidates"],
+            "decision": snap["decision"],
+            "outcome": snap["summary"]["outcome"],
+        }
+
+    def _adhoc_discovery(self, user_id: str, a: dict[str, Any]):
+        ctx = self._discovery_context(user_id, str(a["run_id"]))
+        framed = frame_problem(ctx, ctx.ensure(DiscoveryObjective("Ad hoc analysis", ctx.research_id)))
+        if framed.frame is None:
+            raise PublicServiceError("the run established nothing to frame")
+        space = DesignSpace.from_json({
+            "model": a["model"],
+            "success": a.get("success"),
+            "distributions": a.get("distributions", {}),
+            "simulation": {k: a[k] for k in ("seed", "iterations") if k in a},
+            "candidates": [{
+                "description": "Ad hoc parameter set",
+                "parameters": a["parameters"],
+            }],
+        })
+        return evaluate_candidates(ctx, framed, space)
+
+    def simulate_candidate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        result = self._adhoc_discovery(user_id, a)
+        if not result.simulations:
+            raise PublicServiceError("the parameters do not give every model input a value")
+        return {
+            "kind": "simulated",
+            "confidence_kind": "simulation_uncertainty",
+            "simulation": result.simulations[0].to_dict(),
+        }
+
+    def analyze_sensitivity(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        result = self._adhoc_discovery(user_id, a)
+        if not result.sensitivities:
+            raise PublicServiceError("the parameters do not give every model input a value")
+        s = result.sensitivities[0]
+        return {
+            "kind": "sensitivity",
+            "confidence_kind": "candidate_robustness",
+            "sensitivity": s.to_dict(),
+            "swings": result.sensitivity_tables.get(s.candidate_id, {}),
+        }
+
+    def optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        ctx = self._discovery_context(user_id, str(a["run_id"]))
+        problem = ctx.ensure(problem_from_json(a["problem"]))
+        result = optimize(ctx, problem)
+        return {
+            "kind": "optimization_result",
+            "confidence_kind": "candidate_robustness",
+            **result.to_dict(),
+        }
+
+    def verify_discovery(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {
+            "kind": "discovery_verification",
+            "receipt_intact": snap["receipt_intact"],
+            "receipt_object_problems": snap["receipt_object_problems"],
+            "issues": snap["verifier_issues"],
+            "handoff_problems": snap["handoff_problems"],
+        }
+
+    def get_discovery_receipt(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {
+            "kind": "discovery_receipt",
+            "intact": snap["receipt_intact"],
+            "receipt": snap["receipt"],
+        }
+
+    def create_v3_handoff(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        if snap["handoff"] is None:
+            return {
+                "kind": "v3_handoff",
+                "ready": False,
+                "outcome": snap["summary"]["outcome"],
+                "reason": "no candidate was selected",
+                "requirements": [x["description"] for x in snap["requirements"]],
+            }
+        return {"kind": "v3_handoff", "ready": True, "handoff": snap["handoff"]}
+
+    def render_discovery_report(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        snap = self._discovery_snapshot(user_id, str(a["discovery_id"]))
+        return {
+            "discovery_id": a["discovery_id"],
+            "format": "markdown",
+            "report": snap["report"],
+        }
+
     def satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
         if a.get("tle_text"):
             tles = parse_tle_text(str(a["tle_text"]))
@@ -310,6 +514,7 @@ class PublicService:
             "account": account,
             "entitlement": self.store.get_entitlement(user_id),
             "runs": self.store.list_runs(user_id),
+            "discoveries": self.store.list_discoveries(user_id),
             "usage_events": self.store.list_usage(user_id),
         }
 
