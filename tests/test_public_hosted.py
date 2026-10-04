@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lofgren_intelligence.hosted.auth import OAuthService, Principal, code_challenge_s256, token_hash
+from lofgren_intelligence.hosted.costing import actual_run_cost
+from lofgren_intelligence.kernel.ledger import CostLedger
 from lofgren_intelligence.hosted.remote_mcp import RemoteMCP
 from lofgren_intelligence.hosted.security import PublicInputError, validate_remote_args
 from lofgren_intelligence.hosted.service import PaymentRequired, PublicService
@@ -75,11 +77,13 @@ class FakeStore:
         return self.refresh_tokens.pop(digest, None)
 
     def save_run(self, row):
-        self.runs[row["run_id"]] = dict(row)
+        self.runs[(row["user_id"], row["run_id"])] = dict(row)
 
     def get_run(self, user_id, run_id):
-        row = self.runs.get(run_id)
-        return row if row and row["user_id"] == user_id else None
+        return self.runs.get((user_id, run_id))
+
+    def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
+        return True
 
     def record_usage(self, row):
         self.usage.append(dict(row))
@@ -116,13 +120,15 @@ class OAuthTests(unittest.TestCase):
             "token_endpoint_auth_method": "none",
         })
         verifier = "a" * 64
-        code = oauth.authorize_from_supabase_session(
-            supabase_access_token="supabase-session",
-            client_id=client["client_id"],
-            redirect_uri="http://127.0.0.1/callback",
-            code_challenge=code_challenge_s256(verifier),
-            scope="mcp",
-        )
+        with patch.dict(os.environ, {"LI_PUBLIC_BASE_URL": "https://li.example"}, clear=False):
+            code = oauth.authorize_from_supabase_session(
+                supabase_access_token="supabase-session",
+                client_id=client["client_id"],
+                redirect_uri="http://127.0.0.1/callback",
+                code_challenge=code_challenge_s256(verifier),
+                scope="mcp",
+                resource="https://li.example/mcp",
+            )
         tokens = oauth.exchange_code(
             code=code,
             code_verifier=verifier,
@@ -149,6 +155,7 @@ class OAuthTests(unittest.TestCase):
                 redirect_uri="https://evil.example/callback",
                 code_challenge=code_challenge_s256("b" * 64),
                 scope="mcp",
+                resource="https://li.example/mcp",
             )
 
 
@@ -163,7 +170,7 @@ class HostedRunTests(unittest.TestCase):
             first = PublicService(store)
             out = first.investigate("u1", {"objective": OBJECTIVE, "texts": TEXTS})
             self.assertTrue(out["run_id"].startswith("RR-"))
-            self.assertIn(out["run_id"], store.runs)
+            self.assertIn(("u1", out["run_id"]), store.runs)
             second = PublicService(store)
             receipt = second.get_receipt("u1", {"run_id": out["run_id"]})
             self.assertTrue(receipt["intact"])
@@ -204,6 +211,15 @@ class HostedRunTests(unittest.TestCase):
         self.assertTrue(receipt["result"]["structuredContent"]["intact"])
 
 
+    def test_same_research_id_is_tenant_scoped(self):
+        store = FakeStore()
+        row = {"run_id": "RR-SAME", "user_id": "u1", "snapshot": {"owner": "u1"}}
+        store.save_run(row)
+        store.save_run({"run_id": "RR-SAME", "user_id": "u2", "snapshot": {"owner": "u2"}})
+        self.assertEqual(store.get_run("u1", "RR-SAME")["snapshot"]["owner"], "u1")
+        self.assertEqual(store.get_run("u2", "RR-SAME")["snapshot"]["owner"], "u2")
+
+
 class PublicSecurityTests(unittest.TestCase):
     def test_remote_rejects_server_file_paths(self):
         with self.assertRaises(PublicInputError):
@@ -240,13 +256,27 @@ class StripeWebhookTests(unittest.TestCase):
             self.assertEqual(apply_webhook(store, parsed), "duplicate")
 
 
+class CostingTests(unittest.TestCase):
+    def test_external_data_cost_is_reconstructed_without_counting_customer_rate_as_cogs(self):
+        ledger = CostLedger(0.0312)
+        ledger.record("sense", "external_data", "licensed-provider", work_units=2, external_usd=0.75)
+        with patch.dict(os.environ, {"LI_INFRA_USD_PER_RUN": "0"}, clear=False):
+            result = actual_run_cost({"name": "heuristic", "usage": {"calls": 0}}, ledger)
+        self.assertAlmostEqual(result.known_cost_usd, 0.75, places=6)
+        self.assertTrue(result.fully_priced)
+
+
 class MigrationContractTests(unittest.TestCase):
     def test_first_1000_rule_and_rls_are_present(self):
         sql = Path("supabase/migrations/20261004190000_public_mcp.sql").read_text(encoding="utf-8")
-        self.assertIn("activation_number <= 1000", sql)
+        self.assertIn("v_num <= 1000", sql)
         self.assertIn("'founding_free'", sql)
         self.assertIn("'paid_required'", sql)
-        self.assertGreaterEqual(sql.count("enable row level security"), 8)
+        self.assertGreaterEqual(sql.count("enable row level security"), 10)
+        self.assertIn("for update", sql.lower())
+        self.assertNotIn("nextval('public.li_activation_seq')", sql)
+        self.assertIn("primary key (user_id, run_id)", sql)
+        self.assertIn("li_take_rate_limit", sql)
 
 
 if __name__ == "__main__":
