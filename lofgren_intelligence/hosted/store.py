@@ -222,6 +222,40 @@ class SupabaseStore:
         )
         return list(rows or [])
 
+    def apply_stripe_entitlement_event(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        payload_hash: str,
+        user_id: str | None,
+        customer_id: str | None,
+        subscription_id: str | None,
+        active: bool,
+        plan_id: str,
+        quota_units_per_week: float,
+    ) -> bool:
+        result = self.rpc("li_apply_stripe_entitlement_event", {
+            "p_event_id": event_id,
+            "p_event_type": event_type,
+            "p_payload_hash": payload_hash,
+            "p_user_id": user_id,
+            "p_customer_id": customer_id,
+            "p_subscription_id": subscription_id,
+            "p_active": active,
+            "p_plan_id": plan_id,
+            "p_quota_units_per_week": quota_units_per_week,
+        })
+        if isinstance(result, bool):
+            return result
+        if isinstance(result, list) and result:
+            value = result[0]
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, dict):
+                return bool(next(iter(value.values()), False))
+        return bool(result)
+
     def stripe_event_seen(self, event_id: str) -> bool:
         rows = self._table(
             "li_billing_events",
