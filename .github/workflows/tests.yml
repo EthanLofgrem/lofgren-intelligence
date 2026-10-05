@@ -157,7 +157,7 @@ jobs:
 
 
   v6-complete:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'build/v6-improve' }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
