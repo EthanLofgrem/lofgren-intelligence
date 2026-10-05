@@ -49,15 +49,48 @@ MAX_TLE_TEXT_CHARS = 20_000
 
 
 class PublicServiceError(RuntimeError):
-    pass
+    """A refusal the public caller may read.
+
+    The message is user-facing and must never carry stored data, schema names,
+    object ids from a failed integrity check or a traceback. `code` is a stable
+    machine-readable reason that the MCP surface puts in front of the message.
+    """
+
+    code = "REQUEST_REFUSED"
 
 
 class PaymentRequired(PublicServiceError):
-    pass
+    code = "PAYMENT_REQUIRED"
 
 
 class QuotaExceeded(PublicServiceError):
-    pass
+    code = "QUOTA_EXCEEDED"
+
+
+class DiscoveryStateInvalid(PublicServiceError):
+    """Stored V2 discovery state failed to restore or failed its integrity checks."""
+
+    code = "DISCOVERY_STATE_INVALID"
+
+
+class RunStateInvalid(PublicServiceError):
+    """A stored V1 research run could not be reloaded as a discovery context."""
+
+    code = "RUN_STATE_INVALID"
+
+
+DISCOVERY_STATE_INVALID_MESSAGE = (
+    "the stored discovery state is invalid or incomplete and cannot be used; "
+    "run discover again to create a new discovery"
+)
+
+# Keys every durable discovery snapshot carries (see snapshots.durable_discovery_snapshot).
+# A snapshot missing any of them is truncated or tampered and is refused as a whole.
+REQUIRED_DISCOVERY_KEYS = (
+    "discovery_id", "summary", "gaps", "connections", "hypotheses", "requirements",
+    "candidates", "decision", "receipt", "context_objects", "receipt_intact",
+    "receipt_object_problems", "verifier_issues", "handoff", "handoff_problems", "report",
+)
 
 
 class PublicService:
@@ -93,6 +126,17 @@ class PublicService:
         ):
             self.store.release_usage(reservation_id)
             raise QuotaExceeded("actual work exceeded the reserved usage allowance")
+
+    def _release_quietly(self, reservation_id: str) -> None:
+        """Release a reservation on a failed call without masking the original error.
+
+        If the release itself cannot reach the store, the database expires the
+        reservation after one hour (li_reserve_usage), so capacity is never lost.
+        """
+        try:
+            self.store.release_usage(reservation_id)
+        except Exception:
+            pass
 
     def _require_open_quota(self, user_id: str) -> None:
         """Refuse unreserved compute when entitlement is inactive or weekly quota is exhausted."""
@@ -287,15 +331,21 @@ class PublicService:
 
     def _discovery_context(self, user_id: str, run_id: str) -> DiscoveryContext:
         snap = self._snapshot(user_id, run_id)
-        return DiscoveryContext(snap["knowledge_map2"], snap["receipt"])
+        try:
+            return DiscoveryContext(snap["knowledge_map2"], snap["receipt"])
+        except Exception:
+            # Never echo the reason: it names stored objects and schema details.
+            raise RunStateInvalid(
+                "the stored research run cannot be reloaded; run investigate again"
+            ) from None
 
     def _discovery_snapshot(self, user_id: str, discovery_id: str) -> dict[str, Any]:
         row = self.store.get_discovery(user_id, discovery_id)
         if not row:
             raise PublicServiceError("unknown discovery_id")
         snap = row.get("snapshot")
-        if not isinstance(snap, dict):
-            raise PublicServiceError("stored discovery snapshot is invalid")
+        if not isinstance(snap, dict) or any(k not in snap for k in REQUIRED_DISCOVERY_KEYS):
+            raise DiscoveryStateInvalid(DISCOVERY_STATE_INVALID_MESSAGE)
         return snap
 
     def discover(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
@@ -481,22 +531,30 @@ class PublicService:
     def build_artifact(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         discovery_id = str(a["discovery_id"])
         reservation_id = self._reserve_usage(user_id, "build_artifact", 10.0)
-        row = self.store.get_discovery(user_id, discovery_id)
-        if not row:
-            raise PublicServiceError("unknown discovery_id")
-        snap = row.get("snapshot")
-        if not isinstance(snap, dict) or not snap.get("handoff"):
-            raise PublicServiceError("discovery has no validated V3 handoff")
-        context = restore_discovery_context(
-            self._discovery_context(user_id, str(row["research_id"])),
-            snap,
-        )
-        result = produce_artifact(
-            snap["handoff"],
-            discovery_receipt=snap["receipt"],
-            context=context,
-            kind=str(a.get("kind") or "structured_bundle"),
-        )
+        try:
+            row = self.store.get_discovery(user_id, discovery_id)
+            if not row:
+                raise PublicServiceError("unknown discovery_id")
+            snap = self._discovery_snapshot(user_id, discovery_id)
+            if not snap.get("handoff"):
+                raise PublicServiceError("discovery has no validated V3 handoff")
+            base = self._discovery_context(user_id, str(row["research_id"]))
+            try:
+                context = restore_discovery_context(base, snap)
+            except Exception:
+                # Restore fails closed on tampered, truncated or missing typed objects. The
+                # internal reason (object ids, digests, receipt mismatches) stays on the server.
+                raise DiscoveryStateInvalid(DISCOVERY_STATE_INVALID_MESSAGE) from None
+            result = produce_artifact(
+                snap["handoff"],
+                discovery_receipt=snap["receipt"],
+                context=context,
+                kind=str(a.get("kind") or "structured_bundle"),
+            )
+        except Exception:
+            # Nothing was built: return the held allowance instead of letting it sit until expiry.
+            self._release_quietly(reservation_id)
+            raise
         self.store.save_artifact({
             "user_id": user_id,
             "artifact_id": result.artifact_id,

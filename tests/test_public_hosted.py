@@ -12,7 +12,7 @@ from lofgren_intelligence.hosted.costing import actual_run_cost
 from lofgren_intelligence.hosted.economics import certify_paid_plan
 from lofgren_intelligence.kernel.ledger import CostLedger
 from lofgren_intelligence.hosted.security import PublicInputError, validate_remote_args
-from lofgren_intelligence.hosted.service import PaymentRequired, PublicService
+from lofgren_intelligence.hosted.service import DiscoveryStateInvalid, PaymentRequired, PublicService
 from lofgren_intelligence.hosted.stripe import apply_webhook, verify_webhook
 from lofgren_intelligence.discovery.fixtures import warehouse_design
 
@@ -462,7 +462,7 @@ class HostedLifecycleTests(HostedDiscoveryTests):
         assumption = next(x for x in tampered["snapshot"]["context_objects"] if x["type"] == "Assumption")
         assumption["data"]["value"] = float(assumption["data"]["value"]) * 2 + 1
         store.save_discovery(tampered)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DiscoveryStateInvalid):
             PublicService(store).build_artifact("u1", args)
 
         dropped = json.loads(json.dumps(original))
@@ -470,13 +470,13 @@ class HostedLifecycleTests(HostedDiscoveryTests):
             x for x in dropped["snapshot"]["context_objects"] if x["type"] != "Simulation"
         ]
         store.save_discovery(dropped)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DiscoveryStateInvalid):
             PublicService(store).build_artifact("u1", args)
 
         missing = json.loads(json.dumps(original))
         del missing["snapshot"]["context_objects"]
         store.save_discovery(missing)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DiscoveryStateInvalid):
             PublicService(store).build_artifact("u1", args)
         self.assertEqual(store.artifacts, {})
 
