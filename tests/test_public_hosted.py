@@ -360,6 +360,139 @@ class HostedDiscoveryTests(unittest.TestCase):
         self.assertEqual([x["discovery_id"] for x in exported["discoveries"]], ["DR-1"])
 
 
+class HostedLifecycleTests(HostedDiscoveryTests):
+    def test_v3_artifact_is_durable_and_tenant_scoped(self):
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        built = PublicService(store).build_artifact("u1", {
+            "discovery_id": discovery["discovery_id"],
+            "kind": "structured_bundle",
+        })
+        self.assertTrue(built["verified"])
+        second = PublicService(store).get_artifact("u1", {"artifact_id": built["artifact_id"]})
+        self.assertTrue(second["verified"])
+        self.assertTrue(second["receipt_intact"])
+        row = store.get_artifact("u1", built["artifact_id"])
+        store.save_artifact({**row, "user_id": "u2"})
+        self.assertIsNotNone(store.get_artifact("u1", built["artifact_id"]))
+        self.assertIsNotNone(store.get_artifact("u2", built["artifact_id"]))
+
+    def test_v4_action_requires_browser_approval_before_execution(self):
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        built = PublicService(store).build_artifact("u1", {
+            "discovery_id": discovery["discovery_id"],
+            "kind": "structured_bundle",
+        })
+        service = PublicService(store)
+        with patch("lofgren_intelligence.hosted.service.HTTPSWebhookAdapter.preflight", return_value={"ready": True}):
+            proposed = service.propose_action("u1", {
+                "artifact_id": built["artifact_id"],
+                "target": "https://example.com/hook",
+                "payload": {"hello": "world"},
+                "cost_usd": 0,
+            }, "https://li.example")
+        self.assertEqual(proposed["status"], "awaiting_human_approval")
+        with self.assertRaises(Exception):
+            service.execute_action("u1", {"action_id": proposed["action_id"]})
+        approved = service.approve_action("u1", proposed["action_id"])
+        self.assertEqual(approved["status"], "approved")
+        status = service.action_status("u1", {"action_id": proposed["action_id"]})
+        self.assertEqual(status["status"], "approved")
+
+    def test_v5_and_v6_are_durable_after_verified_action(self):
+        from lofgren_intelligence.execution.certification import NOW, _base as v4_base
+        from lofgren_intelligence.execution.core import InMemoryAdapter, execute_authorized
+
+        store = FakeStore(quota=5000)
+        product, request, grant, approval = v4_base()
+        executed = execute_authorized(
+            product.v4_handoff, request, grant, approval, InMemoryAdapter(),
+            subject="user-cert", now=NOW,
+        )
+        self.assertIsNotNone(executed.v5_handoff)
+        store.save_action({
+            "user_id": "u1",
+            "action_id": request.action_id,
+            "artifact_id": request.artifact_id,
+            "request": {},
+            "status": "executed",
+            "grant_record": None,
+            "approval_record": None,
+            "receipt": executed.receipt,
+            "v5_handoff": executed.v5_handoff,
+            "created_at": NOW.isoformat(),
+            "approved_at": NOW.isoformat(),
+            "executed_at": NOW.isoformat(),
+        })
+        measurements = [
+            {
+                "metric": item["metric"],
+                "value": item["mean"],
+                "unit": item.get("unit", ""),
+                "observed_at": "2026-11-04T12:00:00+00:00",
+                "source": "hosted-test",
+                "observation_id": f"OBS-{i}",
+            }
+            for i, item in enumerate(executed.v5_handoff["expected_outcomes"], 1)
+        ]
+        service = PublicService(store)
+        measured = service.measure_outcome("u1", {
+            "action_id": request.action_id,
+            "measurements": measurements,
+        })
+        self.assertTrue(measured["receipt_intact"])
+        self.assertTrue(measured["v6_improvement_allowed"])
+        outcome = service.get_outcome("u1", {"outcome_id": measured["outcome_id"]})
+        self.assertTrue(outcome["receipt_intact"])
+
+        improved = service.evaluate_improvement("u1", {
+            "outcome_id": measured["outcome_id"],
+            "proposal": {
+                "proposal_id": "IMP-hosted",
+                "baseline_id": "BASE-1",
+                "candidate_id": "CAND-2",
+                "change_summary": "Improve routing threshold.",
+                "evaluation_dataset": {
+                    "dataset_id": "DS-heldout",
+                    "content_hash": "sha256:" + "a" * 64,
+                    "sample_count": 100,
+                    "held_out": True,
+                },
+                "primary_metric": {
+                    "metric": "task_success",
+                    "baseline": 0.75,
+                    "candidate": 0.82,
+                    "direction": "higher_is_better",
+                },
+                "min_gain": 0.03,
+                "safety_constraints": [
+                    {
+                        "metric": "evidence_integrity",
+                        "baseline": 0.99,
+                        "candidate": 0.99,
+                        "max_regression": 0.01,
+                    }
+                ],
+            },
+        })
+        self.assertTrue(improved["receipt_intact"])
+        self.assertTrue(improved["human_review_required"])
+        self.assertFalse(improved["mutation_performed"])
+        recovered = PublicService(store).get_improvement("u1", {"improvement_id": improved["improvement_id"]})
+        self.assertTrue(recovered["receipt_intact"])
+
+
 class PublicSecurityTests(unittest.TestCase):
     def test_remote_rejects_server_file_paths(self):
         with self.assertRaises(PublicInputError):
