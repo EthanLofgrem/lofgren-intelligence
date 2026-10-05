@@ -70,6 +70,51 @@ class ReleaseCIEvidenceTests(unittest.TestCase):
         self.assertFalse(ci)
         self.assertIn("Python 3.11", evidence)
 
+    def test_wrong_workflow_fails(self):
+        required = ("Run tests", PACKAGE_STEP)
+        bad = {**good_run(), "name": "other"}
+        with patch("lofgren_intelligence.release.ci._get", return_value=bad):
+            ci, evidence, pkg, _ = verify_exact_ci(repo="o/r", sha=SHA, run_id=RUN_ID, required_steps=required)
+        self.assertFalse(ci)
+        self.assertFalse(pkg)
+        self.assertIn("expected", evidence)
+
+    def test_cancelled_python_job_fails(self):
+        required = ("Run tests", PACKAGE_STEP)
+        jobs = good_jobs(required)
+        jobs["jobs"][0]["status"] = "completed"
+        jobs["jobs"][0]["conclusion"] = "cancelled"
+        with patch("lofgren_intelligence.release.ci._get", side_effect=[good_run(), jobs]):
+            ci, evidence, _, _ = verify_exact_ci(repo="o/r", sha=SHA, run_id=RUN_ID, required_steps=required)
+        self.assertFalse(ci)
+        self.assertIn("cancelled", evidence)
+
+    def test_missing_python_version_fails(self):
+        required = ("Run tests", PACKAGE_STEP)
+        jobs = good_jobs(required)
+        jobs["jobs"] = [job for job in jobs["jobs"] if "(3.12)" not in job["name"]]
+        with patch("lofgren_intelligence.release.ci._get", side_effect=[good_run(), jobs]):
+            ci, evidence, pkg, _ = verify_exact_ci(repo="o/r", sha=SHA, run_id=RUN_ID, required_steps=required)
+        self.assertFalse(ci)
+        self.assertFalse(pkg)
+        self.assertIn("3.12", evidence)
+
+    def test_skipped_package_step_fails_package_and_ci(self):
+        required = ("Run tests", PACKAGE_STEP)
+        jobs = good_jobs(required)
+        for job in jobs["jobs"]:
+            for step in job["steps"]:
+                if step["name"] == PACKAGE_STEP:
+                    step["conclusion"] = "skipped"
+        with patch("lofgren_intelligence.release.ci._get", side_effect=[good_run(), jobs]):
+            ci, evidence, pkg, package_evidence = verify_exact_ci(
+                repo="o/r", sha=SHA, run_id=RUN_ID, required_steps=required
+            )
+        self.assertFalse(ci)
+        self.assertFalse(pkg)
+        self.assertIn("Package smoke test", evidence)
+        self.assertIn("skipped", package_evidence)
+
 
 if __name__ == "__main__":
     unittest.main()
