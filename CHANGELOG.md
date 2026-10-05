@@ -2,6 +2,30 @@
 
 Releases use semantic versions. "V1 … V6" name capability generations, not release numbers.
 
+## 0.4.0 — V3 Production Intelligence
+
+V3 is built and certified (`lofgren certify --v3`, `scripts/v3_gate.py`). It consumes only a validated V2 handoff
+and grants no authority to act.
+
+- **Upstream binding**: every number, constraint and criterion in the V3 handoff must equal the discovery object it
+  cites (assumption, scenario parameter, V1 known claim, simulation, recorded design), after the context is checked
+  against the receipt's object digests. V2's validator alone accepted an edited value.
+- **Specification compiler** (`compile_specification`): numbered typed requirements (specifications, simulated
+  outcomes, acceptance criteria, constraints, test requirements, dependencies); malformed specifications refused.
+- **Artifact plan and generation** (`production.codegen/1`): `artifact.json`, `plan.json`, `acceptance.json`,
+  `README.md`, `artifact.py` (one generated function per check, compiled from V2 expression trees) and
+  `test_artifact.py`, for the `structured_bundle`, `markdown` and `python_module` kinds.
+- **Reference probes**: perturbed inputs with V2-computed expected results, failures included, that the generated
+  tests must reproduce, so no check can be unfaithful or vacuous.
+- **Independent verifier**: structure, byte-for-byte regeneration, fingerprint, provenance, traceability,
+  re-evaluated checks, then the generated tests in an isolated interpreter.
+- **Production receipt** bound to its artifact (`check_production_receipt`) and a **V4 handoff** validated by
+  `validate_v4_handoff` (no requested actions, authority not granted, the action classes that need authority).
+- **Usable end to end**: `lofgren produce`, `lofgren verify-artifact`, `write_artifact` / `verify_directory`, and
+  MCP contract `lofgren.mcp/3` adding `build_artifact`, `verify_artifact`, `get_artifact_file`,
+  `get_production_receipt` and `create_v4_handoff` (every V1 and V2 tool unchanged).
+- **Gate**: `scripts/v3_gate.py` reads GitHub Actions for the exact SHA instead of trusting a run id.
+
 ## 0.3.0 — V2 Discovery Intelligence
 
 V2 is built and certified (`lofgren certify --v2`, `scripts/v2_gate.py`). It reads V1 only through a validated

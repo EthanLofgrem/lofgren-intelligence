@@ -57,3 +57,21 @@ Discovery verifier (lowers only) → DiscoveryDecision (explicit rule) → disco
 
 V2 rules: a V2 idea is never a fact; a simulation is never an observation; a prior-art miss is never novelty; a
 speculative connection only feeds hypotheses; every number in a handoff has a typed source.
+
+## From a V3 handoff to a V4 handoff
+
+```
+V3 handoff ── each number equals the object it cites (receipt-bound context) ── numbered requirements
+  → plan (requirement → file) → generated artifact + tests → independent verifier → production receipt → V4 handoff
+```
+
+| Format | What it is |
+| --- | --- |
+| `lofgren.artifact/1` | The manifest and the artifact record: kind, files with SHA-256, check results, fingerprint, provenance |
+| `lofgren.artifact-plan/1` | Which file covers which requirement |
+| `lofgren.acceptance/1` | The checks, the comparison tolerance and reference probes with V2-computed expected results |
+| `lofgren.production-receipt/1` | What determined an artifact: ids, fingerprints, file hashes, requirements, results, test run, algorithms; `receipt_hash` |
+| `lofgren.v4-handoff/1` | The verified artifact for V4: files, tests, receipt hash, open work; no requested actions, authority not granted |
+
+V3 rules: nothing is built from an unselected candidate or an edited handoff; every requirement is covered by a file;
+every check has an executable test that can fail; open verification work is listed, never reported as passed.

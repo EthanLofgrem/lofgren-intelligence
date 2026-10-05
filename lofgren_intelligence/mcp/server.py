@@ -37,7 +37,7 @@ from ..report.markdown import render_markdown
 from ..research.planner import gap_unknowns, plan_research
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
-CONTRACT = "lofgren.mcp/2"  # V1 tools unchanged; V2 discovery tools and export_knowledge_map added
+CONTRACT = "lofgren.mcp/3"  # V1 and V2 tools unchanged; V3 production tools added
 INSTRUCTIONS = (
     "Lofgren Intelligence is an evidence layer. Typical flow: `compile_objective` -> `plan_research` "
     "(shows price) -> `investigate` (returns a run_id and typed findings) -> `get_finding`, "
@@ -49,7 +49,10 @@ INSTRUCTIONS = (
     "`generate_candidates`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff` and "
     "`render_discovery_report` read a discovery; `find_prior_art`, `simulate_candidate`, `analyze_sensitivity` and "
     "`optimize_solution` run ad hoc. Simulated values are predictions, hypotheses are not established, and a "
-    "prior-art miss never means novelty. Contract " + CONTRACT + "."
+    "prior-art miss never means novelty. Production (V3): `build_artifact` turns a discovery's V3 handoff into a "
+    "tested, independently verified artifact (an artifact_id); `verify_artifact`, `get_artifact_file`, "
+    "`get_production_receipt` and `create_v4_handoff` read it. V3 grants no authority to act. Contract "
+    + CONTRACT + "."
 )
 
 _SOURCE_PROPS: dict[str, Any] = {
@@ -229,7 +232,39 @@ DISCOVERY_TOOLS: list[dict[str, Any]] = [
      "description": "Human-readable Markdown view of a discovery.",
      "inputSchema": _obj(["discovery_id"], _DISC)},
 ]
-TOOLS = TOOLS + DISCOVERY_TOOLS
+_ART = {"artifact_id": {"type": "string", "description": "The artifact_id returned by build_artifact."}}
+PRODUCTION_TOOLS: list[dict[str, Any]] = [
+    {"name": "build_artifact",
+     "description": "V3: compile a discovery's validated V3 handoff into numbered requirements, plan and generate the "
+                    "artifact (manifest, plan, checks, README, Python module, acceptance tests), run its generated "
+                    "tests in an isolated interpreter, verify it independently and return a tamper-evident receipt. "
+                    "Grants no authority to act.",
+     "inputSchema": _obj(["discovery_id"], {**_DISC, "kind": {
+         "type": "string", "enum": ["structured_bundle", "markdown", "python_module"],
+         "description": "Artifact form (default structured_bundle)."}}),
+     "outputSchema": _out_schema(["kind", "artifact_id", "files", "checks", "verification", "receipt_hash"],
+                                 {"kind": {"const": "artifact"}})},
+    {"name": "verify_artifact",
+     "description": "Re-run the independent verifier on a built artifact: regeneration, fingerprint, provenance, "
+                    "traceability, re-evaluated checks, the generated tests and the receipt binding.",
+     "inputSchema": _obj(["artifact_id"], _ART),
+     "outputSchema": _out_schema(["kind", "artifact_id", "passed", "problems"])},
+    {"name": "get_artifact_file",
+     "description": "The content of one file of a built artifact, with its SHA-256.",
+     "inputSchema": _obj(["artifact_id", "path"], {**_ART, "path": {"type": "string"}}),
+     "outputSchema": _out_schema(["kind", "path", "sha256", "content"])},
+    {"name": "get_production_receipt",
+     "description": "The production receipt (lofgren.production-receipt/1) and whether it is intact and bound to the "
+                    "artifact.",
+     "inputSchema": _obj(["artifact_id"], _ART),
+     "outputSchema": _out_schema(["kind", "intact", "receipt"])},
+    {"name": "create_v4_handoff",
+     "description": "The validated V3 -> V4 handoff (lofgren.v4-handoff/1): the verified artifact for V4 to act on "
+                    "only under a capability grant and authorization. It requests and grants nothing.",
+     "inputSchema": _obj(["artifact_id"], _ART),
+     "outputSchema": _out_schema(["kind", "ready", "handoff", "problems"])},
+]
+TOOLS = TOOLS + DISCOVERY_TOOLS + PRODUCTION_TOOLS
 # Older tool names kept working for existing clients.
 ALIASES = {"compile_intent": "compile_objective", "estimate_cost": "plan_research"}
 
@@ -247,6 +282,7 @@ class Server:
     def __init__(self) -> None:
         self.runs: dict[str, RunResult] = {}
         self.discoveries: dict[str, Any] = {}
+        self.artifacts: dict[str, Any] = {}
         self.handlers: dict[str, Callable[[dict], dict]] = {
             "compile_objective": self.t_compile_objective,
             "plan_research": self.t_plan_research,
@@ -275,6 +311,11 @@ class Server:
             "get_discovery_receipt": self.t_get_discovery_receipt,
             "create_v3_handoff": self.t_create_v3_handoff,
             "render_discovery_report": self.t_render_discovery_report,
+            "build_artifact": self.t_build_artifact,
+            "verify_artifact": self.t_verify_artifact,
+            "get_artifact_file": self.t_get_artifact_file,
+            "get_production_receipt": self.t_get_production_receipt,
+            "create_v4_handoff": self.t_create_v4_handoff,
         }
         for alias, target in ALIASES.items():
             self.handlers[alias] = self.handlers[target]
@@ -545,6 +586,60 @@ class Server:
 
         md = render_discovery_markdown(self._get_discovery(a))
         return {"text": md, "structured": {"discovery_id": a["discovery_id"], "format": "markdown", "report": md}}
+
+    def _get_artifact(self, a: dict):
+        r = self.artifacts.get(a.get("artifact_id", ""))
+        if r is None:
+            raise ToolError(f"unknown artifact_id {a.get('artifact_id')}; artifacts live for this server session only")
+        return r
+
+    def t_build_artifact(self, a: dict) -> dict:
+        from ..production import build_artifact
+
+        d = self._get_discovery(a)
+        if d.handoff is None:
+            raise ToolError(f"discovery {a['discovery_id']} selected no candidate (outcome {d.outcome.value}); "
+                            "there is nothing to produce")
+        r = build_artifact(d.handoff, discovery_receipt=d.receipt, context=d.context,
+                           kind=a.get("kind") or "structured_bundle")
+        self.artifacts[r.artifact_id] = r
+        return _out({"kind": "artifact", "contract": CONTRACT, "artifact_id": r.artifact_id,
+                     "artifact_kind": r.artifact["kind"], "fingerprint": r.artifact["fingerprint"],
+                     "files": [{k: f[k] for k in ("path", "media_type", "sha256")} for f in r.artifact["files"]],
+                     "requirements": r.spec.as_list() if r.spec else [],
+                     "checks": [x.as_dict() for x in r.acceptance], "verification": r.verification.as_dict(),
+                     "receipt_hash": r.receipt["receipt_hash"], "authority_granted": False})
+
+    def t_verify_artifact(self, a: dict) -> dict:
+        from ..production import check_production_receipt, verify_artifact
+
+        r = self._get_artifact(a)
+        v = verify_artifact(r.artifact)
+        problems = list(v.problems) + check_production_receipt(r.receipt, r.artifact)
+        return _out({"kind": "artifact_verification", "artifact_id": r.artifact_id, "passed": not problems,
+                     "problems": problems, "tests": v.tests})
+
+    def t_get_artifact_file(self, a: dict) -> dict:
+        r = self._get_artifact(a)
+        f = next((f for f in r.artifact["files"] if f["path"] == a.get("path")), None)
+        if f is None:
+            raise ToolError(f"artifact {r.artifact_id} has no file {a.get('path')!r}; files: "
+                            f"{[x['path'] for x in r.artifact['files']]}")
+        return _out({"kind": "artifact_file", "artifact_id": r.artifact_id, **f})
+
+    def t_get_production_receipt(self, a: dict) -> dict:
+        from ..production import check_production_receipt, verify_production_receipt
+
+        r = self._get_artifact(a)
+        return _out({"kind": "production_receipt", "intact": verify_production_receipt(r.receipt),
+                     "binding_problems": check_production_receipt(r.receipt, r.artifact), "receipt": r.receipt})
+
+    def t_create_v4_handoff(self, a: dict) -> dict:
+        from ..production import validate_v4_handoff
+
+        r = self._get_artifact(a)
+        problems = validate_v4_handoff(r.v4_handoff, r.receipt, r.artifact)
+        return _out({"kind": "v4_handoff", "ready": not problems, "handoff": r.v4_handoff, "problems": problems})
 
     # -- protocol ------------------------------------------------------------
     def handle(self, msg: dict) -> dict | None:
