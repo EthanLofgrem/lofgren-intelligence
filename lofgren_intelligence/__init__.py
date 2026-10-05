@@ -27,7 +27,7 @@ from .kernel import RunResult, run_investigation
 from .models import default_provider
 from .report import render_json, render_markdown
 
-__version__ = "0.3.0"
+__version__ = "0.7.0"
 
 
 def build_registry(
