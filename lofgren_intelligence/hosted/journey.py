@@ -50,7 +50,7 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 <div class="status"><span>Execution Intelligence</span><strong class="ok">V4 certified</strong></div>
 <div class="status"><span>Outcome Intelligence</span><strong class="ok">V5 certified</strong></div>
 <div class="status"><span>Improvement Intelligence</span><strong class="ok">V6 certified</strong></div>
-<div class="status"><span>Founding access</span><strong>Accounts 1–1000</strong></div>
+<div class="status"><span>Founding Free access</span><strong>Accounts 1–1000</strong></div>
 </div>
 </section>
 
@@ -68,7 +68,7 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 <section class="section" id="journey">
 <h2>From objective to governed outcome</h2>
 <p class="sectionlead">Users should not need to understand internal version numbers. The visible journey follows one governed chain. Each stage consumes typed state from the previous stage and produces its own receipt rather than silently changing history.</p>
-<div class="flow"><div>Research</div><div>Discover</div><div>Build</div><div>Act</div><div>Measure / Improve</div></div>
+<div class="flow"><div>Objective</div><div>Research</div><div>Discover</div><div>Build / Act</div><div>Measure / Improve</div></div>
 <div class="grid" style="margin-top:16px">
 <article class="step"><h3>Frame the work</h3><p>Use <code>compile_objective</code> or <code>plan_research</code> when the request needs a clearer objective, evidence requirements or cost boundary.</p></article>
 <article class="step"><h3>Research and verify</h3><p><code>investigate</code> creates a durable run. Inspect findings, contradictions, gaps and provenance before treating a conclusion as supported.</p></article>
@@ -86,7 +86,7 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 <div class="grid">
 <article class="step"><h3>Payment required</h3><p>Use <code>create_checkout</code>. Returning from checkout does not prove payment. Re-run <code>account_status</code> after the signed Stripe webhook updates entitlement.</p></article>
 <article class="step"><h3>Quota reached</h3><p>Check <code>usage_status</code> instead of repeatedly retrying an expensive operation.</p></article>
-<article class="step"><h3>Evidence missing</h3><p>Follow the returned gaps, evidence requirements and settling evidence. Unknown is a governed answer, not a UI failure.</p></article>
+<article class="step"><h3>Evidence missing</h3><p>Follow the returned gaps, missing-evidence requirements and settling evidence. Unknown is a governed answer, not a UI failure.</p></article>
 </div>
 <div class="notice"><strong>Governance boundary:</strong> V1–V6 are certified as the bounded intelligence stack on this release line. Public readiness is a separate gate: hosted OAuth, tenant isolation, persistence, deployment identity, backup/restore, billing and real-client interoperability must still pass before this release is declared public-ready.</div>
 </section>
