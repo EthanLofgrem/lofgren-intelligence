@@ -19,6 +19,7 @@ from ..discovery.optimize import optimize, problem_from_json
 from ..discovery.pipeline import _prior_art_provider, run_discovery
 from ..discovery.prior_art import assess_prior_art
 from ..intent.compiler import compile_intent
+from ..intent.clarification import clarify_objective as clarify_case_objective, requires_clarification, to_dict as clarification_to_dict
 from ..kernel.pipeline import estimate_run, run_investigation
 from ..models.provider import default_provider
 from ..orbital.catalog import IMAGING_SATELLITES, fetch_tles
@@ -246,6 +247,42 @@ class PublicService:
             "plan_id": decision.entitlement.get("plan_id"),
         }
 
+    @staticmethod
+    def _approved_case_charter(a: dict[str, Any]) -> dict[str, Any] | None:
+        charter = a.get("case_charter")
+        if not isinstance(charter, dict):
+            return None
+        if charter.get("approved") is not True:
+            return None
+        if str(charter.get("objective") or "").strip() != str(a.get("objective") or "").strip():
+            return None
+        return charter
+
+    def clarify_objective(self, a: dict[str, Any]) -> dict[str, Any]:
+        a = validate_remote_args(a)
+        result = clarify_case_objective(
+            str(a["objective"]),
+            a.get("answers") if isinstance(a.get("answers"), dict) else None,
+        )
+        return clarification_to_dict(result)
+
+    def _clarification_gate(self, a: dict[str, Any]) -> dict[str, Any] | None:
+        objective = str(a.get("objective") or "").strip()
+        if not objective or not requires_clarification(objective):
+            return None
+        if self._approved_case_charter(a) is not None:
+            return None
+        result = clarify_case_objective(
+            objective,
+            a.get("answers") if isinstance(a.get("answers"), dict) else None,
+        )
+        out = clarification_to_dict(result)
+        out["message"] = (
+            "This objective is consequential or underspecified. Clarify the highest-impact "
+            "unknowns and approve the Case Charter before substantial research begins."
+        )
+        return out
+
     def compile_objective(self, a: dict[str, Any]) -> dict[str, Any]:
         a = validate_remote_args(a)
         c = compile_intent(
@@ -257,6 +294,9 @@ class PublicService:
 
     def plan_research(self, a: dict[str, Any]) -> dict[str, Any]:
         a = validate_remote_args(a)
+        clarification = self._clarification_gate(a)
+        if clarification is not None:
+            return clarification
         c = compile_intent(
             a["objective"],
             max_spend_usd=float(a.get("max_spend_usd", 5.0)),
@@ -332,6 +372,10 @@ class PublicService:
         return out
 
     def investigate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        a = validate_remote_args(a)
+        clarification = self._clarification_gate(a)
+        if clarification is not None:
+            return clarification
         return self._run(user_id, a["objective"], a)
 
     def verify_claim(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
