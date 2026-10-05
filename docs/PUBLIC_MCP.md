@@ -6,9 +6,13 @@ Lofgren Intelligence V1 engine.
 ## Truthful capability boundary
 
 Public operation exposes only capabilities that are implemented and certified.
-At the branch baseline used for this build, V1 Evidence Intelligence and the
-V1→V2 boundary are certified. V2 is partial; V3–V6 are not public capability
-claims.
+On this line the hosted service exposes V1 Evidence Intelligence and V2
+Discovery Intelligence (hosted discovery results report contract
+`lofgren.mcp/2`). V3 Production Intelligence is certified for the local
+CLI/stdio server (`lofgren.mcp/3`: `build_artifact`, `verify_artifact`,
+`get_artifact_file`, `get_production_receipt`, `create_v4_handoff`) but is not
+yet exposed by the hosted service. V4–V6 are not public capability claims
+here. See `docs/PUBLIC_READINESS_AUDIT.md`.
 
 ## Identity and OAuth
 
@@ -17,6 +21,12 @@ may dynamically register as public clients. End users authenticate through
 Supabase Auth; the server validates the Supabase session before issuing a
 one-time authorization code. MCP access/refresh tokens are opaque and only
 hashes are persisted.
+
+The authorization page names the requesting client and the host its redirect
+URI points to. A code is issued only after the user clicks to sign in or to
+approve; an existing browser session is never used to authorize silently.
+Because client registration is open, client names are self-declared, so the
+redirect host is the part users should check.
 
 Discovery endpoints:
 
@@ -55,6 +65,11 @@ The server expects:
 - `LI_PAID_PLAN_ID`
 - `LI_PAID_WEEKLY_UNITS`
 
+The economic gate that unlocks checkout also needs `LI_PAID_MONTHLY_USD`,
+`LI_PAYMENT_FEE_PERCENT`, `LI_PAYMENT_FEE_FIXED_USD` (optional
+`LI_ECON_MIN_SAMPLES`, default 100, and `LI_TARGET_GROSS_MARGIN`, default
+0.65). Any usage sample with an unpriced component fails the gate.
+
 ## Required deployment variables
 
 - `SUPABASE_URL`
@@ -75,8 +90,12 @@ If material cost components are not configured, runs explicitly report
 ## Security boundaries
 
 Remote MCP rejects server-local file paths, caps objective/text/URL sizes,
-blocks obvious SSRF destinations (private, loopback, link-local, multicast and
-reserved networks) and re-checks redirects. The public V1 service never
+allows outbound reads only to globally routable addresses (private, loopback,
+link-local, shared/CGNAT, multicast, reserved and IPv4-in-IPv6 forms of those
+are refused), pins the checked address for the connection and re-checks
+redirects. `satellite_passes` is bounded to 168 hours and 20 element sets per
+call; ad hoc simulation, sensitivity, optimization and prior-art tools require
+an active entitlement with weekly quota remaining. The public V1 service never
 authorizes external actions; it runs research/verification only.
 
 Database tables use RLS with no anonymous/authenticated policies. The hosted
