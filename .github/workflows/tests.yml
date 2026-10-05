@@ -27,6 +27,9 @@ jobs:
         run: |
           python -m lofgren_intelligence estimate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources
           python -m lofgren_intelligence investigate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources > /dev/null
+          python -m lofgren_intelligence produce "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources --goal "Choose a warehouse size (fictional)" --design examples/designs/warehouse.json --out-dir "$RUNNER_TEMP/v3-artifact"
+          python -m lofgren_intelligence verify-artifact "$RUNNER_TEMP/v3-artifact"
+          (cd "$RUNNER_TEMP/v3-artifact" && python -m unittest -v test_artifact)
       - name: V1 certification gate
         run: python -m lofgren_intelligence certify
       - name: V2 discovery certification
@@ -88,7 +91,7 @@ jobs:
 
 
   v3-ready-for-v4:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'build/v3-production' }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -111,7 +114,7 @@ jobs:
 
 
   v4-ready-for-v5:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'build/v4-execution' }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -134,7 +137,7 @@ jobs:
 
 
   v5-ready-for-v6:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'build/v5-outcomes' }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
