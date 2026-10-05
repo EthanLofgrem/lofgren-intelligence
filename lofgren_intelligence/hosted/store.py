@@ -8,6 +8,7 @@ server or narrowly-scoped SECURITY DEFINER RPCs.
 from __future__ import annotations
 
 import os
+import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +18,16 @@ from .http import HTTPError, json_request, with_query
 
 class StoreError(RuntimeError):
     pass
+
+
+def _db(url: str, method: str, **kw: Any) -> Any:
+    """Call Supabase without leaking PostgREST/schema details to public callers."""
+    try:
+        return json_request(url, method, **kw).body
+    except HTTPError as exc:
+        raise StoreError(f"database request failed (HTTP {exc.status})") from None
+    except (urllib.error.URLError, OSError, ValueError):
+        raise StoreError("database is unreachable") from None
 
 
 def utcnow() -> str:
@@ -60,15 +71,15 @@ class SupabaseStore:
         headers = dict(self._headers)
         if prefer:
             headers["prefer"] = prefer
-        return json_request(url, method, headers=headers, body=body).body
+        return _db(url, method, headers=headers, body=body)
 
     def rpc(self, name: str, body: dict[str, Any]) -> Any:
-        return json_request(
+        return _db(
             f"{self.url}/rest/v1/rpc/{name}",
             "POST",
             headers=self._headers,
             body=body,
-        ).body
+        )
 
     def verify_supabase_user(self, access_token: str) -> dict[str, Any]:
         key = self.publishable_key or self.service_key
@@ -194,6 +205,31 @@ class SupabaseStore:
             return bool(next(iter(result.values()), False))
         return bool(result)
 
+    def _select_all(
+        self,
+        table: str,
+        query: dict[str, Any],
+        *,
+        page: int = 1000,
+        cap: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read every matching row in deterministic pages, avoiding PostgREST max-row truncation."""
+        out: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            want = page if cap is None else min(page, cap - len(out))
+            if want <= 0:
+                break
+            q = dict(query)
+            q["limit"] = str(want)
+            q["offset"] = str(offset)
+            rows = list(self._table(table, query=q) or [])
+            out.extend(rows)
+            if len(rows) < want:
+                break
+            offset += len(rows)
+        return out
+
     def reserve_usage(self, reservation_id: str, user_id: str, operation: str, units: float) -> bool:
         return self._rpc_bool(self.rpc("li_reserve_usage", {
             "p_id": reservation_id,
@@ -239,33 +275,23 @@ class SupabaseStore:
                 return bool(next(iter(value.values()), False))
         return bool(result)
 
-    def list_runs(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_runs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_runs",
-            query={
-                "select": "*",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": str(min(max(1, int(limit)), 1000)),
-            },
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,run_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
-    def list_usage(self, user_id: str, limit: int = 5000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_usage(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_usage_events",
-            query={
-                "select": "*",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": str(min(max(1, int(limit)), 5000)),
-            },
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def delete_auth_user(self, user_id: str) -> None:
         quoted = urllib.parse.quote(user_id, safe="")
-        json_request(
+        _db(
             f"{self.url}/auth/v1/admin/users/{quoted}",
             "DELETE",
             headers=self._headers,
@@ -286,17 +312,12 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
-    def list_discoveries(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_discoveries(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_discoveries",
-            query={
-                "select": "*",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": str(min(max(1, int(limit)), 1000)),
-            },
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,discovery_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def save_artifact(self, row: dict[str, Any]) -> None:
         self._table("li_artifacts", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
@@ -308,13 +329,12 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
-    def list_artifacts(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_artifacts(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_artifacts",
-            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
-                   "limit": str(min(max(1, int(limit)), 1000))},
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,artifact_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def save_action(self, row: dict[str, Any]) -> None:
         self._table("li_action_proposals", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
@@ -326,13 +346,12 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
-    def list_actions(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_actions(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_action_proposals",
-            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
-                   "limit": str(min(max(1, int(limit)), 1000))},
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,action_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def save_outcome(self, row: dict[str, Any]) -> None:
         self._table("li_outcomes", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
@@ -344,13 +363,12 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
-    def list_outcomes(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_outcomes(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_outcomes",
-            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
-                   "limit": str(min(max(1, int(limit)), 1000))},
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,outcome_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def save_improvement(self, row: dict[str, Any]) -> None:
         self._table("li_improvements", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
@@ -362,39 +380,29 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
-    def list_improvements(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_improvements(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_improvements",
-            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
-                   "limit": str(min(max(1, int(limit)), 1000))},
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,improvement_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def record_usage(self, row: dict[str, Any]) -> None:
         self._table("li_usage_events", "POST", body=row, prefer="return=minimal")
 
     def usage_units_since(self, user_id: str, since_iso: str) -> float:
-        rows = self._table(
+        rows = self._select_all(
             "li_usage_events",
-            query={
-                "select": "units",
-                "user_id": f"eq.{user_id}",
-                "created_at": f"gte.{since_iso}",
-            },
+            {"select": "units", "user_id": f"eq.{user_id}", "created_at": f"gte.{since_iso}", "order": "created_at.asc,id.asc"},
         )
-        return float(sum(float(r.get("units") or 0.0) for r in (rows or [])))
+        return float(sum(float(r.get("units") or 0.0) for r in rows))
 
     def cost_samples(self, limit: int = 5000) -> list[dict[str, Any]]:
-        rows = self._table(
+        return self._select_all(
             "li_usage_events",
-            query={
-                "select": "units,known_cost_usd,unpriced_components,created_at",
-                "units": "gt.0",
-                "order": "created_at.desc",
-                "limit": str(int(limit)),
-            },
+            {"select": "units,known_cost_usd,unpriced_components,created_at", "units": "gt.0", "order": "created_at.desc,id.desc"},
+            cap=max(0, int(limit)),
         )
-        return list(rows or [])
 
     def get_entitlement_by_subscription(self, subscription_id: str) -> dict[str, Any] | None:
         rows = self._table(
