@@ -35,7 +35,12 @@ class FakeStore:
         self.refresh_tokens = {}
         self.runs = {}
         self.discoveries = {}
+        self.artifacts = {}
+        self.actions = {}
+        self.outcomes = {}
+        self.improvements = {}
         self.usage = []
+        self.reservations = {}
         self.billing_events = {}
         self.verified_user = {"id": "u1", "email": "u@example.com"}
 
@@ -93,6 +98,84 @@ class FakeStore:
     def list_discoveries(self, user_id, limit=1000):
         return [row for (uid, _), row in self.discoveries.items() if uid == user_id][:limit]
 
+    def save_artifact(self, row):
+        self.artifacts[(row["user_id"], row["artifact_id"])] = dict(row)
+
+    def get_artifact(self, user_id, artifact_id):
+        return self.artifacts.get((user_id, artifact_id))
+
+    def list_artifacts(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.artifacts.items() if uid == user_id][:limit]
+
+    def save_action(self, row):
+        self.actions[(row["user_id"], row["action_id"])] = dict(row)
+
+    def get_action(self, user_id, action_id):
+        return self.actions.get((user_id, action_id))
+
+    def list_actions(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.actions.items() if uid == user_id][:limit]
+
+    def save_outcome(self, row):
+        self.outcomes[(row["user_id"], row["outcome_id"])] = dict(row)
+
+    def get_outcome(self, user_id, outcome_id):
+        return self.outcomes.get((user_id, outcome_id))
+
+    def list_outcomes(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.outcomes.items() if uid == user_id][:limit]
+
+    def save_improvement(self, row):
+        self.improvements[(row["user_id"], row["improvement_id"])] = dict(row)
+
+    def get_improvement(self, user_id, improvement_id):
+        return self.improvements.get((user_id, improvement_id))
+
+    def list_improvements(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.improvements.items() if uid == user_id][:limit]
+
+    def reserve_usage(self, reservation_id, user_id, operation, units):
+        quota = float(self.entitlement.get("quota_units_per_week") or 0)
+        active = bool(self.entitlement.get("active"))
+        used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == user_id)
+        reserved = sum(float(x["units"]) for x in self.reservations.values()
+                       if x["user_id"] == user_id and x["status"] == "reserved")
+        if not active or used + reserved + float(units) > quota + 1e-9:
+            return False
+        self.reservations[reservation_id] = {
+            "user_id": user_id, "operation": operation, "units": float(units), "status": "reserved",
+        }
+        return True
+
+    def finalize_usage(self, reservation_id, run_id, actual_units, known_cost_usd, unpriced_components):
+        row = self.reservations.get(reservation_id)
+        if not row or row["status"] != "reserved":
+            return False
+        quota = float(self.entitlement.get("quota_units_per_week") or 0)
+        used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == row["user_id"])
+        other = sum(float(x["units"]) for rid, x in self.reservations.items()
+                    if rid != reservation_id and x["user_id"] == row["user_id"] and x["status"] == "reserved")
+        if used + other + float(actual_units) > quota + 1e-9:
+            return False
+        self.usage.append({
+            "id": reservation_id,
+            "user_id": row["user_id"],
+            "run_id": run_id,
+            "operation": row["operation"],
+            "units": float(actual_units),
+            "known_cost_usd": float(known_cost_usd),
+            "unpriced_components": list(unpriced_components),
+        })
+        row["status"] = "settled"
+        return True
+
+    def release_usage(self, reservation_id):
+        row = self.reservations.get(reservation_id)
+        if not row or row["status"] != "reserved":
+            return False
+        row["status"] = "released"
+        return True
+
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
 
@@ -108,6 +191,10 @@ class FakeStore:
         self.entitlement = None
         self.runs = {k: v for k, v in self.runs.items() if k[0] != user_id}
         self.discoveries = {k: v for k, v in self.discoveries.items() if k[0] != user_id}
+        self.artifacts = {k: v for k, v in self.artifacts.items() if k[0] != user_id}
+        self.actions = {k: v for k, v in self.actions.items() if k[0] != user_id}
+        self.outcomes = {k: v for k, v in self.outcomes.items() if k[0] != user_id}
+        self.improvements = {k: v for k, v in self.improvements.items() if k[0] != user_id}
         self.usage = [row for row in self.usage if row["user_id"] != user_id]
 
     def record_usage(self, row):
@@ -316,6 +403,156 @@ class HostedDiscoveryTests(unittest.TestCase):
         self.assertEqual([x["discovery_id"] for x in exported["discoveries"]], ["DR-1"])
 
 
+class HostedLifecycleTests(HostedDiscoveryTests):
+    def test_v3_artifact_is_durable_and_tenant_scoped(self):
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        built = PublicService(store).build_artifact("u1", {
+            "discovery_id": discovery["discovery_id"],
+            "kind": "structured_bundle",
+        })
+        self.assertTrue(built["verified"])
+        second = PublicService(store).get_artifact("u1", {"artifact_id": built["artifact_id"]})
+        self.assertTrue(second["verified"])
+        self.assertTrue(second["receipt_intact"])
+        row = store.get_artifact("u1", built["artifact_id"])
+        store.save_artifact({**row, "user_id": "u2"})
+        self.assertIsNotNone(store.get_artifact("u1", built["artifact_id"]))
+        self.assertIsNotNone(store.get_artifact("u2", built["artifact_id"]))
+
+    def test_v4_action_requires_browser_approval_before_execution(self):
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        built = PublicService(store).build_artifact("u1", {
+            "discovery_id": discovery["discovery_id"],
+            "kind": "structured_bundle",
+        })
+        service = PublicService(store)
+        with patch("lofgren_intelligence.hosted.service.HTTPSWebhookAdapter.preflight", return_value={"ready": True}):
+            proposed = service.propose_action("u1", {
+                "artifact_id": built["artifact_id"],
+                "target": "https://example.com/hook",
+                "payload": {"hello": "world"},
+                "cost_usd": 0,
+            }, "https://li.example")
+        self.assertEqual(proposed["status"], "awaiting_human_approval")
+        with self.assertRaises(Exception):
+            service.execute_action("u1", {"action_id": proposed["action_id"]})
+        approved = service.approve_action("u1", proposed["action_id"])
+        self.assertEqual(approved["status"], "approved")
+        status = service.action_status("u1", {"action_id": proposed["action_id"]})
+        self.assertEqual(status["status"], "approved")
+
+    def test_v5_and_v6_are_durable_after_verified_action(self):
+        from lofgren_intelligence.execution.certification import NOW, _base as v4_base
+        from lofgren_intelligence.execution.core import InMemoryAdapter, execute_authorized
+
+        store = FakeStore(quota=5000)
+        product, request, grant, approval = v4_base()
+        executed = execute_authorized(
+            product.v4_handoff, request, grant, approval, InMemoryAdapter(),
+            subject="user-cert", now=NOW,
+        )
+        self.assertIsNotNone(executed.v5_handoff)
+        store.save_action({
+            "user_id": "u1",
+            "action_id": request.action_id,
+            "artifact_id": request.artifact_id,
+            "request": {},
+            "status": "executed",
+            "grant_record": None,
+            "approval_record": None,
+            "receipt": executed.receipt,
+            "v5_handoff": executed.v5_handoff,
+            "created_at": NOW.isoformat(),
+            "approved_at": NOW.isoformat(),
+            "executed_at": NOW.isoformat(),
+        })
+        measurements = [
+            {
+                "metric": item["metric"],
+                "value": item["mean"],
+                "unit": item.get("unit", ""),
+                "observed_at": "2026-11-04T12:00:00+00:00",
+                "source": "hosted-test",
+                "observation_id": f"OBS-{i}",
+            }
+            for i, item in enumerate(executed.v5_handoff["expected_outcomes"], 1)
+        ]
+        service = PublicService(store)
+        measured = service.measure_outcome("u1", {
+            "action_id": request.action_id,
+            "measurements": measurements,
+        })
+        self.assertTrue(measured["receipt_intact"])
+        self.assertTrue(measured["v6_improvement_allowed"])
+        outcome = service.get_outcome("u1", {"outcome_id": measured["outcome_id"]})
+        self.assertTrue(outcome["receipt_intact"])
+
+        improved = service.evaluate_improvement("u1", {
+            "outcome_id": measured["outcome_id"],
+            "proposal": {
+                "proposal_id": "IMP-hosted",
+                "baseline_id": "BASE-1",
+                "candidate_id": "CAND-2",
+                "change_summary": "Improve routing threshold.",
+                "evaluation_dataset": {
+                    "dataset_id": "DS-heldout",
+                    "content_hash": "sha256:" + "a" * 64,
+                    "sample_count": 100,
+                    "held_out": True,
+                },
+                "primary_metric": {
+                    "metric": "task_success",
+                    "baseline": 0.75,
+                    "candidate": 0.82,
+                    "direction": "higher_is_better",
+                },
+                "min_gain": 0.03,
+                "safety_constraints": [
+                    {
+                        "metric": "evidence_integrity",
+                        "baseline": 0.99,
+                        "candidate": 0.99,
+                        "max_regression": 0.01,
+                    }
+                ],
+            },
+        })
+        self.assertTrue(improved["receipt_intact"])
+        self.assertTrue(improved["human_review_required"])
+        self.assertFalse(improved["mutation_performed"])
+        recovered = PublicService(store).get_improvement("u1", {"improvement_id": improved["improvement_id"]})
+        self.assertTrue(recovered["receipt_intact"])
+
+
+class QuotaReservationTests(unittest.TestCase):
+    def test_inflight_reservation_prevents_concurrent_oversubscription(self):
+        store = FakeStore(quota=500)
+        self.assertTrue(store.reserve_usage("r1", "u1", "research", 300))
+        self.assertFalse(store.reserve_usage("r2", "u1", "research", 300))
+        self.assertTrue(store.finalize_usage("r1", None, 250, 0, []))
+        self.assertTrue(store.reserve_usage("r3", "u1", "research", 250))
+        self.assertFalse(store.reserve_usage("r4", "u1", "research", 1))
+
+    def test_release_returns_reserved_capacity(self):
+        store = FakeStore(quota=100)
+        self.assertTrue(store.reserve_usage("r1", "u1", "research", 100))
+        self.assertFalse(store.reserve_usage("r2", "u1", "research", 1))
+        self.assertTrue(store.release_usage("r1"))
+        self.assertTrue(store.reserve_usage("r3", "u1", "research", 100))
+
+
 class PublicSecurityTests(unittest.TestCase):
     def test_remote_rejects_server_file_paths(self):
         with self.assertRaises(PublicInputError):
@@ -435,7 +672,7 @@ class EconomicGateTests(unittest.TestCase):
 
 class MigrationContractTests(unittest.TestCase):
     def test_first_1000_rule_and_rls_are_present(self):
-        sql = Path("supabase/migrations/20261004190000_public_mcp.sql").read_text(encoding="utf-8")
+        sql = Path("supabase/migrations/20261004201650_public_mcp.sql").read_text(encoding="utf-8")
         self.assertIn("v_num <= 1000", sql)
         self.assertIn("'founding_free'", sql)
         self.assertIn("'paid_required'", sql)

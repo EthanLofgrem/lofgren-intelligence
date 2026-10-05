@@ -25,12 +25,16 @@ def _head() -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence", required=True, help="release evidence manifest JSON")
+    parser.add_argument("--trust-policy", required=True, help="operator-controlled Ed25519 trust policy JSON")
     args = parser.parse_args()
     path = Path(args.evidence).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
+    trust_path = Path(args.trust_policy).resolve()
+    trust_policy = json.loads(trust_path.read_text(encoding="utf-8"))
     gate = evaluate_public_mcp_manifest(
         manifest,
         manifest_dir=path.parent,
+        trust_policy=trust_policy,
         local_head=_head(),
     )
     print("Lofgren Intelligence Public MCP Gate")

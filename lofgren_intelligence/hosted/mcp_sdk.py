@@ -24,13 +24,12 @@ from .store import SupabaseStore
 
 
 INSTRUCTIONS = (
-    "Lofgren Intelligence is a governed evidence and discovery layer. "
-    "V1 Evidence Intelligence and V2 Discovery Intelligence are certified on the integrated source line. "
-    "Use compile_objective and plan_research before expensive work; investigate or verify_claim creates a durable "
-    "research run. Then discover can produce hypotheses, candidates, simulations, sensitivity, optimization, a "
-    "discovery receipt and a validated V3 handoff. Inspect evidence, contradictions, gaps, provenance and receipts "
-    "before presenting conclusions. Hypotheses are not facts and simulations are predictions. V3-V6 are not yet "
-    "public capabilities."
+    "Lofgren Intelligence is a governed V1-V6 outcome-intelligence stack. "
+    "V1 researches and verifies evidence; V2 discovers supported possibilities; V3 builds verified artifacts; "
+    "V4 proposes external actions that require explicit browser approval before execution; V5 measures outcomes; "
+    "V6 evaluates reviewed improvements on held-out data without silently changing the running system. "
+    "Inspect provenance and receipts at every stage. Hypotheses are not facts, simulations are predictions, "
+    "an artifact is not authority, and an executed action is not proof of success."
 )
 
 
@@ -385,6 +384,82 @@ def build_mcp(base_url: str) -> MCPServer:
         """Render the durable human-readable V2 discovery report."""
         user_id, service = _caller()
         return service.render_discovery_report(user_id, {"discovery_id": discovery_id})
+
+    @mcp.tool()
+    def build_artifact(discovery_id: str, kind: str = "structured_bundle") -> dict[str, Any]:
+        """Build and independently verify a V3 artifact from a durable V2 discovery."""
+        user_id, service = _caller()
+        return service.build_artifact(user_id, {"discovery_id": discovery_id, "kind": kind})
+
+    @mcp.tool()
+    def get_artifact(artifact_id: str) -> dict[str, Any]:
+        """Read a durable V3 artifact, production receipt and verification state."""
+        user_id, service = _caller()
+        return service.get_artifact(user_id, {"artifact_id": artifact_id})
+
+    @mcp.tool()
+    def propose_action(
+        artifact_id: str,
+        target: str,
+        payload: dict[str, Any],
+        cost_usd: float = 0.0,
+    ) -> dict[str, Any]:
+        """Propose a bounded HTTPS action. Human browser approval is always required."""
+        user_id, service = _caller()
+        return service.propose_action(user_id, {
+            "artifact_id": artifact_id,
+            "kind": "https_webhook",
+            "target": target,
+            "payload": payload,
+            "cost_usd": cost_usd,
+        }, base)
+
+    @mcp.tool()
+    def action_status(action_id: str) -> dict[str, Any]:
+        """Read approval/execution state for a durable V4 action proposal."""
+        user_id, service = _caller()
+        return service.action_status(user_id, {"action_id": action_id})
+
+    @mcp.tool()
+    def execute_action(action_id: str) -> dict[str, Any]:
+        """Execute an already browser-approved V4 action and return its action receipt."""
+        user_id, service = _caller()
+        return service.execute_action(user_id, {"action_id": action_id})
+
+    @mcp.tool()
+    def measure_outcome(
+        action_id: str,
+        measurements: list[dict[str, Any]],
+        causal_design: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run V5 expected-vs-actual measurement over a committed V4 action."""
+        user_id, service = _caller()
+        return service.measure_outcome(user_id, {
+            "action_id": action_id,
+            "measurements": measurements,
+            "causal_design": causal_design,
+        })
+
+    @mcp.tool()
+    def get_outcome(outcome_id: str) -> dict[str, Any]:
+        """Read a durable V5 outcome receipt and V6 handoff."""
+        user_id, service = _caller()
+        return service.get_outcome(user_id, {"outcome_id": outcome_id})
+
+    @mcp.tool()
+    def evaluate_improvement(outcome_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
+        """Evaluate a V6 candidate on held-out data; never applies the change automatically."""
+        user_id, service = _caller()
+        return service.evaluate_improvement(user_id, {
+            "outcome_id": outcome_id,
+            "proposal": proposal,
+        })
+
+    @mcp.tool()
+    def get_improvement(improvement_id: str) -> dict[str, Any]:
+        """Read a durable V6 improvement receipt and review-only next-cycle handoff."""
+        user_id, service = _caller()
+        return service.get_improvement(user_id, {"improvement_id": improvement_id})
 
     @mcp.tool()
     def pricing(standard_units: float | None = None, heavy_jobs: int = 0) -> dict[str, Any]:

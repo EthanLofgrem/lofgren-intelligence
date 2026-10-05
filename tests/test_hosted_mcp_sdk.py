@@ -38,6 +38,11 @@ class OfficialMCPTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("discover", names)
                 self.assertIn("get_discovery_receipt", names)
                 self.assertIn("create_v3_handoff", names)
+                self.assertIn("build_artifact", names)
+                self.assertIn("propose_action", names)
+                self.assertIn("execute_action", names)
+                self.assertIn("measure_outcome", names)
+                self.assertIn("evaluate_improvement", names)
                 result = await client.call_tool("account_status", {})
                 self.assertFalse(result.is_error)
                 self.assertEqual(result.structured_content["activation_number"], 1)
@@ -89,6 +94,19 @@ class OfficialMCPTests(unittest.IsolatedAsyncioTestCase):
                 verification = await client.call_tool("verify_discovery", {"discovery_id": discovery_id})
                 self.assertFalse(verification.is_error)
                 self.assertTrue(verification.structured_content["receipt_intact"])
+
+                artifact = await client.call_tool("build_artifact", {
+                    "discovery_id": discovery_id,
+                    "kind": "structured_bundle",
+                })
+                self.assertFalse(artifact.is_error)
+                artifact_id = artifact.structured_content["artifact_id"]
+                self.assertTrue(artifact.structured_content["verified"])
+
+                artifact_check = await client.call_tool("get_artifact", {"artifact_id": artifact_id})
+                self.assertFalse(artifact_check.is_error)
+                self.assertTrue(artifact_check.structured_content["verified"])
+                self.assertTrue(artifact_check.structured_content["receipt_intact"])
 
             # New server/service instance, same durable store.
             server2 = build_mcp("https://li.example")
