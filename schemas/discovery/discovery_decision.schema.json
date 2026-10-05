@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/discovery_decision.schema.json",
+  "title": "DiscoveryDecision",
+  "description": "DiscoveryDecision(rule: 'str', selected_candidate_id: 'str | None', alternatives: 'dict' = <factory>, outcome: 'DiscoveryOutcome' = <DiscoveryOutcome.UNKNOWN: 'unknown'>, tie_break: 'str' = '', derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "rule": {
+      "type": "string"
+    },
+    "selected_candidate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "alternatives": {
+      "type": "object"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "candidate_selected",
+        "insufficient_evidence",
+        "contradicted",
+        "infeasible",
+        "unsupported",
+        "unknown",
+        "requires_research"
+      ]
+    },
+    "tie_break": {
+      "type": "string"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule",
+    "selected_candidate_id"
+  ],
+  "additionalProperties": false
+}

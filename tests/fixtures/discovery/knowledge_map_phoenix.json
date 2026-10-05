@@ -1,0 +1,497 @@
+{
+ "schema": "lofgren.knowledge-map/1",
+ "research_id": "RR-113da45bd5fcf03f5979",
+ "objective": "Is industrial construction in the Phoenix metro increasing?",
+ "mode": "investigate",
+ "questions": [
+  {
+   "id": "Q-124f2d7fc3",
+   "text": "What is the current, verifiable state of this subject?",
+   "role": "state",
+   "stage": "",
+   "depends_on": []
+  },
+  {
+   "id": "Q-530d4e0df5",
+   "text": "What evidence supports the leading explanation?",
+   "role": "support",
+   "stage": "",
+   "depends_on": [
+    "Q-124f2d7fc3"
+   ]
+  },
+  {
+   "id": "Q-0ed29193b7",
+   "text": "What evidence contradicts it, or suggests another explanation?",
+   "role": "contradict",
+   "stage": "",
+   "depends_on": [
+    "Q-124f2d7fc3"
+   ]
+  },
+  {
+   "id": "Q-37855da15a",
+   "text": "What is missing, and what would resolve it?",
+   "role": "gap",
+   "stage": "",
+   "depends_on": [
+    "Q-530d4e0df5",
+    "Q-0ed29193b7"
+   ]
+  },
+  {
+   "id": "Q-5340d2ddeb",
+   "text": "Has this been studied or attempted before?",
+   "role": "prior",
+   "stage": "",
+   "depends_on": []
+  }
+ ],
+ "known": [
+  {
+   "id": "CL-881f9e453e",
+   "statement": "Developers completed 14 million square feet of industrial warehouse space in the Phoenix metro during the year.",
+   "type": "quantitative",
+   "status": "verified",
+   "confidence": 0.826,
+   "confidence_status": "provisional",
+   "value": 14000000.0,
+   "unit": "",
+   "scope": {
+    "valid_from": null,
+    "valid_to": null,
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "policy": "quantitative-2",
+   "evidence": [
+    "EV-701491d8eb",
+    "EV-9cd8ef1729"
+   ],
+   "issues": [
+    "unscoped: no time period stated for a number or trend"
+   ],
+   "calculation_id": null
+  },
+  {
+   "id": "CL-8bc36f6592",
+   "statement": "Completed industrial warehouse space in the Phoenix metro reached 14.2 million square feet in 2026.",
+   "type": "quantitative",
+   "status": "verified",
+   "confidence": 0.826,
+   "confidence_status": "provisional",
+   "value": 14200000.0,
+   "unit": "",
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "policy": "quantitative-2",
+   "evidence": [
+    "EV-9cd8ef1729",
+    "EV-701491d8eb"
+   ],
+   "issues": [],
+   "calculation_id": null
+  }
+ ],
+ "uncertain": [
+  {
+   "id": "CL-3a556e493c",
+   "statement": "Industrial vacancy in the Phoenix metro rose to 11 percent in 2026.",
+   "type": "quantitative",
+   "status": "partially_verified",
+   "confidence": 0.659,
+   "confidence_status": "provisional",
+   "value": 11.0,
+   "unit": "%",
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "policy": "quantitative-2",
+   "evidence": [
+    "EV-e49ba4ba38"
+   ],
+   "issues": [],
+   "calculation_id": null
+  }
+ ],
+ "contradicted": [
+  {
+   "id": "CL-fe7b3ef5b7",
+   "statement": "Industrial construction in the Phoenix metro increased sharply in 2026.",
+   "type": "trend",
+   "status": "contested",
+   "confidence": 0.54,
+   "confidence_status": "provisional",
+   "value": null,
+   "unit": "",
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "policy": "trend-2",
+   "evidence": [
+    "EV-701491d8eb",
+    "EV-9cd8ef1729"
+   ],
+   "issues": [],
+   "calculation_id": null,
+   "contradictions": [
+    "CX-c23a4e6640"
+   ]
+  },
+  {
+   "id": "CL-28b52e9366",
+   "statement": "Permit records show industrial construction in the Phoenix metro increased in 2026.",
+   "type": "trend",
+   "status": "contested",
+   "confidence": 0.54,
+   "confidence_status": "provisional",
+   "value": null,
+   "unit": "",
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "policy": "trend-2",
+   "evidence": [
+    "EV-9cd8ef1729",
+    "EV-701491d8eb"
+   ],
+   "issues": [],
+   "calculation_id": null,
+   "contradictions": [
+    "CX-95e5166d77"
+   ]
+  },
+  {
+   "id": "CL-c222a8875d",
+   "statement": "Industrial construction in the Phoenix metro decreased in 2026 as developers paused new starts.",
+   "type": "trend",
+   "status": "contested",
+   "confidence": 0.105,
+   "confidence_status": "provisional",
+   "value": null,
+   "unit": "",
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "policy": "trend-2",
+   "evidence": [
+    "EV-e49ba4ba38"
+   ],
+   "issues": [],
+   "calculation_id": null,
+   "contradictions": [
+    "CX-c23a4e6640",
+    "CX-95e5166d77"
+   ]
+  }
+ ],
+ "contradictions": [
+  {
+   "claim_a": "CL-fe7b3ef5b7",
+   "claim_b": "CL-c222a8875d",
+   "reason": "opposite direction of change",
+   "kind": "incompatible",
+   "scope_note": "",
+   "resolution": "an independent time series for Phoenix covering 2026, or direct observation (imagery, permits)",
+   "severity": 1.0,
+   "id": "CX-c23a4e6640"
+  },
+  {
+   "claim_a": "CL-28b52e9366",
+   "claim_b": "CL-c222a8875d",
+   "reason": "opposite direction of change",
+   "kind": "incompatible",
+   "scope_note": "",
+   "resolution": "an independent time series for Phoenix covering 2026, or direct observation (imagery, permits)",
+   "severity": 1.0,
+   "id": "CX-95e5166d77"
+  }
+ ],
+ "unknowns": [
+  {
+   "description": "No connected source provides 'orbital_passes' (needed by 1 question)",
+   "question_id": "Q-124f2d7fc3",
+   "capability": "orbital_passes",
+   "source_types": [
+    "public orbital elements (CelesTrak)"
+   ],
+   "expected_gain": 0.231,
+   "est_cost_usd": 0.0624,
+   "needs_approval": false,
+   "status": "open",
+   "id": "UNK-dd203a5cda"
+  },
+  {
+   "description": "No connected source provides 'imagery_catalog' (needed by 1 question)",
+   "question_id": "Q-124f2d7fc3",
+   "capability": "imagery_catalog",
+   "source_types": [
+    "open imagery catalogs (Sentinel-2, Landsat)",
+    "licensed commercial imagery (paid)"
+   ],
+   "expected_gain": 0.231,
+   "est_cost_usd": 0.0624,
+   "needs_approval": true,
+   "status": "open",
+   "id": "UNK-ad6da3a1e7"
+  },
+  {
+   "description": "No finding meets the evidence standard for: Has this been studied or attempted before?",
+   "question_id": "Q-5340d2ddeb",
+   "capability": "text",
+   "source_types": [
+    "your documents",
+    "web search",
+    "public records and filings"
+   ],
+   "expected_gain": 0.5,
+   "est_cost_usd": 0.0312,
+   "needs_approval": false,
+   "status": "open",
+   "id": "UNK-1dfcb253b6"
+  },
+  {
+   "description": "Resolve contradiction CX-c23a4e6640: opposite direction of change",
+   "question_id": "Q-124f2d7fc3",
+   "capability": "text",
+   "source_types": [
+    "an independent time series for Phoenix covering 2026, or direct observation (imagery, permits)"
+   ],
+   "expected_gain": 0.8,
+   "est_cost_usd": 0.0312,
+   "needs_approval": false,
+   "status": "open",
+   "id": "UNK-1fd90c0438"
+  },
+  {
+   "description": "Resolve contradiction CX-95e5166d77: opposite direction of change",
+   "question_id": "Q-124f2d7fc3",
+   "capability": "text",
+   "source_types": [
+    "an independent time series for Phoenix covering 2026, or direct observation (imagery, permits)"
+   ],
+   "expected_gain": 0.8,
+   "est_cost_usd": 0.0312,
+   "needs_approval": false,
+   "status": "open",
+   "id": "UNK-b433b98f1c"
+  },
+  {
+   "description": "A second independent source for: Industrial vacancy in the Phoenix metro rose to 11 percent in 2026.",
+   "question_id": "Q-124f2d7fc3",
+   "capability": "text",
+   "source_types": [
+    "your documents",
+    "web search",
+    "public records and filings"
+   ],
+   "expected_gain": 0.3,
+   "est_cost_usd": 0.0312,
+   "needs_approval": false,
+   "status": "open",
+   "id": "UNK-77ffae2405"
+  }
+ ],
+ "calculations": [],
+ "findings": [
+  {
+   "question_id": "Q-124f2d7fc3",
+   "question": "What is the current, verifiable state of this subject?",
+   "answer": "Evidence supports: Completed industrial warehouse space in the Phoenix metro reached 14.2 million square feet in 2026 (3 confirmed claim(s)).",
+   "claim_ids": [
+    "CL-8bc36f6592",
+    "CL-881f9e453e",
+    "CL-3a556e493c",
+    "CL-fe7b3ef5b7",
+    "CL-28b52e9366"
+   ],
+   "evidence_ids": [
+    "EV-701491d8eb",
+    "EV-9cd8ef1729",
+    "EV-e49ba4ba38"
+   ],
+   "contradiction_ids": [
+    "CX-c23a4e6640",
+    "CX-95e5166d77"
+   ],
+   "unknown_ids": [
+    "UNK-dd203a5cda",
+    "UNK-ad6da3a1e7",
+    "UNK-1fd90c0438",
+    "UNK-b433b98f1c",
+    "UNK-77ffae2405"
+   ],
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "confidence": 0.826,
+   "confidence_status": "provisional",
+   "confidence_method": "v1-heuristic",
+   "affects": [
+    "state"
+   ],
+   "next_best_evidence": "Resolve contradiction CX-c23a4e6640: opposite direction of change — from: an independent time series for Phoenix covering 2026, or direct observation (imagery, permits)",
+   "issues": [
+    "unscoped: no time period stated for a number or trend"
+   ],
+   "id": "F-6d6567ec2a"
+  },
+  {
+   "question_id": "Q-530d4e0df5",
+   "question": "What evidence supports the leading explanation?",
+   "answer": "Evidence supports: Completed industrial warehouse space in the Phoenix metro reached 14.2 million square feet in 2026 (3 confirmed claim(s)).",
+   "claim_ids": [
+    "CL-8bc36f6592",
+    "CL-881f9e453e",
+    "CL-3a556e493c"
+   ],
+   "evidence_ids": [
+    "EV-701491d8eb",
+    "EV-9cd8ef1729",
+    "EV-e49ba4ba38"
+   ],
+   "contradiction_ids": [],
+   "unknown_ids": [],
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "confidence": 0.826,
+   "confidence_status": "provisional",
+   "confidence_method": "v1-heuristic",
+   "affects": [
+    "support"
+   ],
+   "next_best_evidence": "",
+   "issues": [
+    "unscoped: no time period stated for a number or trend"
+   ],
+   "id": "F-9482b4cd99"
+  },
+  {
+   "question_id": "Q-0ed29193b7",
+   "question": "What evidence contradicts it, or suggests another explanation?",
+   "answer": "2 contradiction(s) between independent sources; see below.",
+   "claim_ids": [
+    "CL-fe7b3ef5b7",
+    "CL-28b52e9366",
+    "CL-c222a8875d"
+   ],
+   "evidence_ids": [
+    "EV-701491d8eb",
+    "EV-9cd8ef1729",
+    "EV-e49ba4ba38"
+   ],
+   "contradiction_ids": [
+    "CX-c23a4e6640",
+    "CX-95e5166d77"
+   ],
+   "unknown_ids": [],
+   "scope": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "geography": "Phoenix",
+    "lat": null,
+    "lon": null
+   },
+   "confidence": 0.0,
+   "confidence_status": "provisional",
+   "confidence_method": "v1-heuristic",
+   "affects": [
+    "contradict"
+   ],
+   "next_best_evidence": "",
+   "issues": [],
+   "id": "F-31458804d3"
+  },
+  {
+   "question_id": "Q-37855da15a",
+   "question": "What is missing, and what would resolve it?",
+   "answer": "6 open unknown(s) remain; each has an acquisition plan below.",
+   "claim_ids": [],
+   "evidence_ids": [],
+   "contradiction_ids": [],
+   "unknown_ids": [
+    "UNK-dd203a5cda",
+    "UNK-ad6da3a1e7",
+    "UNK-1dfcb253b6",
+    "UNK-1fd90c0438",
+    "UNK-b433b98f1c",
+    "UNK-77ffae2405"
+   ],
+   "scope": {
+    "valid_from": null,
+    "valid_to": null,
+    "geography": null,
+    "lat": null,
+    "lon": null
+   },
+   "confidence": 0.0,
+   "confidence_status": "provisional",
+   "confidence_method": "v1-heuristic",
+   "affects": [
+    "gap"
+   ],
+   "next_best_evidence": "Resolve contradiction CX-c23a4e6640: opposite direction of change — from: an independent time series for Phoenix covering 2026, or direct observation (imagery, permits)",
+   "issues": [],
+   "id": "F-29f5d5de4a"
+  },
+  {
+   "question_id": "Q-5340d2ddeb",
+   "question": "Has this been studied or attempted before?",
+   "answer": "No finding meets the evidence standard yet.",
+   "claim_ids": [],
+   "evidence_ids": [],
+   "contradiction_ids": [],
+   "unknown_ids": [
+    "UNK-1dfcb253b6"
+   ],
+   "scope": {
+    "valid_from": null,
+    "valid_to": null,
+    "geography": null,
+    "lat": null,
+    "lon": null
+   },
+   "confidence": 0.0,
+   "confidence_status": "provisional",
+   "confidence_method": "v1-heuristic",
+   "affects": [
+    "prior"
+   ],
+   "next_best_evidence": "No finding meets the evidence standard for: Has this been studied or attempted before? — from: your documents, web search, public records and filings",
+   "issues": [],
+   "id": "F-1329b1aaa0"
+  }
+ ],
+ "rule": "V2 may hypothesize from this map; it may never promote a hypothesis into a verified finding."
+}

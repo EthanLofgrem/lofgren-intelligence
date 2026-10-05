@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/unknown.schema.json",
+  "title": "Unknown",
+  "description": "A gap as executable work: what is missing and how it could be acquired.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "question_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capability": {
+      "type": "string"
+    },
+    "source_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_gain": {
+      "type": "number"
+    },
+    "est_cost_usd": {
+      "type": "number"
+    },
+    "needs_approval": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "description"
+  ]
+}

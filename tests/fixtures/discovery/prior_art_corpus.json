@@ -1,0 +1,80 @@
+{
+ "coverage": {
+  "sources": [
+   "fixture-patents (fictional)"
+  ],
+  "domains": [
+   "US"
+  ],
+  "time_range": [
+   "2015-01-01",
+   "2026-09-30"
+  ],
+  "limitations": [
+   "Offline fixture corpus of 4 fictional records; not a live patent or literature search."
+  ]
+ },
+ "records": [
+  {
+   "title": "Cold chain hub for desert logistics (fictional)",
+   "source": "fixture-patents (fictional)",
+   "uri": "fixture:pa-1",
+   "published": "2021-05-01",
+   "summary": "Refrigerated warehouse hub with evaporative cooling for hot-climate distribution.",
+   "domains": [
+    "US"
+   ],
+   "keywords": [
+    "cold",
+    "storage",
+    "warehouse",
+    "desert"
+   ]
+  },
+  {
+   "title": "Modular cross-dock layout (fictional)",
+   "source": "fixture-patents (fictional)",
+   "uri": "fixture:pa-2",
+   "published": "2018-02-11",
+   "summary": "Cross-dock facility layout that shortens trailer-to-trailer transfer.",
+   "domains": [
+    "US"
+   ],
+   "keywords": [
+    "cross-dock",
+    "logistics",
+    "layout"
+   ]
+  },
+  {
+   "title": "Warehouse solar canopy financing (fictional)",
+   "source": "fixture-patents (fictional)",
+   "uri": "fixture:pa-3",
+   "published": "2023-08-30",
+   "summary": "Lease structure for rooftop solar on industrial warehouses.",
+   "domains": [
+    "US"
+   ],
+   "keywords": [
+    "solar",
+    "warehouse",
+    "lease"
+   ]
+  },
+  {
+   "title": "Industrial permit forecasting (fictional)",
+   "source": "fixture-patents (fictional)",
+   "uri": "fixture:pa-4",
+   "published": "2016-03-04",
+   "summary": "Forecasting industrial construction from permit filings.",
+   "domains": [
+    "US"
+   ],
+   "keywords": [
+    "permits",
+    "forecast",
+    "construction"
+   ]
+  }
+ ]
+}

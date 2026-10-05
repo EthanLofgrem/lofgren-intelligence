@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/discovery_receipt.schema.json",
+  "title": "DiscoveryReceipt",
+  "description": "lofgren.discovery-receipt/1: what determined a discovery, with a reproducible fingerprint and a tamper-evident id. verify_discovery_receipt is authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "objective",
+    "evidence",
+    "config",
+    "config_hash",
+    "algorithms",
+    "provider",
+    "prior_art_provider",
+    "seeds",
+    "decision_rule",
+    "outcome",
+    "selected_candidate_id",
+    "objects",
+    "ledger",
+    "verifier",
+    "notes",
+    "started_at",
+    "finished_at",
+    "discovery_fingerprint",
+    "discovery_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lofgren.discovery-receipt/1"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "research_id",
+        "knowledge_map_schema",
+        "assurance",
+        "knowledge_map_fingerprint"
+      ]
+    },
+    "config": {
+      "type": "object"
+    },
+    "config_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "algorithms": {
+      "type": "object"
+    },
+    "provider": {
+      "type": "object"
+    },
+    "prior_art_provider": {
+      "type": "object"
+    },
+    "seeds": {
+      "type": "object"
+    },
+    "decision_rule": {
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "candidate_selected",
+        "insufficient_evidence",
+        "contradicted",
+        "infeasible",
+        "unsupported",
+        "unknown",
+        "requires_research"
+      ]
+    },
+    "selected_candidate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "objects": {
+      "type": "object"
+    },
+    "ledger": {
+      "type": "object",
+      "required": [
+        "rate_usd_per_unit",
+        "total_units",
+        "total_usd",
+        "entries"
+      ]
+    },
+    "verifier": {
+      "type": "object",
+      "required": [
+        "checked",
+        "issues"
+      ]
+    },
+    "notes": {
+      "type": "array"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "discovery_fingerprint": {
+      "type": "string",
+      "pattern": "^DFP-[0-9a-f]{64}$"
+    },
+    "discovery_id": {
+      "type": "string",
+      "pattern": "^DR-[0-9a-f]{20}$"
+    }
+  }
+}

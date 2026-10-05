@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/sensitivity_result.schema.json",
+  "title": "SensitivityResult",
+  "description": "SensitivityResult(candidate_id: 'str', elasticities: 'dict' = <factory>, high_sensitivity: 'list[str]' = <factory>, low_sensitivity: 'list[str]' = <factory>, fragile_assumptions: 'list[str]' = <factory>, break_even: 'dict' = <factory>, failure_thresholds: 'dict' = <factory>, robust_ranges: 'dict' = <factory>, robustness: 'Robustness' = <Robustness.UNKNOWN: 'unknown'>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "elasticities": {
+      "type": "object"
+    },
+    "high_sensitivity": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "low_sensitivity": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fragile_assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "break_even": {
+      "type": "object"
+    },
+    "failure_thresholds": {
+      "type": "object"
+    },
+    "robust_ranges": {
+      "type": "object"
+    },
+    "robustness": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "fragile",
+        "moderate",
+        "robust"
+      ]
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/location.schema.json",
+  "title": "Location",
+  "description": "Location(lat: 'float | None' = None, lon: 'float | None' = None, name: 'str | None' = None)",
+  "type": "object",
+  "properties": {
+    "lat": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lon": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": []
+}

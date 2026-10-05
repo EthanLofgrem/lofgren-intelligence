@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/prior_art_assessment.schema.json",
+  "title": "PriorArtAssessment",
+  "description": "What a set of prior-art searches established about one subject, and what they did not cover. `conclusion` is the only verdict. \"No match within coverage\" is a statement about the search, never about novelty; see `statement`.",
+  "type": "object",
+  "properties": {
+    "subject": {
+      "type": "string"
+    },
+    "conclusion": {
+      "type": "string",
+      "enum": [
+        "match_found",
+        "no_match_within_coverage",
+        "incomplete"
+      ]
+    },
+    "queries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "search_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sources_searched": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "time_range": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "nearest_matches": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "distinctive_features": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unsearched_areas": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject",
+    "conclusion",
+    "queries",
+    "search_ids",
+    "sources_searched"
+  ],
+  "additionalProperties": false
+}

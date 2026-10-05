@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lofgren-intelligence"
+version = "0.7.0"
+description = "Governed outcome intelligence: evidence, discovery, production, authorized execution, measured outcomes, and reviewed improvement."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Lofgren Enterprise" }]
+keywords = ["research", "evidence", "verification", "satellite", "mcp", "agents"]
+dependencies = []  # V1 runs on the Python standard library alone.
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+hosted = ["mcp>=2,<3", "cryptography>=43,<46"]
+
+[project.scripts]
+lofgren = "lofgren_intelligence.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lofgren_intelligence*"]

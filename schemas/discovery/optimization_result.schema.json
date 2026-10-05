@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lofgren.enterprise/schemas/discovery/optimization_result.schema.json",
+  "title": "OptimizationResult",
+  "description": "OptimizationResult(problem_id: 'str', status: 'OptimizationStatus', solution: 'dict' = <factory>, objective_value: 'float | None' = None, proof: 'str' = '', verified: 'bool' = False, violations: 'list[str]' = <factory>, derived_from: 'list[str]' = <factory>, created_at: 'str' = <factory>, version: 'str' = 'lofgren.discovery/1', id: 'str' = '')",
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "optimal",
+        "feasible",
+        "infeasible",
+        "unbounded",
+        "unknown",
+        "timeout",
+        "unsupported"
+      ]
+    },
+    "solution": {
+      "type": "object"
+    },
+    "objective_value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "proof": {
+      "type": "string"
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "version": {
+      "const": "lofgren.discovery/1"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "problem_id",
+    "status"
+  ],
+  "additionalProperties": false
+}
