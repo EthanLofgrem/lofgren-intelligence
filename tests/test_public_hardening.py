@@ -493,5 +493,34 @@ class AdHocComputeQuotaTests(unittest.TestCase):
         self._assert_refused(FakeStore(activation_number=1001, kind="paid_required", quota=0.0), PaymentRequired)
 
 
+class PublicDocsTruthfulnessTests(unittest.TestCase):
+    """Fix 11: public docs and pages describe what this line actually hosts and enforces."""
+
+    def _doc(self):
+        from pathlib import Path
+        return (Path(__file__).resolve().parent.parent / "docs" / "PUBLIC_MCP.md").read_text(encoding="utf-8")
+
+    def test_public_mcp_doc_matches_the_hosted_v1_v6_surface(self):
+        doc = self._doc()
+        self.assertNotIn("V2 is partial", doc)
+        self.assertNotIn("V3–V6 are not public capability", doc)
+        for tool in ("build_artifact", "propose_action", "execute_action", "measure_outcome",
+                     "evaluate_improvement"):
+            self.assertIn(tool, doc)
+
+    def test_public_mcp_doc_states_the_hardening_rules(self):
+        doc = self._doc()
+        for rule in ("Approve and", "redirect host", "exactly\n`localhost`", "payment_status",
+                     "current status", "100.64.0.0/10", "168 hours", "li_reserve_usage",
+                     "explicit stored weekly quota of 0", "max-rows"):
+            self.assertIn(rule, doc)
+
+    def test_landing_and_checkout_return_stay_truthful(self):
+        from lofgren_intelligence.hosted.journey import checkout_return_html, landing_html
+        page = landing_html("https://li.example")
+        self.assertIn("Public readiness is a separate gate", page)
+        self.assertIn("does not prove payment", checkout_return_html())
+
+
 if __name__ == "__main__":
     unittest.main()
