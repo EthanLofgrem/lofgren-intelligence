@@ -6,6 +6,7 @@ import json
 import os
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import patch
 
 from starlette.requests import Request
@@ -16,7 +17,7 @@ from lofgren_intelligence.hosted import store as li_store
 from lofgren_intelligence.hosted import web_app
 from lofgren_intelligence.hosted.entitlements import access_for_run
 from lofgren_intelligence.hosted.http import JSONResponse
-from lofgren_intelligence.hosted.service import PublicService
+from lofgren_intelligence.hosted.service import PublicService, PublicServiceError
 from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError
 
 from .test_public_hosted import FakeStore
@@ -227,6 +228,28 @@ class SSRFAddressTests(unittest.TestCase):
         fake = lambda *a, **k: [(2, 1, 6, "", ("93.184.215.14", 443))]
         with patch("lofgren_intelligence.adapters.net.socket.getaddrinfo", fake):
             self.assertEqual(validate_public_url("https://example.com/x"), "https://example.com/x")
+
+
+TLE = (Path(__file__).resolve().parent.parent / "examples" / "sample.tle").read_text(encoding="utf-8")
+
+
+class SatellitePassBoundsTests(unittest.TestCase):
+    def test_unbounded_window_and_bad_coordinates_are_refused(self):
+        service = PublicService(FakeStore())
+        for bad in ({"hours": 1e7}, {"hours": 0}, {"hours": float("nan")}, {"lat": 91},
+                    {"lon": -181}, {"min_elevation_deg": 120}):
+            args = {"lat": 33.4, "lon": -112.0, "tle_text": TLE, **bad}
+            with self.subTest(bad=bad), self.assertRaises(PublicServiceError):
+                service.satellite_passes(args)
+
+    def test_too_many_element_sets_are_refused(self):
+        with self.assertRaises(PublicServiceError):
+            PublicService(FakeStore()).satellite_passes({"lat": 0, "lon": 0, "tle_text": TLE * 11})
+
+    def test_bounded_request_still_predicts(self):
+        out = PublicService(FakeStore()).satellite_passes(
+            {"lat": 33.4, "lon": -112.0, "hours": 24, "min_elevation_deg": 10, "tle_text": TLE})
+        self.assertIn("passes", out)
 
 
 if __name__ == "__main__":
