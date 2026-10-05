@@ -38,17 +38,19 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 <main class="wrap">
 <section class="hero">
 <div>
-<span class="eyebrow"><span class="dot"></span> Certified V1 + V2 intelligence line</span>
-<h1>Research with evidence you can inspect.</h1>
-<p class="lede">Connect Lofgren Intelligence to an MCP-capable AI client. Research, verify and discover with provenance, contradictions, gaps and durable receipts instead of an unsupported answer.</p>
+<span class="eyebrow"><span class="dot"></span> Certified V1–V6 governed intelligence stack</span>
+<h1>Turn evidence into governed outcomes you can inspect.</h1>
+<p class="lede">Connect Lofgren Intelligence to an MCP-capable AI client. Research and verify evidence, discover supported possibilities, build verified artifacts, authorize bounded actions, measure outcomes and evaluate improvements—with provenance and durable receipts connecting every stage.</p>
 <div class="actions"><a class="btn primary" href="#connect">Connect an AI client</a><a class="btn secondary" href="/account">Account &amp; privacy</a></div>
 </div>
 <div class="card" aria-label="Current capability">
 <div class="status"><span>Evidence Intelligence</span><strong class="ok">V1 certified</strong></div>
 <div class="status"><span>Discovery Intelligence</span><strong class="ok">V2 certified</strong></div>
-<div class="status"><span>Remote transport</span><strong>OAuth + MCP</strong></div>
+<div class="status"><span>Production Intelligence</span><strong class="ok">V3 certified</strong></div>
+<div class="status"><span>Execution Intelligence</span><strong class="ok">V4 certified</strong></div>
+<div class="status"><span>Outcome Intelligence</span><strong class="ok">V5 certified</strong></div>
+<div class="status"><span>Improvement Intelligence</span><strong class="ok">V6 certified</strong></div>
 <div class="status"><span>Founding access</span><strong>Accounts 1–1000</strong></div>
-<div class="status"><span>Later stages</span><strong>Not exposed here</strong></div>
 </div>
 </section>
 
@@ -64,16 +66,18 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 </section>
 
 <section class="section" id="journey">
-<h2>From objective to auditable result</h2>
-<p class="sectionlead">Users should not need to understand internal version numbers. The visible journey is a governed path from objective to evidence-backed result.</p>
-<div class="flow"><div>Objective</div><div>Research</div><div>Verify</div><div>Discover</div><div>Receipt</div></div>
+<h2>From objective to governed outcome</h2>
+<p class="sectionlead">Users should not need to understand internal version numbers. The visible journey follows one governed chain. Each stage consumes typed state from the previous stage and produces its own receipt rather than silently changing history.</p>
+<div class="flow"><div>Research</div><div>Discover</div><div>Build</div><div>Act</div><div>Measure / Improve</div></div>
 <div class="grid" style="margin-top:16px">
 <article class="step"><h3>Frame the work</h3><p>Use <code>compile_objective</code> or <code>plan_research</code> when the request needs a clearer objective, evidence requirements or cost boundary.</p></article>
 <article class="step"><h3>Research and verify</h3><p><code>investigate</code> creates a durable run. Inspect findings, contradictions, gaps and provenance before treating a conclusion as supported.</p></article>
-<article class="step"><h3>Continue into discovery</h3><p>Use V2 discovery from verified research state. Hypotheses stay hypotheses and simulations stay predictions.</p></article>
-<article class="step"><h3>Recover from uncertainty</h3><p><strong>INSUFFICIENT_EVIDENCE</strong>, contradiction and requires-research states are valid results. Use the missing-evidence requirements instead of forcing confidence.</p></article>
-<article class="step"><h3>Retrieve the trail</h3><p>Use <code>get_receipt</code>, <code>export_knowledge_map2</code> and discovery receipts to recover the governed state later.</p></article>
-<article class="step"><h3>Understand quota</h3><p>If usage is exhausted, use <code>usage_status</code>. Founding Free access is quota-limited; later accounts require an active paid entitlement.</p></article>
+<article class="step"><h3>Discover possibilities</h3><p>Use <code>discover</code> from verified research state. Hypotheses stay hypotheses, simulations stay predictions and the discovery receipt preserves those distinctions.</p></article>
+<article class="step"><h3>Build a verified artifact</h3><p><code>build_artifact</code> turns a selected V2 candidate into a deterministic V3 artifact with acceptance results, hashes, provenance and a production receipt.</p></article>
+<article class="step"><h3>Authorize before acting</h3><p><code>propose_action</code> creates a V4 proposal. External execution stays blocked until you review the exact target and payload in the browser approval screen, then call <code>execute_action</code>.</p></article>
+<article class="step"><h3>Measure and improve</h3><p><code>measure_outcome</code> compares expected with actual results. <code>evaluate_improvement</code> uses held-out evidence and can recommend review, but it never silently changes the running system.</p></article>
+<article class="step"><h3>Recover from uncertainty</h3><p><strong>INSUFFICIENT_EVIDENCE</strong>, contradiction, failed acceptance, unauthorized action and insufficient measurement are valid governed outcomes—not UI failures.</p></article>
+<article class="step"><h3>Retrieve the complete trail</h3><p>Research, discovery, production, action, outcome and improvement receipts can be retrieved again from durable tenant-scoped state.</p></article>
 </div>
 </section>
 
@@ -84,12 +88,12 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 <article class="step"><h3>Quota reached</h3><p>Check <code>usage_status</code> instead of repeatedly retrying an expensive operation.</p></article>
 <article class="step"><h3>Evidence missing</h3><p>Follow the returned gaps, evidence requirements and settling evidence. Unknown is a governed answer, not a UI failure.</p></article>
 </div>
-<div class="notice"><strong>Public capability boundary:</strong> this onboarding surface describes the certified V1 Evidence and V2 Discovery line on this hosted branch. Build, execution, measurement and improvement stages are not represented as public MCP capabilities until they are integrated and pass their hosted release gates.</div>
+<div class="notice"><strong>Governance boundary:</strong> V1–V6 are certified as the bounded intelligence stack on this release line. Public readiness is a separate gate: hosted OAuth, tenant isolation, persistence, deployment identity, backup/restore, billing and real-client interoperability must still pass before this release is declared public-ready.</div>
 </section>
 
 <section class="section"><h2>Service links</h2><p><a href="/healthz">Health</a> · <a href="/readyz">Readiness</a> · <a href="/.well-known/oauth-authorization-server">OAuth metadata</a> · <a href="/account">Account &amp; privacy</a></p></section>
 </main>
-<footer><div class="wrap">Lofgren Intelligence · governed research, verification and discovery.</div></footer>
+<footer><div class="wrap">Lofgren Intelligence · research → discovery → production → authorized action → measured outcome → reviewed improvement.</div></footer>
 </body></html>"""
 
 
