@@ -38,7 +38,7 @@ from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
 from .economics import certify_paid_plan
 from .security import validate_remote_args
-from .snapshots import durable_discovery_snapshot, durable_snapshot, summary
+from .snapshots import durable_discovery_snapshot, durable_snapshot, restore_discovery_context, summary
 from .store import SupabaseStore, utcnow
 from .stripe import cancel_subscription, create_billing_portal, create_checkout
 
@@ -487,8 +487,7 @@ class PublicService:
         snap = row.get("snapshot")
         if not isinstance(snap, dict) or not snap.get("handoff"):
             raise PublicServiceError("discovery has no validated V3 handoff")
-        context = self._discovery_context(user_id, str(row["research_id"]))
-        result = produce_artifact(
+        context = restore_discovery_context(\n            self._discovery_context(user_id, str(row["research_id"])), snap\n        )\n        result = produce_artifact(
             snap["handoff"],
             discovery_receipt=snap["receipt"],
             context=context,
