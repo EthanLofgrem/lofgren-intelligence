@@ -6,7 +6,7 @@ Open outcome intelligence system for evidence-driven research, verification, dis
 
 > A governed intelligence layer designed to sense the physical and digital world, research problems, verify evidence, generate new possibilities, design solutions, build usable artifacts, execute authorized actions, measure real-world outcomes, and learn from the results.
 >
-> **Built today:** V1 (research and verification) and V2 (discovery: hypotheses, candidates, simulation, sensitivity, optimization, decision and a V3 handoff). Building artifacts (V3), executing actions (V4), measuring outcomes (V5) and learning from them (V6) are designed but not built yet.
+> **Built today:** V1 (research and verification), V2 (discovery: hypotheses, candidates, simulation, sensitivity, optimization, decision and a V3 handoff) and V3 (production: a tested, independently verified artifact built from that handoff, with a V4 handoff that grants no authority). Executing actions (V4), measuring outcomes (V5) and learning from them (V6) are not part of this release.
 
 Most AI tools stop at an answer. Lofgren Intelligence is built to carry an objective the whole way to an outcome:
 
@@ -42,6 +42,18 @@ A discovery verifier then lowers anything unsupported, an explicit recorded rule
 tamper-evident discovery receipt plus, when a candidate is selected, a validated V3 handoff. V2 never writes to V1's
 evidence, never turns an idea into a fact, and cannot execute anything. It passes its own gate, `lofgren certify --v2`
 ([docs/V2_CERTIFICATION.md](docs/V2_CERTIFICATION.md)).
+
+V3 (release 0.4.0) runs the next three over V2's handoff (see [docs/PRODUCTION.md](docs/PRODUCTION.md)):
+
+| Stage | What V3 does |
+| --- | --- |
+| **Produce** | Binds the handoff to its discovery value by value, compiles it into numbered requirements and plans which file satisfies each. |
+| **Build** | Generates the artifact deterministically: a manifest, a plan, machine-readable checks, a README, a Python implementation with one function per acceptance criterion and constraint, and its tests. |
+| **Test** | Runs the generated tests in a separate interpreter and has an independent verifier regenerate every file, re-evaluate every check with V2's evaluator, and reproduce reference probes that include expected failures. |
+
+The result is a tamper-evident production receipt and a V4 handoff with `authority.granted = false`. V3 never
+deploys, publishes, purchases, sends or writes to an external repository. It passes its own gate,
+`lofgren certify --v3` ([docs/V3_CERTIFICATION.md](docs/V3_CERTIFICATION.md)).
 
 Later stages are declared in the kernel and show as not yet available in every report. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -105,6 +117,12 @@ lofgren discover "Is industrial construction in the Phoenix metro increasing?" -
 lofgren certify
 lofgren certify-boundary
 lofgren certify --v2
+lofgren certify --v3
+
+# Production (V3): research, discover, then build, test and verify an artifact
+lofgren produce "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources \
+  --goal "Choose a warehouse size (fictional)" --design examples/designs/warehouse.json --out-dir build/warehouse
+lofgren verify-artifact build/warehouse
 ```
 
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
@@ -123,10 +141,11 @@ command = "lofgren"
 args = ["mcp"]
 ```
 
-Tools return structured data, not narrative (contract `lofgren.mcp/2`):
+Tools return structured data, not narrative (contract `lofgren.mcp/3`):
 
 - **Research (V1):** `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `export_knowledge_map`, `render_report`, `satellite_passes`, `pricing`.
 - **Discovery (V2):** `discover`, `find_prior_art`, `find_discovery_gaps`, `find_connections`, `generate_hypotheses`, `generate_candidates`, `simulate_candidate`, `analyze_sensitivity`, `optimize_solution`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff`, `render_discovery_report`.
+- **Production (V3):** `build_artifact`, `verify_artifact`, `get_artifact_file`, `get_production_receipt`, `create_v4_handoff`.
 
 Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server keeps runs/discoveries for its process lifetime. The hosted service uses durable tenant-scoped run and discovery storage and is being certified separately before public release.
 
@@ -167,6 +186,8 @@ lofgren_intelligence/
   billing/       work units, job classes, plans, bill formula
   report/        Markdown and JSON reports
   mcp/           MCP server (stdio), structured tools
+  production/    V3 Production: specification compiler, planner, code generation, verifier, sandboxed tests,
+                 receipt, V4 handoff, disk store, certification
   discovery/     V2 Discovery: context, framing, prior art, gaps, connections, hypotheses, candidates,
                  simulation, sensitivity, optimization, verifier, receipt, V3 handoff, pipeline, certification
   certification.py  the V1Ready gate (lofgren certify)
@@ -192,6 +213,7 @@ python -m unittest discover -s tests -t .
 - [Evidence protocol](docs/EVIDENCE_PROTOCOL.md)
 - [V1 certification: the gate before V2](docs/V1_CERTIFICATION.md)
 - [Discovery Intelligence (V2)](docs/DISCOVERY.md) · [V2 certification: the gate before V3](docs/V2_CERTIFICATION.md)
+- [Production Intelligence (V3)](docs/PRODUCTION.md) · [V3 certification: the gate before V4](docs/V3_CERTIFICATION.md)
 - [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
 
 ## License
