@@ -522,5 +522,76 @@ class PublicDocsTruthfulnessTests(unittest.TestCase):
         self.assertIn("does not prove payment", checkout_return_html())
 
 
+class _RegisterStore:
+    def __init__(self, *a, **k):
+        pass
+
+    def put_oauth_client(self, row):
+        pass
+
+
+class UnauthenticatedRateLimitTests(unittest.TestCase):
+    """Open item O4: per-IP (per-instance) limits on unauthenticated endpoints."""
+
+    def setUp(self):
+        from lofgren_intelligence.hosted import ratelimit
+        ratelimit.LIMITER.reset()
+        self.addCleanup(ratelimit.LIMITER.reset)
+
+    def _register(self, handler, ip="203.0.113.9", headers=None):
+        body = json.dumps({"redirect_uris": ["https://client.example/cb"]}).encode()
+        req = _request("/oauth/register", method="POST", client=ip, body=body)
+        if headers:
+            req.scope["headers"] = [(k.encode(), v.encode()) for k, v in headers.items()]
+        with patch.dict(os.environ, ENV), patch.object(web_app, "SupabaseStore", _RegisterStore):
+            return asyncio.run(handler(req))
+
+    def test_client_registration_is_limited_per_ip(self):
+        from lofgren_intelligence.hosted.ratelimit import rate_limited
+        handler = rate_limited("oauth_register", web_app.oauth_register)
+        codes = [self._register(handler).status_code for _ in range(11)]
+        self.assertEqual(codes[:10], [201] * 10)
+        self.assertEqual(codes[10], 429)
+        limited = self._register(handler)
+        self.assertGreaterEqual(int(limited.headers["retry-after"]), 1)
+        # Another client is unaffected.
+        self.assertEqual(self._register(handler, ip="198.51.100.7").status_code, 201)
+
+    def test_forwarded_header_is_ignored_unless_the_operator_trusts_it(self):
+        from lofgren_intelligence.hosted.ratelimit import rate_limited
+        handler = rate_limited("oauth_register", web_app.oauth_register)
+        for i in range(10):
+            # A client rotating X-Forwarded-For does not escape the limit by default.
+            self.assertEqual(self._register(handler, headers={"x-forwarded-for": f"10.0.0.{i}"}).status_code, 201)
+        self.assertEqual(self._register(handler, headers={"x-forwarded-for": "10.0.1.1"}).status_code, 429)
+        with patch.dict(os.environ, {"LI_CLIENT_IP_HEADER": "x-real-ip"}):
+            self.assertEqual(self._register(handler, headers={"x-real-ip": "192.0.2.44"}).status_code, 201)
+
+    def test_window_slides(self):
+        from lofgren_intelligence.hosted.ratelimit import SlidingWindowLimiter
+        now = [1000.0]
+        limiter = SlidingWindowLimiter(clock=lambda: now[0])
+        self.assertEqual([limiter.take("b", "ip", 2, 60) for _ in range(2)], [0.0, 0.0])
+        self.assertAlmostEqual(limiter.take("b", "ip", 2, 60), 60.0)
+        now[0] += 60.0
+        self.assertEqual(limiter.take("b", "ip", 2, 60), 0.0)
+
+    def test_limit_is_configurable_per_bucket(self):
+        from lofgren_intelligence.hosted.ratelimit import rate_limited
+        handler = rate_limited("oauth_register", web_app.oauth_register)
+        with patch.dict(os.environ, {"LI_IP_RATE_LIMIT_OAUTH_REGISTER": "2"}):
+            codes = [self._register(handler).status_code for _ in range(3)]
+        self.assertEqual(codes, [201, 201, 429])
+
+    def test_app_routes_wrap_every_unauthenticated_write_and_lookup(self):
+        import inspect
+        source = inspect.getsource(web_app.build_app)
+        for bucket, handler in (("oauth_register", "oauth_register"), ("oauth_authorize", "oauth_authorize"),
+                                ("oauth_complete", "oauth_complete"), ("oauth_token", "oauth_token"),
+                                ("actions", "action_details"), ("actions", "action_approve"),
+                                ("account", "account_export"), ("account", "account_delete")):
+            self.assertIn(f'rate_limited("{bucket}", {handler})', source)
+
+
 if __name__ == "__main__":
     unittest.main()

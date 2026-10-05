@@ -127,6 +127,23 @@ not truncated at the PostgREST max-rows setting. Database failures reach
 callers only as `database request failed (HTTP <status>)` or `database is
 unreachable`, never with table, column or constraint names.
 
+Rate limits: `/mcp` is limited per user in the database
+(`li_take_rate_limit`). The endpoints reachable before a user is known —
+`/oauth/register` (10/min), `/oauth/authorize` (60/min),
+`/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
+`/account/export` and `/account/delete` (20/min together),
+`/actions/{id}/details` and `/actions/{id}/approve` (60/min together) — are
+limited per client IP and answer `429` with `Retry-After`. These limits are
+held in process memory and are therefore **per instance**: with N concurrent
+serverless instances the effective limit is up to N times higher and a cold
+start resets it. A global limit needs the hosting edge (firewall/WAF) or a
+database-backed bucket. Limits can be changed with
+`LI_IP_RATE_LIMIT_<BUCKET>` (for example `LI_IP_RATE_LIMIT_OAUTH_REGISTER`).
+The client IP is the socket peer unless the operator sets
+`LI_CLIENT_IP_HEADER` to a header the platform overwrites (for example
+`x-real-ip`); forwarded headers are otherwise ignored because clients control
+them.
+
 Database tables use RLS with no anonymous/authenticated policies. The hosted
 service uses the service-role key; browser clients do not receive it.
 
