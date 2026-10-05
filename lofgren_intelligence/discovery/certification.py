@@ -492,7 +492,7 @@ def t_mcp() -> str:
           "find_gaps", "trace_claim", "get_receipt", "export_state", "render_report", "satellite_passes", "pricing"]
     assert [t["name"] for t in TOOLS[:len(v1)]] == v1, "a V1 tool changed"
     assert ALIASES == {"compile_intent": "compile_objective", "estimate_cost": "plan_research"}
-    assert CONTRACT == "lofgren.mcp/2"
+    assert CONTRACT in ("lofgren.mcp/2", "lofgren.mcp/3")  # /3 adds V3 tools and changes no V1 or V2 tool
     assert all("inputSchema" in t for t in DISCOVERY_TOOLS)
     srv = Server()
 
