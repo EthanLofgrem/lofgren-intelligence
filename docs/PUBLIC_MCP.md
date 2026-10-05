@@ -154,11 +154,21 @@ Rate limits: `/mcp` is limited per user in the database
 `/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
 `/account/export` and `/account/delete` (20/min together),
 `/actions/{id}/details` and `/actions/{id}/approve` (60/min together) — are
-limited per client IP and answer `429` with `Retry-After`. These limits are
-held in process memory and are therefore **per instance**: with N concurrent
-serverless instances the effective limit is up to N times higher and a cold
-start resets it. A global limit needs the hosting edge (firewall/WAF) or a
-database-backed bucket. Limits can be changed with
+limited per client IP and answer `429` with `Retry-After`.
+
+When the store is configured (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`)
+these limits are **global**: every request takes a slot through the atomic
+SQL function `li_take_keyed_rate_limit` (migration
+`20261005191819_keyed_rate_limits.sql`, table `li_rate_limit_events`, RLS
+enabled, no anon/authenticated grants), so they hold across serverless
+instances and cold starts. Keys are sent as SHA-256 digests of
+`<bucket>:<ip>`; raw IPs are not stored, and rows are pruned once outside
+their window. Without a configured store (local development) or with
+`LI_RATE_LIMIT_BACKEND=memory`, the limiter falls back to process memory,
+which is **per instance**. If the store errors, sign-up and activation
+endpoints (`/oauth/register`, `/oauth/authorize/complete`) **fail closed**
+with `503` and `Retry-After`; the other endpoints fall back to the
+per-instance limiter rather than to no limit. Limits can be changed with
 `LI_IP_RATE_LIMIT_<BUCKET>` (for example `LI_IP_RATE_LIMIT_OAUTH_REGISTER`).
 The client IP is the socket peer unless the operator sets
 `LI_CLIENT_IP_HEADER` to a header the platform overwrites (for example

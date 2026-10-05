@@ -415,5 +415,196 @@ class AdHocChargingTests(unittest.TestCase):
         self.assertEqual([(e["operation"], e["units"]) for e in store.usage], [("satellite_passes", 1.0)])
 
 
+STORE_ENV = {
+    "LI_PUBLIC_BASE_URL": "https://li.example",
+    "SUPABASE_URL": "https://project.supabase.example",
+    "SUPABASE_SERVICE_ROLE_KEY": "service-role-test",
+    "SUPABASE_PUBLISHABLE_KEY": "publishable-test-key",
+}
+
+
+def _limited_request(handler, ip="203.0.113.9", method="POST"):
+    import asyncio
+    from starlette.requests import Request
+    scope = {
+        "type": "http", "method": method, "path": "/x", "raw_path": b"/x", "query_string": b"",
+        "headers": [], "scheme": "https", "server": ("li.example", 443), "client": (ip, 1234), "root_path": "",
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return asyncio.run(handler(Request(scope, receive)))
+
+
+class GlobalRateLimitTests(unittest.TestCase):
+    """Item 3: store-backed (global) sliding-window limiter with an in-memory fallback."""
+
+    def setUp(self):
+        from lofgren_intelligence.hosted import ratelimit
+        self.ratelimit = ratelimit
+        ratelimit.LIMITER.reset()
+        self.addCleanup(ratelimit.LIMITER.reset)
+        self.store = FakeStore()
+        self.calls = []
+
+    def _handler(self, bucket):
+        from starlette.responses import JSONResponse
+
+        async def endpoint(request):
+            self.calls.append(bucket)
+            return JSONResponse({"ok": True})
+
+        return self.ratelimit.rate_limited(bucket, endpoint)
+
+    def _run(self, bucket, n, ip="203.0.113.9", env=None, reset_memory=False):
+        handler = self._handler(bucket)
+        codes = []
+        with patch.dict(os.environ, env if env is not None else STORE_ENV), \
+                patch.object(self.ratelimit, "SupabaseStore", return_value=self.store):
+            for _ in range(n):
+                if reset_memory:
+                    # A new serverless instance: per-process memory starts empty.
+                    self.ratelimit.LIMITER.reset()
+                codes.append(_limited_request(handler, ip=ip))
+        return codes
+
+    def test_limit_holds_across_instances_when_the_store_is_configured(self):
+        responses = self._run("oauth_register", 12, reset_memory=True)
+        self.assertEqual([r.status_code for r in responses], [200] * 10 + [429, 429])
+        self.assertGreaterEqual(int(responses[-1].headers["retry-after"]), 1)
+        self.assertEqual(len(self.calls), 10)
+        # Another client is unaffected.
+        self.assertEqual(self._run("oauth_register", 1, ip="198.51.100.7")[0].status_code, 200)
+
+    def test_store_receives_only_digests_never_the_raw_ip(self):
+        self._run("oauth_register", 1, ip="203.0.113.77")
+        (bucket, key_hash), = self.store.rate_events
+        self.assertEqual(bucket, "oauth_register")
+        self.assertRegex(key_hash, r"^[0-9a-f]{64}$")
+        self.assertNotIn("203.0.113.77", key_hash)
+        self.assertEqual(key_hash, self.ratelimit.rate_key("oauth_register", "203.0.113.77"))
+
+    def test_sign_up_and_activation_endpoints_fail_closed_when_the_store_errors(self):
+        from lofgren_intelligence.hosted.store import StoreError
+        self.store.rate_limit_error = StoreError("database is unreachable")
+        for bucket in ("oauth_register", "oauth_complete"):
+            with self.subTest(bucket=bucket):
+                response = self._run(bucket, 1)[0]
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(json.loads(response.body)["error"], "temporarily_unavailable")
+                self.assertGreaterEqual(int(response.headers["retry-after"]), 1)
+                self.assertNotIn("database", response.body.decode())
+        self.assertEqual(self.calls, [])
+
+    def test_unreadable_store_answer_also_fails_closed(self):
+        self.store.take_keyed_rate_limit = lambda *a, **k: "yes"
+        self.assertEqual(self._run("oauth_register", 1)[0].status_code, 503)
+        self.assertEqual(self.calls, [])
+
+    def test_ordinary_endpoint_falls_back_to_the_in_memory_limiter_on_store_error(self):
+        from lofgren_intelligence.hosted.store import StoreError
+        self.store.rate_limit_error = StoreError("database is unreachable")
+        env = {**STORE_ENV, "LI_IP_RATE_LIMIT_OAUTH_TOKEN": "2"}
+        codes = [r.status_code for r in self._run("oauth_token", 3, env=env)]
+        self.assertEqual(codes, [200, 200, 429])
+
+    def test_in_memory_backend_when_the_store_is_not_configured_or_disabled(self):
+        env = {k: v for k, v in STORE_ENV.items() if k != "SUPABASE_SERVICE_ROLE_KEY"}
+        with patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": ""}):
+            codes = [r.status_code for r in self._run("oauth_register", 11, env=env)]
+        self.assertEqual(codes, [200] * 10 + [429])
+        self.assertFalse(getattr(self.store, "rate_events", None))
+        self.ratelimit.LIMITER.reset()
+        codes = [r.status_code for r in self._run("oauth_register", 11,
+                                                  env={**STORE_ENV, "LI_RATE_LIMIT_BACKEND": "memory"})]
+        self.assertEqual(codes, [200] * 10 + [429])
+        self.assertFalse(getattr(self.store, "rate_events", None))
+
+    def test_window_slides_in_the_store_backend(self):
+        now = [1000.0]
+        self.store.rate_clock = lambda: now[0]
+        env = {**STORE_ENV, "LI_IP_RATE_LIMIT_OAUTH_REGISTER": "2"}
+        self.assertEqual([r.status_code for r in self._run("oauth_register", 3, env=env)], [200, 200, 429])
+        now[0] += 60.0
+        self.assertEqual(self._run("oauth_register", 1, env=env)[0].status_code, 200)
+
+
+class KeyedRateLimitStoreTests(unittest.TestCase):
+    """Item 3: the SupabaseStore RPC call (no network: json_request is patched)."""
+
+    def _store(self):
+        from lofgren_intelligence.hosted import store as li_store
+        return li_store, li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+
+    def test_rpc_payload_and_answer_parsing(self):
+        from lofgren_intelligence.hosted.http import JSONResponse
+        li_store, store = self._store()
+        seen = []
+
+        def fake(url, method="GET", headers=None, body=None, **kw):
+            seen.append((url, body))
+            return JSONResponse(200, {}, 7)
+
+        with patch.object(li_store, "json_request", fake):
+            self.assertEqual(store.take_keyed_rate_limit("oauth_register", "a" * 64, 10, 60), 7)
+        url, body = seen[0]
+        self.assertTrue(url.endswith("/rest/v1/rpc/li_take_keyed_rate_limit"))
+        self.assertEqual(body, {"p_bucket": "oauth_register", "p_key_hash": "a" * 64,
+                                "p_limit": 10, "p_window_seconds": 60})
+
+    def test_invalid_answers_are_store_errors(self):
+        from lofgren_intelligence.hosted.http import JSONResponse
+        li_store, store = self._store()
+        for answer in (True, None, "0", -1, [], [1, 2], {"a": 1, "b": 2}):
+            with self.subTest(answer=answer), \
+                    patch.object(li_store, "json_request", lambda *a, _x=answer, **k: JSONResponse(200, {}, _x)):
+                with self.assertRaises(li_store.StoreError):
+                    store.take_keyed_rate_limit("oauth_register", "a" * 64, 10, 60)
+
+
+class RateLimitMigrationTests(unittest.TestCase):
+    """Item 3: new migration; applied migrations are never edited in place."""
+
+    APPLIED = {
+        "20261004201650_public_mcp.sql": "b6594b609bff9f837e4fd7e37b3333ab800979d998b18e685190e0b9d176ea2e",
+        "20261004202354_public_mcp_indexes.sql": "4767630f82016246b640eb344916d5942d8ccdbf2b620bcff8f0d1b5e48de53b",
+        "20261005052012_public_lifecycle.sql": "9a67ddc2d0b58319cbc8a0fc32055227503351006bc7052e386051e43d9ee3f2",
+        "20261005052550_usage_reservations.sql": "f109f62077843099a90b7868f794c5d0a652579ccb9d3f0547c3ae1ab95272f6",
+    }
+
+    def _dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "supabase" / "migrations"
+
+    def test_applied_migrations_are_unchanged(self):
+        import hashlib
+        for name, digest in self.APPLIED.items():
+            raw = (self._dir() / name).read_bytes().replace(b"\r\n", b"\n")
+            with self.subTest(migration=name):
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+
+    def test_keyed_rate_limit_migration_is_new_locked_down_and_atomic(self):
+        files = sorted(p.name for p in self._dir().glob("*.sql"))
+        new = [f for f in files if f.endswith("_keyed_rate_limits.sql")]
+        self.assertEqual(len(new), 1)
+        self.assertGreater(new[0], max(self.APPLIED))
+        sql = (self._dir() / new[0]).read_text(encoding="utf-8").lower()
+        self.assertIn("create table if not exists public.li_rate_limit_events", sql)
+        self.assertIn("alter table public.li_rate_limit_events enable row level security", sql)
+        self.assertIn("revoke all on table public.li_rate_limit_events from anon, authenticated", sql)
+        self.assertIn("create or replace function public.li_take_keyed_rate_limit(", sql)
+        self.assertIn("security definer", sql)
+        self.assertIn("set search_path = public", sql)
+        self.assertIn("pg_advisory_xact_lock", sql)
+        self.assertIn("from public, anon, authenticated", sql)
+        self.assertIn("to service_role", sql)
+        import re
+        self.assertNotIn("create policy", sql)
+        for grant in re.findall(r"\bgrant\b[^;]*;", sql):
+            self.assertRegex(grant, r"\bto\s+service_role\s*;\s*$")
+            self.assertNotRegex(grant, r"\b(anon|authenticated)\b")
+
+
 if __name__ == "__main__":
     unittest.main()

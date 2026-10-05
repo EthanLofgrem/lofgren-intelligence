@@ -179,6 +179,27 @@ class FakeStore:
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
 
+    # In-memory model of li_take_keyed_rate_limit (keyed sliding window, 0 = allowed).
+    rate_limit_error = None
+    rate_clock = None
+
+    def take_keyed_rate_limit(self, bucket, key_hash, limit, window_seconds):
+        import math
+        import time
+        if self.rate_limit_error is not None:
+            raise self.rate_limit_error
+        events = self.__dict__.setdefault("rate_events", {})
+        now = (self.rate_clock or time.monotonic)()
+        if limit <= 0 or window_seconds <= 0:
+            return max(1, window_seconds)
+        hits = [t for t in events.get((bucket, key_hash), []) if t > now - window_seconds]
+        if len(hits) >= limit:
+            events[(bucket, key_hash)] = hits
+            return max(1, math.ceil(hits[0] + window_seconds - now))
+        hits.append(now)
+        events[(bucket, key_hash)] = hits
+        return 0
+
     def list_runs(self, user_id, limit=1000):
         return [row for (uid, _), row in self.runs.items() if uid == user_id][:limit]
 

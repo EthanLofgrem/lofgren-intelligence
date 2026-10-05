@@ -279,6 +279,27 @@ class SupabaseStore:
                 return bool(next(iter(value.values()), False))
         return bool(result)
 
+    def take_keyed_rate_limit(self, bucket: str, key_hash: str, limit: int, window_seconds: int) -> int:
+        """Global sliding-window take (li_take_keyed_rate_limit): 0 = allowed, else seconds to wait.
+
+        `key_hash` is already a SHA-256 hex digest; raw IPs and email domains
+        never reach the database. An unreadable answer is a StoreError so that
+        the caller can fail closed.
+        """
+        result = self.rpc("li_take_keyed_rate_limit", {
+            "p_bucket": bucket,
+            "p_key_hash": key_hash,
+            "p_limit": int(limit),
+            "p_window_seconds": int(window_seconds),
+        })
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if isinstance(result, bool) or not isinstance(result, (int, float)) or result < 0:
+            raise StoreError("rate limiter returned an invalid answer")
+        return int(result)
+
     def list_runs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         return self._select_all(
             "li_runs",
