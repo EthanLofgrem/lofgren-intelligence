@@ -584,9 +584,15 @@ class StripeWebhookTests(unittest.TestCase):
             ts = 1_800_000_000
             sig = hmac.new(b"whsec_test", str(ts).encode() + b"." + raw, hashlib.sha256).hexdigest()
             parsed = verify_webhook(raw, f"t={ts},v1={sig}", now_s=ts)
-            self.assertEqual(apply_webhook(store, parsed), "processed")
+            self.assertEqual(
+                apply_webhook(store, parsed, subscription_status=lambda _: "active"),
+                "processed",
+            )
             self.assertEqual(store.entitlement["kind"], "paid")
-            self.assertEqual(apply_webhook(store, parsed), "duplicate")
+            self.assertEqual(
+                apply_webhook(store, parsed, subscription_status=lambda _: "active"),
+                "duplicate",
+            )
 
 
 
@@ -606,7 +612,10 @@ class StripeWebhookTests(unittest.TestCase):
                 "type": "invoice.payment_failed",
                 "data": {"object": {"customer": "cus_test", "subscription": "sub_test"}},
             }
-            self.assertEqual(apply_webhook(store, failed), "processed")
+            self.assertEqual(
+                apply_webhook(store, failed, subscription_status=lambda _: "past_due"),
+                "processed",
+            )
             self.assertEqual(store.entitlement["kind"], "paid_required")
             self.assertFalse(store.entitlement["active"])
 
@@ -620,7 +629,10 @@ class StripeWebhookTests(unittest.TestCase):
                     "metadata": {"li_user_id": "u1"},
                 }},
             }
-            self.assertEqual(apply_webhook(store, recovered), "processed")
+            self.assertEqual(
+                apply_webhook(store, recovered, subscription_status=lambda _: "active"),
+                "processed",
+            )
             self.assertEqual(store.entitlement["kind"], "paid")
             self.assertTrue(store.entitlement["active"])
 
