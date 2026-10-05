@@ -43,6 +43,11 @@ from .store import SupabaseStore, utcnow
 from .stripe import cancel_subscription, create_billing_portal, create_checkout
 
 
+MAX_PASS_HOURS = 168.0
+MAX_PASS_TLES = 20
+MAX_TLE_TEXT_CHARS = 20_000
+
+
 class PublicServiceError(RuntimeError):
     pass
 
@@ -88,6 +93,16 @@ class PublicService:
         ):
             self.store.release_usage(reservation_id)
             raise QuotaExceeded("actual work exceeded the reserved usage allowance")
+
+    def _require_open_quota(self, user_id: str) -> None:
+        """Refuse unreserved compute when entitlement is inactive or weekly quota is exhausted."""
+        decision = access_for_run(self.store, user_id, 0.0)
+        if not decision.allowed:
+            if decision.entitlement.get("kind") == "paid_required":
+                raise PaymentRequired(decision.reason)
+            raise QuotaExceeded(decision.reason)
+        if decision.used_units >= decision.quota_units:
+            raise QuotaExceeded("weekly intelligence-unit quota reached")
 
     @staticmethod
     def _location(a: dict[str, Any]) -> dict[str, Any] | None:
@@ -322,6 +337,7 @@ class PublicService:
         return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
 
     def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         provider, _ = _prior_art_provider({
             k: a[k] for k in ("records", "coverage") if k in a
@@ -374,6 +390,7 @@ class PublicService:
         }
 
     def _adhoc_discovery(self, user_id: str, a: dict[str, Any]):
+        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         framed = frame_problem(ctx, ctx.ensure(DiscoveryObjective("Ad hoc analysis", ctx.research_id)))
         if framed.frame is None:
@@ -413,6 +430,7 @@ class PublicService:
         }
 
     def optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         problem = ctx.ensure(problem_from_json(a["problem"]))
         result = optimize(ctx, problem)
@@ -779,23 +797,37 @@ class PublicService:
             "next_cycle": row["next_cycle"],
         }
 
-    def satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
+    def satellite_passes(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        self._require_open_quota(user_id)
+        lat, lon = float(a["lat"]), float(a["lon"])
+        hours = float(a.get("hours", 24))
+        min_el = float(a.get("min_elevation_deg", 30))
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            raise PublicServiceError("lat must be in [-90, 90] and lon in [-180, 180]")
+        if not (0.0 < hours <= MAX_PASS_HOURS):
+            raise PublicServiceError(f"hours must be in (0, {MAX_PASS_HOURS:g}]")
+        if not (0.0 <= min_el <= 90.0):
+            raise PublicServiceError("min_elevation_deg must be in [0, 90]")
         if a.get("tle_text"):
+            if len(str(a["tle_text"])) > MAX_TLE_TEXT_CHARS:
+                raise PublicServiceError("tle_text is too large")
             tles = parse_tle_text(str(a["tle_text"]))
         elif a.get("fetch"):
             tles = fetch_tles([s.norad_id for s in IMAGING_SATELLITES])
         else:
             raise PublicServiceError("provide tle_text or fetch=true")
+        if len(tles) > MAX_PASS_TLES:
+            raise PublicServiceError(f"at most {MAX_PASS_TLES} element sets per call")
         start = datetime.now(timezone.utc)
         rows = []
         for tle in tles:
             rows.extend(find_passes(
                 tle,
-                float(a["lat"]),
-                float(a["lon"]),
+                lat,
+                lon,
                 start,
-                float(a.get("hours", 24)),
-                float(a.get("min_elevation_deg", 30)),
+                hours,
+                min_el,
             ))
         rows.sort(key=lambda p: p.rise)
         return {
