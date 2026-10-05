@@ -8,6 +8,7 @@ server or narrowly-scoped SECURITY DEFINER RPCs.
 from __future__ import annotations
 
 import os
+import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +18,21 @@ from .http import HTTPError, json_request, with_query
 
 class StoreError(RuntimeError):
     pass
+
+
+def _db(url: str, method: str, **kw: Any) -> Any:
+    """Call Supabase and translate failures into StoreError.
+
+    Raw HTTPError/URLError escaped every web handler (they catch StoreError)
+    as a 500, and PostgREST messages (schema, constraint and column names)
+    reached MCP clients verbatim. Only the HTTP status is kept.
+    """
+    try:
+        return json_request(url, method, **kw).body
+    except HTTPError as exc:
+        raise StoreError(f"database request failed (HTTP {exc.status})") from None
+    except (urllib.error.URLError, OSError, ValueError):
+        raise StoreError("database is unreachable") from None
 
 
 def utcnow() -> str:
@@ -60,7 +76,7 @@ class SupabaseStore:
         headers = dict(self._headers)
         if prefer:
             headers["prefer"] = prefer
-        return json_request(url, method, headers=headers, body=body).body
+        return _db(url, method, headers=headers, body=body)
 
     def _select_all(self, table: str, query: dict[str, Any], *, page: int = 1000, cap: int | None = None) -> list[dict[str, Any]]:
         """Read every matching row, page by page.
@@ -87,12 +103,12 @@ class SupabaseStore:
         return out
 
     def rpc(self, name: str, body: dict[str, Any]) -> Any:
-        return json_request(
+        return _db(
             f"{self.url}/rest/v1/rpc/{name}",
             "POST",
             headers=self._headers,
             body=body,
-        ).body
+        )
 
     def verify_supabase_user(self, access_token: str) -> dict[str, Any]:
         key = self.publishable_key or self.service_key
@@ -237,7 +253,7 @@ class SupabaseStore:
 
     def delete_auth_user(self, user_id: str) -> None:
         quoted = urllib.parse.quote(user_id, safe="")
-        json_request(
+        _db(
             f"{self.url}/auth/v1/admin/users/{quoted}",
             "DELETE",
             headers=self._headers,

@@ -16,7 +16,7 @@ from lofgren_intelligence.adapters.net import UnsafeURL, validate_public_url
 from lofgren_intelligence.hosted import store as li_store
 from lofgren_intelligence.hosted import web_app
 from lofgren_intelligence.hosted.entitlements import access_for_run
-from lofgren_intelligence.hosted.http import JSONResponse
+from lofgren_intelligence.hosted.http import HTTPError, JSONResponse
 from lofgren_intelligence.hosted.service import PaymentRequired, PublicService, PublicServiceError, QuotaExceeded
 from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError
 
@@ -273,6 +273,30 @@ class AdHocComputeQuotaTests(unittest.TestCase):
 
     def test_unpaid_account_is_refused_before_any_compute(self):
         self._assert_refused(FakeStore(activation_number=1001, kind="paid_required", quota=0.0), PaymentRequired)
+
+
+class StoreErrorTranslationTests(unittest.TestCase):
+    def _raising(self, exc):
+        def fake(*a, **k):
+            raise exc
+        return fake
+
+    def test_postgrest_failure_becomes_store_error_without_server_detail(self):
+        detail = 'relation "public.li_runs" violates constraint li_runs_pkey'
+        store = li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+        with patch.object(li_store, "json_request", self._raising(HTTPError(409, detail, {"message": detail}))):
+            with self.assertRaises(li_store.StoreError) as ctx:
+                store.get_run("u1", "RR-1")
+        self.assertIn("409", str(ctx.exception))
+        self.assertNotIn("li_runs", str(ctx.exception))
+
+    def test_unreachable_database_and_rpc_failures_are_store_errors(self):
+        store = li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+        with patch.object(li_store, "json_request", self._raising(urllib.error.URLError("refused"))):
+            with self.assertRaises(li_store.StoreError):
+                store.take_rate_limit("u1")
+            with self.assertRaises(li_store.StoreError):
+                store.delete_auth_user("u1")
 
 
 if __name__ == "__main__":
