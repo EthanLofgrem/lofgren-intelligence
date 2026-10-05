@@ -21,6 +21,7 @@ from starlette.routing import Route
 from .. import __version__
 from .auth import AuthError, OAuthService
 from .mcp_sdk import build_mcp
+from .journey import checkout_return_html, consent_intro_html, landing_html
 from .service import PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
@@ -191,6 +192,8 @@ async def oauth_authorize(request: Request) -> Response:
         urllib.parse.urlsplit(supabase_url).netloc,
         "", "", "",
     ))
+    client_name = str(client.get("client_name") or client.get("client_id") or "Unknown MCP client")
+    consent_intro = consent_intro_html(client_name, params["scope"])
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect Lofgren Intelligence</title>
@@ -202,13 +205,14 @@ h1{{font-size:24px;margin:0 0 6px}}p{{color:#aeb8c7}}input,button{{width:100%;bo
 input{{background:#0e1218;color:white;border:1px solid #344054}}button{{background:#2563eb;color:white;border:0;font-weight:700;cursor:pointer}}
 small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
 </style></head>
-<body><main><h1>Lofgren Intelligence</h1>
-<p>Connect your AI client to certified V1 Evidence Intelligence.</p>
-<input id="email" type="email" autocomplete="email" placeholder="Email">
-<input id="password" type="password" autocomplete="current-password" placeholder="Password">
-<button id="signin">Sign in &amp; connect</button>
+<body><main>{consent_intro}
+<label for="email">Email</label>
+<input id="email" type="email" autocomplete="email" placeholder="you@example.com" aria-describedby="status">
+<label for="password">Password</label>
+<input id="password" type="password" autocomplete="current-password" placeholder="Password" aria-describedby="status">
+<button id="signin">Sign in &amp; authorize this client</button>
 <button id="signup">Create account</button>
-<div id="status"></div>
+<div id="status" role="status" aria-live="polite"></div>
 <small>Activated accounts 1–1000 receive quota-limited Founding Free access. Account 1001 onward requires a paid entitlement.</small>
 <script nonce="{nonce}">\nconst cfg={safe_params};
 const sb=supabase.createClient({safe_url},{safe_key});
@@ -340,7 +344,7 @@ async def stripe_webhook(request: Request) -> Response:
 
 
 async def billing_success(request: Request) -> Response:
-    return PlainTextResponse("Payment received. Return to your AI client and retry the Lofgren Intelligence request.")
+    return HTMLResponse(checkout_return_html(), headers={"Cache-Control": "no-store"})
 
 
 async def billing_cancelled(request: Request) -> Response:
@@ -348,15 +352,7 @@ async def billing_cancelled(request: Request) -> Response:
 
 
 async def landing(request: Request) -> Response:
-    base = public_base()
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lofgren Intelligence</title><style>body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;max-width:760px;margin:60px auto;padding:20px}}code{{background:#171c25;padding:3px 6px;border-radius:5px}}a{{color:#7db2ff}}</style></head>
-<body><h1>Lofgren Intelligence</h1><p>Evidence-driven research and verification through MCP.</p>
-<p><strong>Certified public capability:</strong> V1 Evidence Intelligence. Later versions are not represented as complete until their own gates pass.</p>
-<p>MCP endpoint: <code>{html.escape(base)}/mcp</code></p>
-<p><a href="/healthz">Health</a> · <a href="/.well-known/oauth-authorization-server">OAuth metadata</a> · <a href="/account">Account &amp; privacy</a></p>
-</body></html>"""
-    return HTMLResponse(page)
+    return HTMLResponse(landing_html(public_base()), headers={"Cache-Control": "no-store"})
 
 
 class RequestTelemetry:
