@@ -156,12 +156,53 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_produce(args: argparse.Namespace) -> int:
+    from .discovery.pipeline import discover_from_run
+    from .production import ProductionError, build_artifact, write_artifact
+
+    contract, registry = _setup(args)
+    run = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve)
+    result = discover_from_run(run, args.goal or args.objective, design=_json_file(args.design, "design"),
+                               prior_art=_json_file(args.prior_art, "prior-art"))
+    if result.handoff is None:
+        print(f"nothing to produce: discovery outcome is {result.outcome.value}", file=sys.stderr)
+        for q in result.requirements:
+            print(f"  needs: {q.description}", file=sys.stderr)
+        return 2
+    try:
+        produced = build_artifact(result.handoff, discovery_receipt=result.receipt, context=result.context,
+                                  kind=args.kind)
+        write_artifact(produced, args.out_dir)
+    except ProductionError as exc:
+        print(f"production refused: {exc}", file=sys.stderr)
+        return 1
+    tests = produced.verification.tests
+    print(json.dumps({
+        "artifact_id": produced.artifact_id,
+        "kind": args.kind,
+        "directory": str(args.out_dir),
+        "files": [f["path"] for f in produced.artifact["files"]],
+        "checks": {x.requirement_id: x.passed for x in produced.acceptance},
+        "tests": tests,
+        "receipt": produced.receipt["receipt_hash"],
+        "authority_granted": False,
+    }, indent=2))
+    return 0
+
+
+def cmd_verify_artifact(args: argparse.Namespace) -> int:
+    from .production import verify_directory
+
+    out = verify_directory(args.directory)
+    print(json.dumps(out, indent=2))
+    return 0 if out["passed"] else 1
+
+
 def cmd_certify(args: argparse.Namespace) -> int:
     from .certification import render_certification, run_certification
 
     if getattr(args, "v6", False):
         from .improvement.certification import render_v6_certification, run_v6_certification
-
         cert = run_v6_certification()
         print(render_v6_certification(cert))
         if args.out:
@@ -169,7 +210,6 @@ def cmd_certify(args: argparse.Namespace) -> int:
         return 0 if cert["code_terms_certified"] else 1
     if getattr(args, "v5", False):
         from .outcome.certification import render_v5_certification, run_v5_certification
-
         cert = run_v5_certification()
         print(render_v5_certification(cert))
         if args.out:
@@ -177,7 +217,6 @@ def cmd_certify(args: argparse.Namespace) -> int:
         return 0 if cert["code_terms_certified"] else 1
     if getattr(args, "v4", False):
         from .execution.certification import render_v4_certification, run_v4_certification
-
         cert = run_v4_certification()
         print(render_v4_certification(cert))
         if args.out:
@@ -322,6 +361,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--receipt", help="write the discovery receipt here")
     p.add_argument("--handoff", help="write the V3 handoff here (only when a candidate is selected)")
     p.set_defaults(fn=cmd_discover)
+
+    p = sub.add_parser("produce", help="research (V1), discover (V2), then build and verify an artifact (V3)")
+    _add_sources(p)
+    p.add_argument("--goal", help="the discovery objective, if different from the research objective")
+    p.add_argument("--design", required=True, help="design space JSON (see docs/DISCOVERY.md)")
+    p.add_argument("--prior-art", dest="prior_art", help="prior-art fixture JSON")
+    p.add_argument("--kind", default="structured_bundle", choices=["structured_bundle", "markdown", "python_module"])
+    p.add_argument("--out-dir", dest="out_dir", required=True, help="new or empty directory for the artifact")
+    p.add_argument("--approve", action="store_true", help="approve actions that need approval")
+    p.set_defaults(fn=cmd_produce)
+
+    p = sub.add_parser("verify-artifact", help="independently verify an artifact directory written by produce")
+    p.add_argument("directory")
+    p.set_defaults(fn=cmd_verify_artifact)
 
     p = sub.add_parser("certify", help="run the V1 certification suite, or a later version certification")
     versions = p.add_mutually_exclusive_group()
