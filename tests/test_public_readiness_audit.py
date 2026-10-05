@@ -18,7 +18,7 @@ from lofgren_intelligence.hosted import web_app
 from lofgren_intelligence.hosted.entitlements import access_for_run
 from lofgren_intelligence.hosted.http import HTTPError, JSONResponse
 from lofgren_intelligence.hosted.service import PaymentRequired, PublicService, PublicServiceError, QuotaExceeded
-from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError
+from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError, apply_webhook
 
 from .test_public_hosted import FakeStore
 
@@ -297,6 +297,30 @@ class StoreErrorTranslationTests(unittest.TestCase):
                 store.take_rate_limit("u1")
             with self.assertRaises(li_store.StoreError):
                 store.delete_auth_user("u1")
+
+
+class WebhookPaymentStatusTests(unittest.TestCase):
+    def _apply(self, obj):
+        store = FakeStore(activation_number=1001, kind="paid_required", quota=0)
+        event = {"id": "evt_" + str(len(obj)), "type": "checkout.session.completed", "data": {"object": obj}}
+        apply_webhook(store, event)
+        return store.entitlement
+
+    def test_missing_payment_status_does_not_grant_paid_access(self):
+        ent = self._apply({"customer": "cus_t", "subscription": "sub_t", "metadata": {"li_user_id": "u1"}})
+        self.assertFalse(ent["active"])
+        self.assertEqual(ent["kind"], "paid_required")
+
+    def test_unpaid_checkout_does_not_grant_paid_access(self):
+        ent = self._apply({"customer": "cus_t", "subscription": "sub_t", "metadata": {"li_user_id": "u1"},
+                           "payment_status": "unpaid"})
+        self.assertFalse(ent["active"])
+
+    def test_paid_checkout_still_grants_access(self):
+        ent = self._apply({"customer": "cus_t", "subscription": "sub_t", "metadata": {"li_user_id": "u1"},
+                           "payment_status": "paid"})
+        self.assertTrue(ent["active"])
+        self.assertEqual(ent["kind"], "paid")
 
 
 if __name__ == "__main__":

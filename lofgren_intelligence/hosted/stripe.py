@@ -237,7 +237,9 @@ def apply_webhook(store: SupabaseStore, event: dict[str, Any]) -> str:
         subscription_id = _subscription_id(obj)
         if not subscription_id:
             raise StripeError("checkout session missing subscription")
-        active = str(obj.get("payment_status") or "paid") in {"paid", "no_payment_required"}
+        # Unknown payment state is not payment: a missing payment_status
+        # must not grant paid access (it used to default to "paid").
+        active = str(obj.get("payment_status") or "") in {"paid", "no_payment_required"}
         mutate = True
 
     elif kind == "checkout.session.async_payment_failed":
