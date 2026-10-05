@@ -10,6 +10,7 @@ from ..kernel.knowledge_map import export_knowledge_map
 from ..kernel.receipt import verify_receipt
 from ..kernel.state import export_state
 from ..report.markdown import render_markdown
+from ..discovery.errors import UnknownReference
 
 
 def durable_snapshot(result: Any) -> dict[str, Any]:
@@ -93,7 +94,13 @@ def summary(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def durable_discovery_snapshot(result: Any) -> dict[str, Any]:
-    """Freeze a V2 discovery into a tenant-safe, process-independent snapshot."""
+    """Freeze a V2 discovery into a tenant-safe, process-independent snapshot.
+
+    Strong V3 verifies the handoff value-by-value against every V2 object named
+    by the discovery receipt. Persist those typed objects as part of the durable
+    discovery so a later process can reconstruct the exact certified context
+    instead of falling back to only the V1 knowledge map.
+    """
     from ..discovery.handoff import validate_handoff
     from ..discovery.receipt import objects_match_receipt, verify_discovery_receipt
     from ..discovery.report import discovery_summary, render_discovery_markdown
@@ -119,6 +126,10 @@ def durable_discovery_snapshot(result: Any) -> dict[str, Any]:
         "findings": [x.to_dict() for x in result.findings],
         "verifier_issues": [x.__dict__ for x in result.verifier.issues],
         "receipt": receipt,
+        "context_objects": [
+            {"type": type(obj).__name__, "data": obj.to_dict()}
+            for obj in result.context.objects()
+        ],
         "receipt_intact": verify_discovery_receipt(receipt),
         "receipt_object_problems": objects_match_receipt(receipt, result.context.objects()),
         "handoff": handoff,
@@ -129,3 +140,62 @@ def durable_discovery_snapshot(result: Any) -> dict[str, Any]:
         "usage_units": float(result.ledger.total_units if result.ledger else 0.0),
         "charge_usd": float(result.ledger.total_usd if result.ledger else 0.0),
     }
+
+
+
+def restore_discovery_context(base_context: Any, snapshot: dict[str, Any]) -> Any:
+    """Reconstruct the exact typed V2 context recorded in a durable snapshot.
+
+    Registration is dependency-aware: objects are instantiated from their
+    validated dataclass representation, then registered only after every
+    referenced object is available. Unknown or corrupted object types fail
+    closed. The reconstructed context must exactly match the object digests in
+    the discovery receipt before V3 may consume it.
+    """
+    from ..discovery import types as discovery_types
+    from ..discovery.receipt import objects_match_receipt
+
+    rows = snapshot.get("context_objects")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("stored discovery snapshot is missing typed context_objects")
+
+    registry = {
+        name: cls for name, cls in vars(discovery_types).items()
+        if isinstance(cls, type)
+        and issubclass(cls, discovery_types._Obj)
+        and cls is not discovery_types._Obj
+    }
+
+    pending = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"context_objects[{i}] is not an object")
+        type_name = row.get("type")
+        data = row.get("data")
+        cls = registry.get(type_name)
+        if cls is None:
+            raise ValueError(f"context_objects[{i}] has unsupported type {type_name!r}")
+        if not isinstance(data, dict):
+            raise ValueError(f"context_objects[{i}].data is not an object")
+        pending.append(cls(**data))
+
+    while pending:
+        deferred = []
+        progressed = False
+        for obj in pending:
+            try:
+                base_context.ensure(obj)
+                progressed = True
+            except UnknownReference:
+                deferred.append(obj)
+        if not deferred:
+            break
+        if not progressed:
+            unresolved = ", ".join(sorted(obj.id for obj in deferred)[:10])
+            raise ValueError(f"stored discovery context has unresolved references: {unresolved}")
+        pending = deferred
+
+    problems = objects_match_receipt(snapshot.get("receipt") or {}, base_context.objects())
+    if problems:
+        raise ValueError("stored discovery context does not match its receipt: " + "; ".join(problems[:5]))
+    return base_context
