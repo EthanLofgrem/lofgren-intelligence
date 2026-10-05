@@ -1,13 +1,21 @@
 """Regression tests for defects found by the public-readiness audit."""
 
 import asyncio
+import io
+import json
 import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from starlette.requests import Request
 
+from lofgren_intelligence.hosted import stripe as li_stripe
 from lofgren_intelligence.hosted import web_app
+from lofgren_intelligence.hosted.service import PublicService
+from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError
+
+from .test_public_hosted import FakeStore
 
 ENV = {
     "LI_PUBLIC_BASE_URL": "https://li.example",
@@ -64,6 +72,77 @@ class AuthorizeConsentTests(unittest.TestCase):
         self.assertIn("&lt;b&gt;Claude&lt;/b&gt;", page)
         self.assertNotIn("<b>Claude</b>", page)
         self.assertIn("<strong>evil.example</strong>", page)
+
+
+class _Resp:
+    def __init__(self, body):
+        self._b = json.dumps(body).encode()
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _http_error(status, code):
+    body = json.dumps({"error": {"code": code, "type": "invalid_request_error"}}).encode()
+    return urllib.error.HTTPError("https://api.stripe.com/x", status, "err", {}, io.BytesIO(body))
+
+
+class _FakeStripe:
+    """Stands in for urllib.request.urlopen; no network and no real Stripe call."""
+
+    def __init__(self, delete, get=None):
+        self.delete, self.get, self.calls = delete, get, []
+
+    def __call__(self, req, timeout=None):
+        self.calls.append(req.get_method())
+        outcome = self.delete if req.get_method() == "DELETE" else self.get
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _Resp(outcome)
+
+
+class StripeCancellationTests(unittest.TestCase):
+    PHRASE = "DELETE MY LOFGREN INTELLIGENCE ACCOUNT"
+
+    def _paid_store(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({"stripe_subscription_id": "sub_test", "stripe_customer_id": "cus_test"})
+        return store
+
+    def _delete(self, store, fake):
+        with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_dummy"}), patch.object(li_stripe.urllib.request, "urlopen", fake):
+            return PublicService(store).delete_account("u1", self.PHRASE)
+
+    def test_already_cancelled_subscription_does_not_block_account_deletion(self):
+        store = self._paid_store()
+        fake = _FakeStripe(_http_error(400, "resource_invalid_state"), {"id": "sub_test", "status": "canceled"})
+        self.assertTrue(self._delete(store, fake)["deleted"])
+        self.assertEqual(store.deleted_user, "u1")
+        self.assertEqual(fake.calls, ["DELETE", "GET"])
+
+    def test_missing_subscription_does_not_block_account_deletion(self):
+        store = self._paid_store()
+        self.assertTrue(self._delete(store, _FakeStripe(_http_error(404, "resource_missing")))["deleted"])
+
+    def test_live_subscription_that_fails_to_cancel_stops_deletion(self):
+        store = self._paid_store()
+        fake = _FakeStripe(_http_error(500, "api_error"), {"id": "sub_test", "status": "active"})
+        with self.assertRaises(StripeAPIError):
+            self._delete(store, fake)
+        self.assertFalse(hasattr(store, "deleted_user"))
+        self.assertIsNotNone(store.account)
+
+    def test_network_failure_is_a_stripe_error_not_a_raw_urllib_error(self):
+        store = self._paid_store()
+        with self.assertRaises(StripeError):
+            self._delete(store, _FakeStripe(urllib.error.URLError("down")))
+        self.assertFalse(hasattr(store, "deleted_user"))
 
 
 if __name__ == "__main__":

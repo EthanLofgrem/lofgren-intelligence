@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -38,6 +39,31 @@ def _price_id() -> str:
     return value
 
 
+class StripeAPIError(StripeError):
+    """A Stripe API call failed; carries the HTTP status and Stripe error code."""
+
+    def __init__(self, status: int, code: str, message: str) -> None:
+        super().__init__(f"Stripe API error {status}: {code or message or 'request failed'}")
+        self.status = status
+        self.code = code
+
+
+def _stripe_call(req: urllib.request.Request) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        code, message = "", ""
+        try:
+            err = (json.loads(exc.read().decode("utf-8")) or {}).get("error") or {}
+            code, message = str(err.get("code") or ""), str(err.get("type") or "")
+        except Exception:
+            pass
+        raise StripeAPIError(int(exc.code), code, message) from None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise StripeError("Stripe API is unreachable") from exc
+
+
 def stripe_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
     body = urllib.parse.urlencode(params, doseq=True).encode("utf-8")
     req = urllib.request.Request(
@@ -49,8 +75,16 @@ def stripe_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
             "content-type": "application/x-www-form-urlencoded",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    return _stripe_call(req)
+
+
+def stripe_get(path: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        "https://api.stripe.com" + path,
+        method="GET",
+        headers={"authorization": f"Bearer {_secret()}"},
+    )
+    return _stripe_call(req)
 
 
 def stripe_delete(path: str) -> dict[str, Any]:
@@ -59,14 +93,37 @@ def stripe_delete(path: str) -> dict[str, Any]:
         method="DELETE",
         headers={"authorization": f"Bearer {_secret()}"},
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    return _stripe_call(req)
+
+
+_ENDED = {"canceled", "incomplete_expired"}
 
 
 def cancel_subscription(subscription_id: str) -> dict[str, Any]:
+    """Cancel a subscription; an already-ended or missing one counts as cancelled.
+
+    A user whose subscription already ended (for example through the billing
+    portal) keeps its id on the entitlement. Without this, account deletion
+    would fail forever on Stripe's error for the second cancellation.
+    Any other failure still raises, so deletion stops before data removal.
+    """
     if not subscription_id:
         raise StripeError("Stripe subscription id is required")
-    return stripe_delete("/v1/subscriptions/" + urllib.parse.quote(subscription_id, safe=""))
+    path = "/v1/subscriptions/" + urllib.parse.quote(subscription_id, safe="")
+    try:
+        return stripe_delete(path)
+    except StripeAPIError as exc:
+        if exc.status == 404:
+            return {"id": subscription_id, "status": "canceled", "already_ended": True}
+        try:
+            current = stripe_get(path)
+        except StripeAPIError as again:
+            if again.status == 404:
+                return {"id": subscription_id, "status": "canceled", "already_ended": True}
+            raise
+        if str(current.get("status") or "") in _ENDED:
+            return {**current, "already_ended": True}
+        raise
 
 
 def create_checkout(user_id: str, *, success_url: str, cancel_url: str) -> dict[str, Any]:
