@@ -27,9 +27,32 @@ MAX_REDIRECTS = 5
 _REDIRECTS = {301, 302, 303, 307, 308}
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """IPv4 address carried inside an IPv6 one (mapped, 6to4, NAT64, compat)."""
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    if ip in _NAT64:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if int(ip) >> 32 == 0 and int(ip) > 1:  # deprecated IPv4-compatible ::a.b.c.d
+        return ipaddress.IPv4Address(int(ip))
+    return None
+
+
 def _public_ip(value: str) -> bool:
-    ip = ipaddress.ip_address(value)
-    return not (
+    ip = ipaddress.ip_address(value.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address):
+        inner = _embedded_ipv4(ip)
+        if inner is not None and not _public_ip(str(inner)):
+            return False
+    # is_global excludes shared/CGNAT space (100.64.0.0/10, used for cloud
+    # metadata on some providers), benchmarking, documentation and other
+    # special-purpose ranges that the private/loopback checks miss.
+    return ip.is_global and not (
         ip.is_private
         or ip.is_loopback
         or ip.is_link_local
