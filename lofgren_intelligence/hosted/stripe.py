@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from .store import SupabaseStore
 
@@ -211,14 +211,39 @@ def _payload_hash(event: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def apply_webhook(store: SupabaseStore, event: dict[str, Any]) -> str:
+_ACTIVE = {"active", "trialing"}
+
+
+def current_subscription_status(subscription_id: str) -> str:
+    """The subscription's status as Stripe reports it now ("canceled" if it no longer exists)."""
+    path = "/v1/subscriptions/" + urllib.parse.quote(subscription_id, safe="")
+    try:
+        return str(stripe_get(path).get("status") or "")
+    except StripeAPIError as exc:
+        if exc.status == 404:
+            return "canceled"
+        raise
+
+
+def apply_webhook(
+    store: SupabaseStore,
+    event: dict[str, Any],
+    *,
+    subscription_status: Callable[[str], str] | None = None,
+) -> str:
     """Apply one Stripe lifecycle event exactly once.
 
-    Subscription state is authoritative for continuing access. A failed invoice
-    disables access immediately; a later customer.subscription.updated with
-    active/trialing status can restore it. Unrelated Stripe events are still
-    receipted but do not mutate an entitlement.
+    Stripe does not deliver events in order, so the status carried by an event
+    can be stale: a `customer.subscription.created` (status `incomplete`)
+    processed after the paid checkout used to switch a paying account back to
+    `paid_required`. Every entitlement-mutating event therefore re-reads the
+    subscription from Stripe and applies its current status; whichever event
+    is processed last leaves the entitlement matching Stripe. A checkout event
+    additionally needs a paid (or no-payment-required) session. If the status
+    cannot be read, nothing is applied and Stripe retries the delivery.
+    Unrelated Stripe events are still receipted but do not mutate an entitlement.
     """
+    status_of = subscription_status or current_subscription_status
     event_id = str(event["id"])
     kind = str(event["type"])
     obj = ((event.get("data") or {}).get("object") or {})
@@ -239,14 +264,15 @@ def apply_webhook(store: SupabaseStore, event: dict[str, Any]) -> str:
             raise StripeError("checkout session missing subscription")
         # Unknown payment state is not payment: a missing payment_status
         # must not grant paid access (it used to default to "paid").
-        active = str(obj.get("payment_status") or "") in {"paid", "no_payment_required"}
+        paid = str(obj.get("payment_status") or "") in {"paid", "no_payment_required"}
+        active = paid and status_of(subscription_id) in _ACTIVE
         mutate = True
 
     elif kind == "checkout.session.async_payment_failed":
         if not user_id:
             raise StripeError("checkout session missing li_user_id")
         subscription_id = _subscription_id(obj)
-        active = False
+        active = bool(subscription_id) and status_of(str(subscription_id)) in _ACTIVE
         mutate = True
 
     elif kind in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
@@ -254,8 +280,7 @@ def apply_webhook(store: SupabaseStore, event: dict[str, Any]) -> str:
         user_id = user_id or _lookup_user_for_subscription(store, subscription_id)
         if not user_id:
             raise StripeError("subscription event cannot be mapped to an LI user")
-        status = str(obj.get("status") or "")
-        active = kind != "customer.subscription.deleted" and status in {"active", "trialing"}
+        active = bool(subscription_id) and status_of(str(subscription_id)) in _ACTIVE
         mutate = True
 
     elif kind == "invoice.payment_failed":
@@ -263,8 +288,16 @@ def apply_webhook(store: SupabaseStore, event: dict[str, Any]) -> str:
         user_id = _lookup_user_for_subscription(store, subscription_id)
         if not user_id:
             raise StripeError("failed invoice cannot be mapped to an LI user")
-        active = False
+        active = status_of(str(subscription_id)) in _ACTIVE
         mutate = True
+
+    if mutate and not active and user_id and subscription_id:
+        # A lapsed subscription must not revoke access granted by a newer one
+        # (an old subscription's deletion delivered after the user re-subscribed).
+        current = store.get_entitlement(str(user_id)) or {}
+        newer = str(current.get("stripe_subscription_id") or "")
+        if current.get("active") and newer and newer != str(subscription_id):
+            mutate = False
 
     plan_id = os.environ.get("LI_PAID_PLAN_ID", "researcher")
     quota = float(os.environ.get("LI_PAID_WEEKLY_UNITS", "2000"))

@@ -303,7 +303,7 @@ class WebhookPaymentStatusTests(unittest.TestCase):
     def _apply(self, obj):
         store = FakeStore(activation_number=1001, kind="paid_required", quota=0)
         event = {"id": "evt_" + str(len(obj)), "type": "checkout.session.completed", "data": {"object": obj}}
-        apply_webhook(store, event)
+        apply_webhook(store, event, subscription_status=lambda s: "active")
         return store.entitlement
 
     def test_missing_payment_status_does_not_grant_paid_access(self):
@@ -379,6 +379,108 @@ class SatellitePassEntitlementTests(unittest.TestCase):
         store.record_usage({"id": "e1", "user_id": "u1", "run_id": None, "units": 10.0})
         with self.assertRaises(QuotaExceeded):
             PublicService(store).satellite_passes("u1", dict(self.ARGS))
+
+
+class RedirectURIValidationTests(unittest.TestCase):
+    def _register(self, uri):
+        from lofgren_intelligence.hosted.auth import OAuthService
+        return OAuthService(FakeStore()).register_client({"redirect_uris": [uri]})
+
+    def test_lookalike_loopback_hosts_are_refused(self):
+        from lofgren_intelligence.hosted.auth import AuthError
+        for uri in ("http://localhost.attacker.example/cb", "http://127.0.0.1.attacker.example/cb",
+                    "http://localhostattacker.example/cb", "http://attacker.example/cb",
+                    "http://localhost@attacker.example/cb", "https://user:pw@client.example/cb",
+                    "https://client.example/cb#frag", "javascript:alert(1)", "http://localhost:99999/cb"):
+            with self.subTest(uri=uri), self.assertRaises(AuthError):
+                self._register(uri)
+
+    def test_https_and_exact_loopback_are_accepted(self):
+        for uri in ("https://client.example/cb", "http://localhost/cb", "http://localhost:33418/callback",
+                    "http://127.0.0.1:8080/cb", "http://[::1]:8080/cb", "http://LOCALHOST/cb"):
+            with self.subTest(uri=uri):
+                self.assertEqual(self._register(uri)["redirect_uris"], [uri])
+
+
+class SatellitePassEntitlementTests(unittest.TestCase):
+    ARGS = {"lat": 33.4, "lon": -112.0, "hours": 6, "tle_text": TLE}
+
+    def test_unpaid_account_cannot_run_pass_prediction(self):
+        store = FakeStore(activation_number=1001, kind="paid_required", quota=0.0)
+        with self.assertRaises(PaymentRequired):
+            PublicService(store).satellite_passes("u1", dict(self.ARGS))
+
+    def test_exhausted_quota_refuses_pass_prediction(self):
+        store = FakeStore(quota=10.0)
+        store.record_usage({"id": "e1", "user_id": "u1", "run_id": None, "units": 10.0})
+        with self.assertRaises(QuotaExceeded):
+            PublicService(store).satellite_passes("u1", dict(self.ARGS))
+
+
+class WebhookOrderingTests(unittest.TestCase):
+    """Stripe does not order deliveries; the subscription's current status decides."""
+
+    ENV = {"LI_PAID_PLAN_ID": "researcher", "LI_PAID_WEEKLY_UNITS": "2000"}
+
+    def _event(self, event_id, kind, obj):
+        return {"id": event_id, "type": kind, "data": {"object": obj}}
+
+    def _checkout(self):
+        return self._event("evt_checkout", "checkout.session.completed", {
+            "customer": "cus_t", "subscription": "sub_new", "metadata": {"li_user_id": "u1"},
+            "payment_status": "paid"})
+
+    def test_stale_incomplete_created_event_does_not_revoke_paid_access(self):
+        store = FakeStore(activation_number=1001, kind="paid_required", quota=0)
+        stripe_now = lambda sub: "active"
+        with patch.dict(os.environ, self.ENV, clear=False):
+            apply_webhook(store, self._checkout(), subscription_status=stripe_now)
+            stale = self._event("evt_created", "customer.subscription.created", {
+                "id": "sub_new", "customer": "cus_t", "status": "incomplete", "metadata": {"li_user_id": "u1"}})
+            self.assertEqual(apply_webhook(store, stale, subscription_status=stripe_now), "processed")
+        self.assertTrue(store.entitlement["active"])
+        self.assertEqual(store.entitlement["kind"], "paid")
+
+    def test_stale_active_event_does_not_restore_a_cancelled_subscription(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({"stripe_subscription_id": "sub_new", "active": True})
+        stale = self._event("evt_old_update", "customer.subscription.updated", {
+            "id": "sub_new", "customer": "cus_t", "status": "active", "metadata": {"li_user_id": "u1"}})
+        with patch.dict(os.environ, self.ENV, clear=False):
+            apply_webhook(store, stale, subscription_status=lambda sub: "canceled")
+        self.assertFalse(store.entitlement["active"])
+        self.assertEqual(store.entitlement["kind"], "paid_required")
+
+    def test_old_subscription_deletion_does_not_revoke_a_newer_subscription(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({"stripe_subscription_id": "sub_new", "active": True})
+        old = self._event("evt_old_deleted", "customer.subscription.deleted", {
+            "id": "sub_old", "customer": "cus_t", "status": "canceled", "metadata": {"li_user_id": "u1"}})
+        with patch.dict(os.environ, self.ENV, clear=False):
+            self.assertEqual(apply_webhook(store, old, subscription_status=lambda sub: "canceled"), "processed")
+        self.assertTrue(store.entitlement["active"])
+        self.assertEqual(store.entitlement["stripe_subscription_id"], "sub_new")
+
+    def test_unreadable_subscription_status_applies_nothing(self):
+        store = FakeStore(activation_number=1001, kind="paid_required", quota=0)
+
+        def down(sub):
+            raise StripeError("Stripe API is unreachable")
+
+        with patch.dict(os.environ, self.ENV, clear=False), self.assertRaises(StripeError):
+            apply_webhook(store, self._checkout(), subscription_status=down)
+        self.assertEqual(store.billing_events, {})
+        self.assertFalse(store.entitlement["active"])
+
+    def test_default_status_lookup_reads_stripe_and_treats_missing_as_cancelled(self):
+        with patch.object(li_stripe, "stripe_get", return_value={"id": "sub_x", "status": "past_due"}) as get:
+            self.assertEqual(li_stripe.current_subscription_status("sub_x"), "past_due")
+        self.assertEqual(get.call_args[0][0], "/v1/subscriptions/sub_x")
+        with patch.object(li_stripe, "stripe_get", side_effect=StripeAPIError(404, "resource_missing", "")):
+            self.assertEqual(li_stripe.current_subscription_status("sub_x"), "canceled")
+        with patch.object(li_stripe, "stripe_get", side_effect=StripeAPIError(500, "", "api_error")):
+            with self.assertRaises(StripeAPIError):
+                li_stripe.current_subscription_status("sub_x")
 
 if __name__ == "__main__":
     unittest.main()
