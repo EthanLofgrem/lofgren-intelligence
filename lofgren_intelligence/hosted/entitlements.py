@@ -45,9 +45,13 @@ def access_for_run(store: SupabaseStore, user_id: str, estimated_units: float = 
     if kind == "paid_required" or not active:
         return AccessDecision(False, "paid entitlement required", ent, 0.0, 0.0)
 
-    quota = float(ent.get("quota_units_per_week") or (
+    # An explicit stored quota, including 0, is authoritative; only a missing
+    # value falls back to the plan default. (0 used to fall through to the
+    # default, so zeroing a quota silently granted the full plan.)
+    stored = ent.get("quota_units_per_week")
+    quota = float(stored) if stored is not None else (
         founder_weekly_units() if kind == "founding_free" else paid_weekly_units()
-    ))
+    )
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     used = store.usage_units_since(user_id, since)
     if used + max(0.0, estimated_units) > quota:
