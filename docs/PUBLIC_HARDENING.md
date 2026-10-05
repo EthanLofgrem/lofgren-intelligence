@@ -45,12 +45,13 @@ entitlement lapses but are not charged units. This branch keeps that design
 
 | Run | Base `945dfdd` | This branch |
 |---|---|---|
-| `unittest discover`, normal | 615 run, 5 errors, 0 skipped | 656 run, 3 errors, 0 skipped |
-| `unittest discover`, `PYTHONUTF8=1` | 615 run, 5 errors, 0 skipped | 656 run, 3 errors, 0 skipped |
+| `unittest discover`, normal | 615 run, 5 errors, 0 skipped | 659 run, 0 errors, 0 failures, 0 skipped |
+| `unittest discover`, `PYTHONUTF8=1` | 615 run, 5 errors, 0 skipped | 659 run, 0 errors, 0 failures, 0 skipped |
 | `certify` / `--v2` .. `--v6` / `certify-boundary` | all TRUE | all TRUE |
 
-The 3 remaining errors are on the base unchanged and are not caused here
-(see H3/H4). The 2 base errors fixed are the webhook tests broken by `6d8a66c`.
+The 2 base errors fixed first are the webhook tests broken by `6d8a66c`; the
+other 3 base errors are fixed by H3 below, and H4 adds a test that builds the
+deployed app. Results are with `mcp` 2.3.0 installed.
 
 ## 3. Still open
 
@@ -60,14 +61,20 @@ The 3 remaining errors are on the base unchanged and are not caused here
 | O6 | `@supabase/supabase-js@2` loaded from jsDelivr without SRI: no copy of the bundle is in the repository to hash, and it was not downloaded. Needs an owner-pinned version and hash or self-hosting. |
 | O4 (rest) | The limiter is per instance; a global limit needs the hosting edge or a database bucket. |
 | H2 | Ad hoc discovery tools and `satellite_passes` are gated but unmetered (no reservation/settlement). |
-| H3 | Pre-existing on base: `HostedLifecycleTests.test_v3_artifact_is_durable_and_tenant_scoped` and `test_v4_action_requires_browser_approval_before_execution`, plus `OfficialMCPTests.test_authenticated_remote_v2_is_durable_across_tool_calls`, fail: hosted `build_artifact` raises `ProductionError: V3 handoff does not match its discovery` (the discovery's context objects are not in the context rebuilt from the run). The base CI `tests` runs fail too. Belongs to the V3 reconciliation on the release line. |
-| H4 | Pre-existing on base: `build_app()` calls `streamable_http_app(custom_starlette_routes=...)`, which `mcp` 2.3.0 (allowed by `mcp>=2,<3`) does not accept, so the hosted ASGI app cannot be built with that version. No test builds the app. |
 | O1-O3, O7-O14 | As in the audit; O1 and O3 are addressed on this line by the hosted V3-V6 tools and `li_reserve_usage`. O2 (release-evidence manifest) remains FALSE. |
+
+## 3a. Resolved on this branch
+
+| # | Root cause and fix |
+|---|---|
+| H3 (resolved) | Three base tests failed (`HostedLifecycleTests.test_v3_artifact_is_durable_and_tenant_scoped`, `test_v4_action_requires_browser_approval_before_execution`, `OfficialMCPTests.test_authenticated_remote_v2_is_durable_across_tool_calls`) because hosted `build_artifact` raised `V3 handoff does not match its discovery`. The problem that fired was the first V3 upstream check, `discovery context: ASM-…/CAND-… is recorded but missing`: the hosted service rebuilt the `DiscoveryContext` from the stored V1 run only, so none of the V2 objects the discovery had registered (objective, assumptions, candidates, scenarios, simulations, decision) were present, while the receipt records each one's digest. The durable discovery snapshot did not keep those objects. Fix: the snapshot now stores every registered object (`context_objects`), and `build_artifact` re-registers them into a fresh context over the same V1 map, re-running all reference and semantic checks; a snapshot without them or with a changed object is refused. `production/upstream.py` and the V3 check are unchanged. Regression tests build an artifact from a JSON round-tripped discovery in a fresh service instance and refuse a tampered or object-less snapshot. |
+| H4 (resolved) | `build_app()` passed `custom_starlette_routes=` to `MCPServer.streamable_http_app()`. No `mcp` 2.x release accepts that keyword on `MCPServer` (checked 2.0.0 to 2.3.0; only the low-level `Server` takes it), so `api/index.py` failed with `TypeError` on every supported version, and no test built the app. Fix: register the routes with `MCPServer.custom_route`, present in every 2.x release; they are served beside `/mcp` without MCP bearer auth, as before. The `mcp>=2,<3` pin is unchanged. A new test builds the app with the installed `mcp`, serves `/healthz` and the OAuth metadata, and gets 401 from an unauthenticated `/mcp`; it passes on 2.0.0, 2.0.1, 2.1.0, 2.1.1, 2.2.0 and 2.3.0. |
 
 ## 4. Mapping to PR #15
 
 All commits sit on top of `release/public-v1-v6` @ `945dfdd` and touch only
-`hosted/journey.py`, `hosted/web_app.py` (one argument and route wrapping),
+`hosted/journey.py`, `hosted/web_app.py` (one argument, route wrapping and route
+registration), `hosted/service.py` and `hosted/snapshots.py` (H3),
 `hosted/store.py` (`_select_all` stop condition), the new `hosted/ratelimit.py`,
 docs, one workflow and tests. They can be fast-forwarded or cherry-picked onto
 PR #15 in order; none rewrites a release-line commit. Nothing was merged,
