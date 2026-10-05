@@ -332,5 +332,91 @@ class SSRFAddressTests(unittest.TestCase):
             self.assertEqual(validate_public_url("https://example.com/x"), "https://example.com/x")
 
 
+class _PostgREST:
+    """Fake PostgREST that truncates every response at max_rows, like Supabase."""
+
+    def __init__(self, rows, max_rows=1000):
+        self.rows, self.max_rows, self.requests = rows, max_rows, 0
+
+    def __call__(self, url, method="GET", headers=None, body=None, **kw):
+        import urllib.parse as up
+        from lofgren_intelligence.hosted.http import JSONResponse
+        self.requests += 1
+        q = dict(up.parse_qsl(up.urlsplit(url).query))
+        offset = int(q.get("offset", 0))
+        limit = min(int(q.get("limit", 10**9)), self.max_rows)
+        mine = [r for r in self.rows if q.get("user_id") == "eq." + r["user_id"]]
+        return JSONResponse(200, {}, mine[offset:offset + limit])
+
+
+class StorePaginationTests(unittest.TestCase):
+    """Fix 4: weekly usage sum and export are not truncated at max-rows."""
+
+    def _store(self):
+        from lofgren_intelligence.hosted import store as li_store
+        return li_store, li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+
+    def test_weekly_usage_sum_is_not_truncated_by_max_rows(self):
+        li_store, store = self._store()
+        rows = [{"user_id": "u1", "id": str(i), "units": 1} for i in range(2500)]
+        with patch.object(li_store, "json_request", _PostgREST(rows)):
+            self.assertEqual(store.usage_units_since("u1", "2026-01-01T00:00:00+00:00"), 2500.0)
+
+    def test_paging_survives_a_smaller_server_max_rows(self):
+        li_store, store = self._store()
+        rows = [{"user_id": "u1", "id": str(i), "units": 1} for i in range(1234)]
+        with patch.object(li_store, "json_request", _PostgREST(rows, max_rows=100)):
+            self.assertEqual(len(store.list_usage("u1")), 1234)
+            self.assertEqual(store.usage_units_since("u1", "2026-01-01T00:00:00+00:00"), 1234.0)
+
+    def test_account_export_lists_are_complete_and_tenant_scoped(self):
+        li_store, store = self._store()
+        rows = [{"user_id": "u1", "run_id": f"R{i}"} for i in range(1500)]
+        rows += [{"user_id": "u2", "run_id": "OTHER"}]
+        with patch.object(li_store, "json_request", _PostgREST(rows)):
+            got = store.list_runs("u1")
+        self.assertEqual(len(got), 1500)
+        self.assertNotIn("OTHER", {r["run_id"] for r in got})
+
+
+class QuotaPolicyTests(unittest.TestCase):
+    """Fix 4: an explicit stored quota of 0 blocks instead of granting the plan default."""
+
+    def test_explicit_zero_quota_blocks_instead_of_granting_plan_default(self):
+        from lofgren_intelligence.hosted.entitlements import access_for_run
+        decision = access_for_run(FakeStore(kind="founding_free", quota=0.0), "u1", 1.0)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.quota_units, 0.0)
+
+
+class StoreErrorTranslationTests(unittest.TestCase):
+    """Fix 8: database failures become StoreError without server detail."""
+
+    def _raising(self, exc):
+        def fake(*a, **k):
+            raise exc
+        return fake
+
+    def test_postgrest_failure_becomes_store_error_without_server_detail(self):
+        from lofgren_intelligence.hosted import store as li_store
+        from lofgren_intelligence.hosted.http import HTTPError
+        detail = 'relation "public.li_runs" violates constraint li_runs_pkey'
+        store = li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+        with patch.object(li_store, "json_request", self._raising(HTTPError(409, detail, {"message": detail}))):
+            with self.assertRaises(li_store.StoreError) as ctx:
+                store.get_run("u1", "RR-1")
+        self.assertIn("409", str(ctx.exception))
+        self.assertNotIn("li_runs", str(ctx.exception))
+
+    def test_unreachable_database_and_rpc_failures_are_store_errors(self):
+        from lofgren_intelligence.hosted import store as li_store
+        store = li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+        with patch.object(li_store, "json_request", self._raising(urllib.error.URLError("refused"))):
+            for call in (lambda: store.take_rate_limit("u1"), lambda: store.delete_auth_user("u1"),
+                         lambda: store.reserve_usage("r1", "u1", "investigate", 1.0)):
+                with self.assertRaises(li_store.StoreError):
+                    call()
+
+
 if __name__ == "__main__":
     unittest.main()
