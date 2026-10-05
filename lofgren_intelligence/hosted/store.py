@@ -224,9 +224,13 @@ class SupabaseStore:
             q["limit"] = str(want)
             q["offset"] = str(offset)
             rows = list(self._table(table, query=q) or [])
-            out.extend(rows)
-            if len(rows) < want:
+            # Stop only on an empty page. A short page does not mean the end:
+            # the server's max-rows may be smaller than the requested page
+            # (Supabase lets operators lower it), and stopping on a short page
+            # would silently truncate weekly usage sums and exports again.
+            if not rows:
                 break
+            out.extend(rows)
             offset += len(rows)
         return out
 
