@@ -59,6 +59,36 @@ class PublicService:
     def __init__(self, store: SupabaseStore | None = None) -> None:
         self.store = store or SupabaseStore()
 
+    def _reserve_usage(self, user_id: str, operation: str, units: float) -> str:
+        ent = self.store.get_entitlement(user_id)
+        if not ent:
+            raise PublicServiceError("entitlement missing")
+        if ent.get("kind") == "paid_required" or ent.get("active") is False:
+            raise PaymentRequired("active entitlement is required")
+        reservation_id = str(uuid.uuid4())
+        if not self.store.reserve_usage(reservation_id, user_id, operation, float(units)):
+            raise QuotaExceeded("rolling usage quota would be exceeded")
+        return reservation_id
+
+    def _finalize_usage(
+        self,
+        reservation_id: str,
+        *,
+        run_id: str | None,
+        actual_units: float,
+        known_cost_usd: float = 0.0,
+        unpriced_components: list[str] | None = None,
+    ) -> None:
+        if not self.store.finalize_usage(
+            reservation_id,
+            run_id,
+            float(actual_units),
+            float(known_cost_usd),
+            list(unpriced_components or []),
+        ):
+            self.store.release_usage(reservation_id)
+            raise QuotaExceeded("actual work exceeded the reserved usage allowance")
+
     @staticmethod
     def _location(a: dict[str, Any]) -> dict[str, Any] | None:
         if a.get("lat") is not None and a.get("lon") is not None:
@@ -137,11 +167,9 @@ class PublicService:
             location=self._location(a),
         )
         plan = plan_research(c, self._registry(a))
-        decision = access_for_run(self.store, user_id, float(plan.estimated_work_units))
-        if not decision.allowed:
-            if decision.entitlement.get("kind") == "paid_required":
-                raise PaymentRequired(decision.reason)
-            raise QuotaExceeded(decision.reason)
+        reservation_id = self._reserve_usage(
+            user_id, "investigate", float(plan.estimated_work_units)
+        )
 
         # Public safety ceiling independent of user-supplied max_spend.
         public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
@@ -176,17 +204,12 @@ class PublicService:
                 "created_at": utcnow(),
             }
         )
-        self.store.record_usage(
-            {
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "run_id": snap["run_id"],
-                "operation": "investigate",
-                "units": snap["usage_units"],
-                "known_cost_usd": cost.known_cost_usd,
-                "unpriced_components": list(cost.unpriced_components),
-                "created_at": utcnow(),
-            }
+        self._finalize_usage(
+            reservation_id,
+            run_id=snap["run_id"],
+            actual_units=snap["usage_units"],
+            known_cost_usd=cost.known_cost_usd,
+            unpriced_components=list(cost.unpriced_components),
         )
         out = summary(snap)
         out["known_cost_usd"] = cost.known_cost_usd
@@ -263,11 +286,7 @@ class PublicService:
     def discover(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         run_id = str(a["run_id"])
         reserve = float(os.environ.get("LI_PUBLIC_MAX_DISCOVERY_UNITS", "100"))
-        decision = access_for_run(self.store, user_id, reserve)
-        if not decision.allowed:
-            if decision.entitlement.get("kind") == "paid_required":
-                raise PaymentRequired(decision.reason)
-            raise QuotaExceeded(decision.reason)
+        reservation_id = self._reserve_usage(user_id, "discover", reserve)
 
         ctx = self._discovery_context(user_id, run_id)
         result = run_discovery(
@@ -293,16 +312,13 @@ class PublicService:
             "usage_units": snap["usage_units"],
             "created_at": utcnow(),
         })
-        self.store.record_usage({
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "run_id": run_id,
-            "operation": "discover",
-            "units": snap["usage_units"],
-            "known_cost_usd": 0.0,
-            "unpriced_components": ["discovery_compute"],
-            "created_at": utcnow(),
-        })
+        self._finalize_usage(
+            reservation_id,
+            run_id=run_id,
+            actual_units=snap["usage_units"],
+            known_cost_usd=0.0,
+            unpriced_components=["discovery_compute"],
+        )
         return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
 
     def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
@@ -446,6 +462,7 @@ class PublicService:
 
     def build_artifact(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         discovery_id = str(a["discovery_id"])
+        reservation_id = self._reserve_usage(user_id, "build_artifact", 10.0)
         row = self.store.get_discovery(user_id, discovery_id)
         if not row:
             raise PublicServiceError("unknown discovery_id")
@@ -469,11 +486,12 @@ class PublicService:
             "v4_handoff": result.v4_handoff,
             "created_at": utcnow(),
         })
-        self.store.record_usage({
-            "id": str(uuid.uuid4()), "user_id": user_id, "run_id": row["research_id"],
-            "operation": "build_artifact", "units": 10, "known_cost_usd": 0,
-            "unpriced_components": ["artifact_compute"], "created_at": utcnow(),
-        })
+        self._finalize_usage(
+            reservation_id,
+            run_id=row["research_id"],
+            actual_units=10.0,
+            unpriced_components=["artifact_compute"],
+        )
         return {
             "kind": "artifact",
             "artifact_id": result.artifact_id,
@@ -644,6 +662,7 @@ class PublicService:
         }
 
     def measure_outcome(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        reservation_id = self._reserve_usage(user_id, "measure_outcome", 5.0)
         action = self.store.get_action(user_id, str(a["action_id"]))
         if not action or action.get("status") != "executed" or not action.get("v5_handoff"):
             raise PublicServiceError("a committed verified action is required before measurement")
@@ -667,6 +686,12 @@ class PublicService:
             "v6_handoff": result.v6_handoff,
             "created_at": utcnow(),
         })
+        self._finalize_usage(
+            reservation_id,
+            run_id=None,
+            actual_units=5.0,
+            unpriced_components=["outcome_compute"],
+        )
         return {
             "kind": "outcome",
             "outcome_id": outcome_id,
@@ -687,6 +712,7 @@ class PublicService:
         }
 
     def evaluate_improvement(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        reservation_id = self._reserve_usage(user_id, "evaluate_improvement", 5.0)
         outcome = self.store.get_outcome(user_id, str(a["outcome_id"]))
         if not outcome:
             raise PublicServiceError("unknown outcome_id")
@@ -728,6 +754,12 @@ class PublicService:
             "next_cycle": result.next_cycle,
             "created_at": utcnow(),
         })
+        self._finalize_usage(
+            reservation_id,
+            run_id=None,
+            actual_units=5.0,
+            unpriced_components=["improvement_compute"],
+        )
         return {
             "kind": "improvement",
             "improvement_id": improvement_id,
