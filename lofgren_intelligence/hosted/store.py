@@ -180,6 +180,48 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
+    @staticmethod
+    def _rpc_bool(result: Any) -> bool:
+        if isinstance(result, bool):
+            return result
+        if isinstance(result, list) and result:
+            value = result[0]
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, dict):
+                return bool(next(iter(value.values()), False))
+        if isinstance(result, dict):
+            return bool(next(iter(result.values()), False))
+        return bool(result)
+
+    def reserve_usage(self, reservation_id: str, user_id: str, operation: str, units: float) -> bool:
+        return self._rpc_bool(self.rpc("li_reserve_usage", {
+            "p_id": reservation_id,
+            "p_user_id": user_id,
+            "p_operation": operation,
+            "p_units": float(units),
+            "p_window_seconds": 604800,
+        }))
+
+    def finalize_usage(
+        self,
+        reservation_id: str,
+        run_id: str | None,
+        actual_units: float,
+        known_cost_usd: float,
+        unpriced_components: list[str],
+    ) -> bool:
+        return self._rpc_bool(self.rpc("li_finalize_usage", {
+            "p_id": reservation_id,
+            "p_run_id": run_id,
+            "p_actual_units": float(actual_units),
+            "p_known_cost_usd": float(known_cost_usd),
+            "p_unpriced_components": unpriced_components,
+        }))
+
+    def release_usage(self, reservation_id: str) -> bool:
+        return self._rpc_bool(self.rpc("li_release_usage", {"p_id": reservation_id}))
+
     def take_rate_limit(self, user_id: str, bucket: str = "mcp", limit: int = 60, window_seconds: int = 60) -> bool:
         result = self.rpc("li_take_rate_limit", {
             "p_user_id": user_id,
