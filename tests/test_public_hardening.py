@@ -418,5 +418,80 @@ class StoreErrorTranslationTests(unittest.TestCase):
                     call()
 
 
+def _tle():
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent / "examples" / "sample.tle").read_text(encoding="utf-8")
+
+
+class SatellitePassBoundsTests(unittest.TestCase):
+    """Fix 6: satellite_passes work per call is bounded."""
+
+    def test_unbounded_window_and_bad_coordinates_are_refused(self):
+        from lofgren_intelligence.hosted.service import PublicServiceError
+        service = PublicService(FakeStore())
+        for bad in ({"hours": 1e7}, {"hours": 0}, {"hours": float("nan")}, {"lat": 91},
+                    {"lon": -181}, {"min_elevation_deg": 120}):
+            args = {"lat": 33.4, "lon": -112.0, "tle_text": _tle(), **bad}
+            with self.subTest(bad=bad), self.assertRaises(PublicServiceError):
+                service.satellite_passes("u1", args)
+
+    def test_too_many_element_sets_are_refused(self):
+        from lofgren_intelligence.hosted.service import PublicServiceError
+        with self.assertRaises(PublicServiceError):
+            PublicService(FakeStore()).satellite_passes("u1", {"lat": 0, "lon": 0, "tle_text": _tle() * 11})
+
+    def test_bounded_request_still_predicts(self):
+        out = PublicService(FakeStore()).satellite_passes(
+            "u1", {"lat": 33.4, "lon": -112.0, "hours": 24, "min_elevation_deg": 10, "tle_text": _tle()})
+        self.assertIn("passes", out)
+
+
+class SatellitePassEntitlementTests(unittest.TestCase):
+    """Fix 6: satellite_passes needs an active entitlement with quota left."""
+
+    def _args(self):
+        return {"lat": 33.4, "lon": -112.0, "hours": 6, "tle_text": _tle()}
+
+    def test_unpaid_account_cannot_run_pass_prediction(self):
+        from lofgren_intelligence.hosted.service import PaymentRequired
+        store = FakeStore(activation_number=1001, kind="paid_required", quota=0.0)
+        with self.assertRaises(PaymentRequired):
+            PublicService(store).satellite_passes("u1", self._args())
+
+    def test_exhausted_quota_refuses_pass_prediction(self):
+        from lofgren_intelligence.hosted.service import QuotaExceeded
+        store = FakeStore(quota=10.0)
+        store.record_usage({"id": "e1", "user_id": "u1", "run_id": None, "units": 10.0})
+        with self.assertRaises(QuotaExceeded):
+            PublicService(store).satellite_passes("u1", self._args())
+
+
+class AdHocComputeQuotaTests(unittest.TestCase):
+    """Fix 7: ad hoc discovery compute is refused once quota or entitlement lapsed."""
+
+    CALLS = {
+        "simulate_candidate": {"run_id": "RR-1", "model": {}, "parameters": {}},
+        "analyze_sensitivity": {"run_id": "RR-1", "model": {}, "parameters": {}},
+        "optimize_solution": {"run_id": "RR-1", "problem": {}},
+        "find_prior_art": {"run_id": "RR-1", "subject": "x", "queries": ["x"], "records": [], "coverage": {}},
+    }
+
+    def _assert_refused(self, store, exc):
+        service = PublicService(store)
+        for name, args in self.CALLS.items():
+            with self.subTest(tool=name), self.assertRaises(exc):
+                getattr(service, name)("u1", dict(args))
+
+    def test_exhausted_weekly_quota_refuses_unmetered_compute(self):
+        from lofgren_intelligence.hosted.service import QuotaExceeded
+        store = FakeStore(quota=10.0)
+        store.record_usage({"id": "e1", "user_id": "u1", "run_id": None, "units": 10.0})
+        self._assert_refused(store, QuotaExceeded)
+
+    def test_unpaid_account_is_refused_before_any_compute(self):
+        from lofgren_intelligence.hosted.service import PaymentRequired
+        self._assert_refused(FakeStore(activation_number=1001, kind="paid_required", quota=0.0), PaymentRequired)
+
+
 if __name__ == "__main__":
     unittest.main()
