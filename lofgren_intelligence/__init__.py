@@ -5,7 +5,7 @@ researches problems, verifies evidence, generates new possibilities, designs
 solutions, builds usable artifacts, executes authorized actions, measures
 real-world outcomes, and learns from the results.
 
-This release is V1, Evidence Intelligence.
+This release line contains the governed V1–V6 intelligence stack; hosted public readiness is certified separately.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from .kernel import RunResult, run_investigation
 from .models import default_provider
 from .report import render_json, render_markdown
 
-__version__ = "0.4.0"
+__version__ = "0.7.0"
 
 
 def build_registry(
