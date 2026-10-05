@@ -26,7 +26,9 @@ The authorization page names the requesting client and the host its redirect
 URI points to. A code is issued only after the user clicks to sign in or to
 approve; an existing browser session is never used to authorize silently.
 Because client registration is open, client names are self-declared, so the
-redirect host is the part users should check.
+redirect host is the part users should check. Registered redirect URIs must be
+https, or plain http to exactly `localhost`, `127.0.0.1` or `[::1]` (lookalike
+hosts such as `localhost.example.com` are refused).
 
 Discovery endpoints:
 
@@ -56,6 +58,12 @@ Stripe-hosted Checkout is implemented behind `LI_BILLING_ENABLED`. Public
 deployment must keep this false until a paid plan passes the economic gate:
 measured P95 cost, chosen gross-margin floor, test-mode payment-to-entitlement
 journey, webhook idempotency, failure/cancel behavior and owner approval.
+
+Stripe delivers webhook events in no guaranteed order, so each
+entitlement-changing event re-reads the subscription from Stripe and applies
+its current status (`active`/`trialing` grant access, anything else does not).
+The webhook handler therefore also needs `STRIPE_SECRET_KEY`; if Stripe cannot
+be read the event is refused and Stripe retries it.
 
 The server expects:
 
@@ -94,8 +102,8 @@ allows outbound reads only to globally routable addresses (private, loopback,
 link-local, shared/CGNAT, multicast, reserved and IPv4-in-IPv6 forms of those
 are refused), pins the checked address for the connection and re-checks
 redirects. `satellite_passes` is bounded to 168 hours and 20 element sets per
-call; ad hoc simulation, sensitivity, optimization and prior-art tools require
-an active entitlement with weekly quota remaining. The public V1 service never
+call; it and the ad hoc simulation, sensitivity, optimization and prior-art
+tools require an active entitlement with weekly quota remaining. The public V1 service never
 authorizes external actions; it runs research/verification only.
 
 Database tables use RLS with no anonymous/authenticated policies. The hosted
