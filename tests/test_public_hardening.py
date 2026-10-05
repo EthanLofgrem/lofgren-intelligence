@@ -593,5 +593,27 @@ class UnauthenticatedRateLimitTests(unittest.TestCase):
             self.assertIn(f'rate_limited("{bucket}", {handler})', source)
 
 
+class BuildAppTests(unittest.TestCase):
+    """The deployed ASGI app (api/index.py) must build with the mcp release that is actually installed."""
+
+    def test_build_app_with_installed_mcp_serves_routes_and_guards_mcp(self):
+        from importlib.metadata import version
+        from starlette.testclient import TestClient
+
+        with patch.dict(os.environ, ENV):
+            app = web_app.build_app()
+            client = TestClient(app, base_url="https://li.example")
+            health = client.get("/healthz")
+            self.assertEqual(health.status_code, 200, f"mcp {version('mcp')}")
+            self.assertEqual(health.json()["status"], "ok")
+            meta = client.get("/.well-known/oauth-authorization-server")
+            self.assertEqual(meta.status_code, 200)
+            self.assertEqual(client.get("/actions/ACT-x/approve").status_code, 405)
+            unauthenticated = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                          headers={"Accept": "application/json, text/event-stream"})
+            self.assertEqual(unauthenticated.status_code, 401)
+            self.assertIn("nosniff", health.headers.get("x-content-type-options", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

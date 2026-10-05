@@ -552,6 +552,11 @@ def build_app():
     ]
 
     mcp = build_mcp(base)
+    # Register the routes through MCPServer.custom_route, the public API in every supported mcp 2.x release.
+    # streamable_http_app(custom_starlette_routes=...) existed only in some releases (2.3.0 rejects it), and
+    # routes registered this way are served without MCP bearer auth, exactly as before.
+    for route in routes:
+        mcp.custom_route(route.path, methods=sorted(route.methods - {"HEAD"}), name=route.name)(route.endpoint)
     app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
@@ -562,7 +567,6 @@ def build_app():
             allowed_hosts=host_entries,
             allowed_origins=origin_entries,
         ),
-        custom_starlette_routes=routes,
         host=hostname,
     )
     app = CORSMiddleware(
