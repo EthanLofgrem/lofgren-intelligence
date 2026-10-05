@@ -15,7 +15,7 @@ dependencies = []  # V1 runs on the Python standard library alone.
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-hosted = ["mcp>=2,<3"]
+hosted = ["mcp>=2,<3", "cryptography>=43,<46"]
 
 [project.scripts]
 lofgren = "lofgren_intelligence.cli:main"
