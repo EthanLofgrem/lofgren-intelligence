@@ -68,7 +68,7 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 <section class="section" id="journey">
 <h2>From objective to governed outcome</h2>
 <p class="sectionlead">Users should not need to understand internal version numbers. The visible journey follows one governed chain. Each stage consumes typed state from the previous stage and produces its own receipt rather than silently changing history.</p>
-<div class="flow"><div>Objective</div><div>Research</div><div>Discover</div><div>Build / Act</div><div>Measure / Improve</div></div>
+<div class="flow"><div>Objective</div><div>Research / Verify</div><div>Discover</div><div>Build / Act</div><div>Measure / Improve</div></div>
 <div class="grid" style="margin-top:16px">
 <article class="step"><h3>Frame the work</h3><p>Use <code>compile_objective</code> or <code>plan_research</code> when the request needs a clearer objective, evidence requirements or cost boundary.</p></article>
 <article class="step"><h3>Research and verify</h3><p><code>investigate</code> creates a durable run. Inspect findings, contradictions, gaps and provenance before treating a conclusion as supported.</p></article>
