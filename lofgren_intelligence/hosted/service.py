@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .. import build_registry
@@ -24,6 +24,16 @@ from ..orbital.catalog import IMAGING_SATELLITES, fetch_tles
 from ..orbital.propagate import PROPAGATOR, find_passes
 from ..orbital.tle import parse_tle_text
 from ..research.planner import gap_unknowns, plan_research
+from ..production import build_artifact as produce_artifact, verify_artifact, verify_production_receipt
+from ..execution import (
+    ActionRequest, ApprovalRecord, CapabilityGrant, HTTPSWebhookAdapter,
+    execute_authorized, verify_action_receipt,
+)
+from ..outcome import Measurement, evaluate_outcome, verify_outcome_receipt
+from ..improvement import (
+    EvaluationDataset, ImprovementProposal, MetricObservation, SafetyConstraint,
+    evaluate_improvement, verify_improvement_receipt,
+)
 from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
 from .economics import certify_paid_plan
@@ -434,6 +444,309 @@ class PublicService:
             "report": snap["report"],
         }
 
+    def build_artifact(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        discovery_id = str(a["discovery_id"])
+        row = self.store.get_discovery(user_id, discovery_id)
+        if not row:
+            raise PublicServiceError("unknown discovery_id")
+        snap = row.get("snapshot")
+        if not isinstance(snap, dict) or not snap.get("handoff"):
+            raise PublicServiceError("discovery has no validated V3 handoff")
+        context = self._discovery_context(user_id, str(row["research_id"]))
+        result = produce_artifact(
+            snap["handoff"],
+            discovery_receipt=snap["receipt"],
+            context=context,
+            kind=str(a.get("kind") or "structured_bundle"),
+        )
+        self.store.save_artifact({
+            "user_id": user_id,
+            "artifact_id": result.artifact_id,
+            "discovery_id": discovery_id,
+            "kind": result.artifact["kind"],
+            "artifact": result.artifact,
+            "receipt": result.receipt,
+            "v4_handoff": result.v4_handoff,
+            "created_at": utcnow(),
+        })
+        self.store.record_usage({
+            "id": str(uuid.uuid4()), "user_id": user_id, "run_id": row["research_id"],
+            "operation": "build_artifact", "units": 10, "known_cost_usd": 0,
+            "unpriced_components": ["artifact_compute"], "created_at": utcnow(),
+        })
+        return {
+            "kind": "artifact",
+            "artifact_id": result.artifact_id,
+            "artifact_kind": result.artifact["kind"],
+            "fingerprint": result.artifact["fingerprint"],
+            "verified": result.verification.passed,
+            "receipt_hash": result.receipt["receipt_hash"],
+            "v4_authority_required": result.v4_handoff["authority_required"],
+        }
+
+    def get_artifact(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        row = self.store.get_artifact(user_id, str(a["artifact_id"]))
+        if not row:
+            raise PublicServiceError("unknown artifact_id")
+        check = verify_artifact(row["artifact"])
+        return {
+            "artifact": row["artifact"],
+            "verified": check.passed,
+            "verification_problems": list(check.problems),
+            "receipt_intact": verify_production_receipt(row["receipt"]),
+            "receipt": row["receipt"],
+        }
+
+    @staticmethod
+    def _action_request(data: dict[str, Any]) -> ActionRequest:
+        return ActionRequest(
+            str(data["artifact_id"]), str(data["artifact_fingerprint"]),
+            str(data["kind"]), str(data["target"]), dict(data["payload"]),
+            float(data.get("cost_usd", 0)), bool(data.get("reversible", False)),
+        )
+
+    def propose_action(self, user_id: str, a: dict[str, Any], base_url: str) -> dict[str, Any]:
+        artifact = self.store.get_artifact(user_id, str(a["artifact_id"]))
+        if not artifact:
+            raise PublicServiceError("unknown artifact_id")
+        kind = str(a.get("kind") or "https_webhook")
+        if kind != "https_webhook":
+            raise PublicServiceError("public V4 currently permits only the bounded https_webhook adapter")
+        cost = float(a.get("cost_usd", 0))
+        max_cost = float(os.environ.get("LI_PUBLIC_MAX_ACTION_COST_USD", "0"))
+        if cost < 0 or cost > max_cost + 1e-9:
+            raise PublicServiceError("action cost exceeds the public action ceiling")
+        request = ActionRequest(
+            str(artifact["artifact_id"]),
+            str(artifact["artifact"]["fingerprint"]),
+            kind,
+            str(a["target"]),
+            dict(a.get("payload") or {}),
+            cost,
+            False,
+        )
+        # Preflight performs URL/network safety validation but sends no action.
+        HTTPSWebhookAdapter().preflight(request)
+        request_data = {
+            "artifact_id": request.artifact_id,
+            "artifact_fingerprint": request.artifact_fingerprint,
+            "kind": request.kind,
+            "target": request.target,
+            "payload": request.payload,
+            "cost_usd": request.cost_usd,
+            "reversible": request.reversible,
+            "action_hash": request.action_hash,
+        }
+        self.store.save_action({
+            "user_id": user_id,
+            "action_id": request.action_id,
+            "artifact_id": request.artifact_id,
+            "request": request_data,
+            "status": "awaiting_approval",
+            "grant_record": None,
+            "approval_record": None,
+            "receipt": None,
+            "v5_handoff": None,
+            "created_at": utcnow(),
+        })
+        return {
+            "kind": "action_proposal",
+            "action_id": request.action_id,
+            "action_hash": request.action_hash,
+            "status": "awaiting_human_approval",
+            "approval_url": base_url.rstrip("/") + "/actions/" + request.action_id,
+        }
+
+    def action_status(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        row = self.store.get_action(user_id, str(a["action_id"]))
+        if not row:
+            raise PublicServiceError("unknown action_id")
+        return {
+            "action_id": row["action_id"],
+            "status": row["status"],
+            "request": row["request"],
+            "approved_at": row.get("approved_at"),
+            "executed_at": row.get("executed_at"),
+            "receipt_intact": bool(row.get("receipt") and verify_action_receipt(row["receipt"])),
+        }
+
+    def approve_action(self, user_id: str, action_id: str) -> dict[str, Any]:
+        row = self.store.get_action(user_id, action_id)
+        if not row:
+            raise PublicServiceError("unknown action_id")
+        if row["status"] == "approved":
+            return {"action_id": action_id, "status": "approved"}
+        if row["status"] != "awaiting_approval":
+            raise PublicServiceError("action is not awaiting approval")
+        request = self._action_request(row["request"])
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(minutes=10)
+        grant = CapabilityGrant(
+            "GRANT-" + str(uuid.uuid4()), user_id, request.kind, request.target,
+            request.cost_usd, expires.isoformat(), False,
+        )
+        approval = ApprovalRecord(
+            "APR-" + str(uuid.uuid4()), user_id, request.action_id, request.action_hash,
+            request.artifact_id, now.isoformat(),
+        )
+        updated = dict(row)
+        updated.update({
+            "status": "approved",
+            "grant_record": grant.__dict__,
+            "approval_record": approval.__dict__,
+            "approved_at": now.isoformat(),
+        })
+        self.store.save_action(updated)
+        return {
+            "action_id": action_id,
+            "status": "approved",
+            "expires_at": grant.expires_at,
+            "action_hash": request.action_hash,
+        }
+
+    def execute_action(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        row = self.store.get_action(user_id, str(a["action_id"]))
+        if not row:
+            raise PublicServiceError("unknown action_id")
+        if row["status"] == "executed" and row.get("receipt"):
+            return {
+                "action_id": row["action_id"], "status": "executed",
+                "receipt_intact": verify_action_receipt(row["receipt"]),
+                "receipt": row["receipt"],
+            }
+        if row["status"] != "approved" or not row.get("grant_record") or not row.get("approval_record"):
+            raise PublicServiceError("action requires explicit browser approval")
+        artifact = self.store.get_artifact(user_id, row["artifact_id"])
+        if not artifact:
+            raise PublicServiceError("artifact disappeared before execution")
+        request = self._action_request(row["request"])
+        grant = CapabilityGrant(**row["grant_record"])
+        approval = ApprovalRecord(**row["approval_record"])
+        result = execute_authorized(
+            artifact["v4_handoff"], request, grant, approval, HTTPSWebhookAdapter(),
+            subject=user_id, now=datetime.now(timezone.utc), spent_usd=0,
+        )
+        status = "executed" if result.status == "committed" else result.status
+        updated = dict(row)
+        updated.update({
+            "status": status,
+            "receipt": result.receipt,
+            "v5_handoff": result.v5_handoff,
+            "executed_at": utcnow(),
+        })
+        self.store.save_action(updated)
+        return {
+            "action_id": row["action_id"],
+            "status": status,
+            "receipt_intact": verify_action_receipt(result.receipt),
+            "receipt": result.receipt,
+            "v5_ready": result.v5_handoff is not None,
+        }
+
+    def measure_outcome(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        action = self.store.get_action(user_id, str(a["action_id"]))
+        if not action or action.get("status") != "executed" or not action.get("v5_handoff"):
+            raise PublicServiceError("a committed verified action is required before measurement")
+        measurements = [
+            Measurement(
+                str(m["metric"]), float(m["value"]), str(m["unit"]),
+                str(m["observed_at"]), str(m["source"]), m.get("observation_id"),
+            )
+            for m in list(a.get("measurements") or [])
+        ]
+        result = evaluate_outcome(
+            action["v5_handoff"], measurements,
+            causal_design=a.get("causal_design"),
+        )
+        outcome_id = str(result.receipt["receipt_hash"])
+        self.store.save_outcome({
+            "user_id": user_id,
+            "outcome_id": outcome_id,
+            "action_id": action["action_id"],
+            "receipt": result.receipt,
+            "v6_handoff": result.v6_handoff,
+            "created_at": utcnow(),
+        })
+        return {
+            "kind": "outcome",
+            "outcome_id": outcome_id,
+            "status": result.receipt["status"],
+            "causal_standing": result.receipt["causal"]["standing"],
+            "receipt_intact": verify_outcome_receipt(result.receipt),
+            "v6_improvement_allowed": result.v6_handoff["improvement_allowed"],
+        }
+
+    def get_outcome(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        row = self.store.get_outcome(user_id, str(a["outcome_id"]))
+        if not row:
+            raise PublicServiceError("unknown outcome_id")
+        return {
+            "receipt_intact": verify_outcome_receipt(row["receipt"]),
+            "receipt": row["receipt"],
+            "v6_handoff": row["v6_handoff"],
+        }
+
+    def evaluate_improvement(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        outcome = self.store.get_outcome(user_id, str(a["outcome_id"]))
+        if not outcome:
+            raise PublicServiceError("unknown outcome_id")
+        p = dict(a["proposal"])
+        ds = dict(p["evaluation_dataset"])
+        metric = dict(p["primary_metric"])
+        constraints = tuple(
+            SafetyConstraint(
+                str(x["metric"]), float(x["baseline"]), float(x["candidate"]),
+                float(x["max_regression"]),
+            )
+            for x in list(p.get("safety_constraints") or [])
+        )
+        proposal = ImprovementProposal(
+            str(p["proposal_id"]), str(p["baseline_id"]), str(p["candidate_id"]),
+            str(p["change_summary"]),
+            EvaluationDataset(
+                str(ds["dataset_id"]), str(ds["content_hash"]), int(ds["sample_count"]),
+                bool(ds.get("held_out", True)),
+            ),
+            MetricObservation(
+                str(metric["metric"]), float(metric["baseline"]), float(metric["candidate"]),
+                str(metric.get("direction") or "higher_is_better"),
+            ),
+            float(p["min_gain"]),
+            constraints,
+            True,
+        )
+        result = evaluate_improvement(
+            outcome["v6_handoff"], proposal,
+            minimum_samples=int(os.environ.get("LI_PUBLIC_MIN_IMPROVEMENT_SAMPLES", "30")),
+        )
+        improvement_id = str(result.receipt["receipt_hash"])
+        self.store.save_improvement({
+            "user_id": user_id,
+            "improvement_id": improvement_id,
+            "outcome_id": outcome["outcome_id"],
+            "receipt": result.receipt,
+            "next_cycle": result.next_cycle,
+            "created_at": utcnow(),
+        })
+        return {
+            "kind": "improvement",
+            "improvement_id": improvement_id,
+            "decision": result.decision,
+            "receipt_intact": verify_improvement_receipt(result.receipt),
+            "human_review_required": True,
+            "mutation_performed": False,
+        }
+
+    def get_improvement(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        row = self.store.get_improvement(user_id, str(a["improvement_id"]))
+        if not row:
+            raise PublicServiceError("unknown improvement_id")
+        return {
+            "receipt_intact": verify_improvement_receipt(row["receipt"]),
+            "receipt": row["receipt"],
+            "next_cycle": row["next_cycle"],
+        }
+
     def satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
         if a.get("tle_text"):
             tles = parse_tle_text(str(a["tle_text"]))
@@ -515,6 +828,10 @@ class PublicService:
             "entitlement": self.store.get_entitlement(user_id),
             "runs": self.store.list_runs(user_id),
             "discoveries": self.store.list_discoveries(user_id),
+            "artifacts": self.store.list_artifacts(user_id),
+            "actions": self.store.list_actions(user_id),
+            "outcomes": self.store.list_outcomes(user_id),
+            "improvements": self.store.list_improvements(user_id),
             "usage_events": self.store.list_usage(user_id),
         }
 
