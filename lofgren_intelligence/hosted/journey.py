@@ -7,6 +7,7 @@ assert payment, or change entitlement state.
 from __future__ import annotations
 
 import html
+import urllib.parse
 
 
 def landing_html(base: str) -> str:
@@ -97,10 +98,10 @@ h1{{font-size:clamp(42px,7vw,72px);line-height:.98;letter-spacing:-.055em;margin
 </body></html>"""
 
 
-def consent_intro_html(client_name: str, scope: str = "mcp") -> str:
+def consent_intro_html(client_name: str, scope: str = "mcp", redirect_uri: str | None = None) -> str:
     client = html.escape(client_name or "Unknown MCP client")
     safe_scope = html.escape(scope or "mcp")
-    return (
+    out = (
         '<div style="font-size:13px;color:#8fb5ee;margin-bottom:10px">OAuth authorization</div>'
         '<h1>Connect Lofgren Intelligence</h1>'
         f'<p><strong>{client}</strong> is requesting permission to use Lofgren Intelligence '
@@ -108,6 +109,16 @@ def consent_intro_html(client_name: str, scope: str = "mcp") -> str:
         '<p style="font-size:14px;color:#aeb8c7">This grants the client access to your authorized '
         'LI MCP tools and LI run state. It does not reveal your password or a server service-role key.</p>'
     )
+    if redirect_uri is not None:
+        # Dynamic client registration is open, so the client name is
+        # self-declared. The redirect host is where the code is actually sent.
+        host = urllib.parse.urlsplit(redirect_uri).netloc or redirect_uri
+        out += (
+            '<p id="consent">After you approve, the authorization code is sent to '
+            f'<strong>{html.escape(host)}</strong>. Client names are self-declared, so check this host. '
+            'Only continue if you started this connection from your own AI client.</p>'
+        )
+    return out
 
 
 def checkout_return_html() -> str:
