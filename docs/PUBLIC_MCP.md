@@ -15,6 +15,28 @@ own gate (`certify`, `certify --v2` ... `certify --v6`, `certify-boundary`).
 Certified versions are not the same as public readiness: the public release
 gate (`scripts/public_mcp_gate.py`) still needs deployment evidence.
 
+The exact hosted tool list is generated, not hand-maintained:
+[`docs/CAPABILITIES.json`](CAPABILITIES.json) comes from
+`python -m lofgren_intelligence.hosted.capabilities`, which reads the
+registry `build_mcp` serves and assigns each tool its level. A test keeps the
+registry, the manifest and this list equal.
+
+- **V1** (Evidence intelligence (research and verification)): `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
+- **V2** (Discovery intelligence): `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
+- **V3** (Production (verified artifacts)): `build_artifact`, `get_artifact`.
+- **V4** (Authorized execution (browser-approved actions)): `action_status`, `execute_action`, `propose_action`.
+- **V5** (Outcome measurement): `get_outcome`, `measure_outcome`.
+- **V6** (Reviewed improvement evaluation): `evaluate_improvement`, `get_improvement`.
+- **account** (Account, usage and billing): `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status`.
+
+`create_checkout` is registered but refuses until `LI_BILLING_ENABLED` is set
+and the paid plan passes the P95 economic gate.
+
+Not proven by this repository: deployment, real clients (no real third-party
+MCP client session is verified), backup/restore, the Supabase owner settings
+(email confirmation, CAPTCHA), and PublicMCPReady (the public release gate has
+not passed).
+
 ## Identity and OAuth
 
 Remote MCP uses OAuth 2.1-style Authorization Code + PKCE (S256). MCP clients

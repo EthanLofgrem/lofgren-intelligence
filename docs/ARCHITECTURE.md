@@ -21,10 +21,36 @@ Lofgren Intelligence is one kernel that every version extends. V1 through V6 are
                              │
         V2 Imagine · Simulate · Optimize   (built: lofgren_intelligence/discovery, see docs/DISCOVERY.md)
         V3 Produce · Build · Test          (built: lofgren_intelligence/production, see docs/PRODUCTION.md)
-        V4 Authorize · Execute · Operate   (authority engine already gates spend)
-        V5 Measure · Learn · Improve       (calibrator already records outcomes)
-        V6 Meta-router above everything
+        V4 Authorize · Execute             (built: lofgren_intelligence/execution, see docs/EXECUTION.md)
+        V5 Measure outcomes                (built: lofgren_intelligence/outcome, see docs/OUTCOME.md)
+        V6 Evaluate improvements           (built: lofgren_intelligence/improvement, see docs/IMPROVEMENT.md)
 ```
+
+## Hosted capability surface
+
+The hosted MCP service (`lofgren_intelligence/hosted`, endpoint `/mcp`)
+serves V1 through V6 plus account tools. The single source of truth for that
+surface is the generated capability manifest,
+[`docs/CAPABILITIES.json`](CAPABILITIES.json), produced by
+`python -m lofgren_intelligence.hosted.capabilities` from the tool registry
+the service actually builds. A test fails if the registry, the manifest or
+this document, `README.md` and `docs/PUBLIC_MCP.md` disagree.
+
+| Level | Hosted tools |
+| --- | --- |
+| V1 | 13: `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim` |
+| V2 | 13: `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery` |
+| V3 | 2: `build_artifact`, `get_artifact` |
+| V4 | 3: `action_status`, `execute_action`, `propose_action` |
+| V5 | 2: `get_outcome`, `measure_outcome` |
+| V6 | 2: `evaluate_improvement`, `get_improvement` |
+| account | 5: `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status` |
+
+"Hosted" means registered on the authenticated endpoint for activated
+accounts. It does not mean deployed or launched. Not proven by this
+repository: deployment, real clients (no real third-party MCP client session
+is verified), backup/restore, Supabase owner settings, and PublicMCPReady (the
+public release gate has not passed).
 
 ## Principles
 

@@ -1,0 +1,463 @@
+{
+  "schema": "lofgren.hosted-capabilities/1",
+  "service": "lofgren-intelligence hosted MCP (/mcp)",
+  "public_means": "registered on the authenticated hosted /mcp endpoint for any activated account; it does not mean deployed, publicly launched or PublicMCPReady",
+  "levels": {
+    "V1": {
+      "title": "Evidence intelligence (research and verification)",
+      "public": true,
+      "tools": [
+        "compile_objective",
+        "export_knowledge_map2",
+        "export_state",
+        "find_contradictions",
+        "find_gaps",
+        "get_finding",
+        "get_receipt",
+        "investigate",
+        "plan_research",
+        "render_report",
+        "satellite_passes",
+        "trace_claim",
+        "verify_claim"
+      ]
+    },
+    "V2": {
+      "title": "Discovery intelligence",
+      "public": true,
+      "tools": [
+        "analyze_sensitivity",
+        "create_v3_handoff",
+        "discover",
+        "find_connections",
+        "find_discovery_gaps",
+        "find_prior_art",
+        "generate_candidates",
+        "generate_hypotheses",
+        "get_discovery_receipt",
+        "optimize_solution",
+        "render_discovery_report",
+        "simulate_candidate",
+        "verify_discovery"
+      ]
+    },
+    "V3": {
+      "title": "Production (verified artifacts)",
+      "public": true,
+      "tools": [
+        "build_artifact",
+        "get_artifact"
+      ]
+    },
+    "V4": {
+      "title": "Authorized execution (browser-approved actions)",
+      "public": true,
+      "tools": [
+        "action_status",
+        "execute_action",
+        "propose_action"
+      ]
+    },
+    "V5": {
+      "title": "Outcome measurement",
+      "public": true,
+      "tools": [
+        "get_outcome",
+        "measure_outcome"
+      ]
+    },
+    "V6": {
+      "title": "Reviewed improvement evaluation",
+      "public": true,
+      "tools": [
+        "evaluate_improvement",
+        "get_improvement"
+      ]
+    },
+    "account": {
+      "title": "Account, usage and billing",
+      "public": true,
+      "tools": [
+        "account_status",
+        "billing_portal",
+        "create_checkout",
+        "pricing",
+        "usage_status"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "account_status",
+      "level": "account",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "action_status",
+      "level": "V4",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "analyze_sensitivity",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "flat",
+        "units_per_call": 5.0
+      }
+    },
+    {
+      "name": "billing_portal",
+      "level": "account",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "build_artifact",
+      "level": "V3",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
+      }
+    },
+    {
+      "name": "compile_objective",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "create_checkout",
+      "level": "account",
+      "public": true,
+      "gated_by": "LI_BILLING_ENABLED and the P95 economic certification gate",
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "create_v3_handoff",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "discover",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
+      }
+    },
+    {
+      "name": "evaluate_improvement",
+      "level": "V6",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
+      }
+    },
+    {
+      "name": "execute_action",
+      "level": "V4",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "export_knowledge_map2",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "export_state",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "find_connections",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "find_contradictions",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "find_discovery_gaps",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "find_gaps",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "find_prior_art",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "flat",
+        "units_per_call": 2.0
+      }
+    },
+    {
+      "name": "generate_candidates",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "generate_hypotheses",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "get_artifact",
+      "level": "V3",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "get_discovery_receipt",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "get_finding",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "get_improvement",
+      "level": "V6",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "get_outcome",
+      "level": "V5",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "get_receipt",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "investigate",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
+      }
+    },
+    {
+      "name": "measure_outcome",
+      "level": "V5",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
+      }
+    },
+    {
+      "name": "optimize_solution",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "flat",
+        "units_per_call": 5.0
+      }
+    },
+    {
+      "name": "plan_research",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "pricing",
+      "level": "account",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "propose_action",
+      "level": "V4",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "render_discovery_report",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "render_report",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "satellite_passes",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "flat",
+        "units_per_call": 1.0
+      }
+    },
+    {
+      "name": "simulate_candidate",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "flat",
+        "units_per_call": 5.0
+      }
+    },
+    {
+      "name": "trace_claim",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "usage_status",
+      "level": "account",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "verify_claim",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
+      }
+    },
+    {
+      "name": "verify_discovery",
+      "level": "V2",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    }
+  ],
+  "not_proven": [
+    "deployment: no hosted deployment is verified by this repository",
+    "real clients: no real third-party MCP client session is verified",
+    "backup/restore: database backup and restore are not exercised",
+    "PublicMCPReady: the public release gate (scripts/public_mcp_gate.py) has not passed",
+    "Supabase owner settings: email confirmation and CAPTCHA are not verified"
+  ]
+}

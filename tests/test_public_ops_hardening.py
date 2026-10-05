@@ -800,5 +800,101 @@ class FoundingFreeActivationTests(unittest.TestCase):
             self.assertIn(text, doc)
 
 
+class CapabilityManifestTests(unittest.TestCase):
+    """Item 5: one capability truth shared by the registry, the manifest and the docs."""
+
+    ROOT = None
+
+    # Claims that would contradict a manifest in which V1-V6 are all hosted, or overclaim readiness.
+    CONTRADICTIONS = (
+        r"V2 is partial",
+        r"V2 (is )?(only )?partially (hosted|built|implemented|public)",
+        r"V3\s*[–-]\s*V6\s+(are\s+|is\s+)?not\s+(yet\s+)?(public|hosted|built|implemented)\b(?!-)",
+        r"V[2-6]\s+(is|are)\s+not\s+(yet\s+)?(public|hosted|built|implemented)\b(?!-)",
+        r"not (a )?public capabilit",
+        r"hosted (service|MCP)[^.\n]*\bonly\b[^.\n]*\bV1\b",
+        r"authority engine already gates spend",
+        r"calibrator already records outcomes",
+        r"Meta-router",
+        r"PublicMCPReady\s*(=|:|is)\s*(TRUE|true|yes|passed|met)",
+        r"\b(is|are) (now )?(publicly )?(deployed|launched|public-ready|production-ready)\b",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        from lofgren_intelligence.hosted import capabilities
+        cls.ROOT = Path(__file__).resolve().parent.parent
+        cls.capabilities = capabilities
+        cls.registered = capabilities.registered_tools()
+        cls.manifest = capabilities.manifest(cls.registered)
+
+    def _doc(self, rel):
+        return (self.ROOT / rel).read_text(encoding="utf-8")
+
+    def test_registry_and_manifest_agree(self):
+        self.assertEqual(sorted(t["name"] for t in self.manifest["tools"]), self.registered)
+        self.assertEqual(set(self.capabilities.TOOL_LEVELS), set(self.registered))
+        for level in ("V1", "V2", "V3", "V4", "V5", "V6"):
+            with self.subTest(level=level):
+                self.assertTrue(self.manifest["levels"][level]["public"])
+                self.assertTrue(self.manifest["levels"][level]["tools"])
+
+    def test_drift_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.capabilities.manifest(self.registered + ["unclassified_tool"])
+        with self.assertRaises(ValueError):
+            self.capabilities.manifest([n for n in self.registered if n != "build_artifact"])
+
+    def test_checked_in_manifest_is_current(self):
+        self.assertEqual(json.loads(self._doc("docs/CAPABILITIES.json")), self.manifest)
+
+    def test_metering_matches_the_service(self):
+        from lofgren_intelligence.hosted.service import ADHOC_UNIT_COSTS
+        by_name = {t["name"]: t for t in self.manifest["tools"]}
+        for name, units in ADHOC_UNIT_COSTS.items():
+            self.assertEqual(by_name[name]["metering"], {"kind": "flat", "units_per_call": units})
+        self.assertEqual(by_name["build_artifact"]["metering"]["kind"], "reserved")
+
+    def test_docs_do_not_contradict_the_manifest(self):
+        import re
+        for rel in ("docs/PUBLIC_MCP.md", "docs/ARCHITECTURE.md", "README.md"):
+            doc = self._doc(rel)
+            for pattern in self.CONTRADICTIONS:
+                with self.subTest(doc=rel, pattern=pattern):
+                    self.assertIsNone(re.search(pattern, doc, re.IGNORECASE))
+
+    def test_docs_list_exactly_the_hosted_tools_per_level(self):
+        import re
+        levels = self.manifest["levels"]
+        public_mcp = self._doc("docs/PUBLIC_MCP.md")
+        architecture = self._doc("docs/ARCHITECTURE.md")
+        readme = self._doc("README.md")
+        readme_labels = {"V1": "Research (V1)", "V2": "Discovery (V2)", "V3": "Production (V3)",
+                         "V4": "Execution (V4)", "V5": "Outcome (V5)", "V6": "Improvement (V6)",
+                         "account": "Account / billing"}
+        for level, info in levels.items():
+            expected = sorted(info["tools"])
+            with self.subTest(level=level):
+                line = re.search(rf"^- \*\*{re.escape(level)}\*\* [^`]*?\): (.*)$", public_mcp, re.M)
+                self.assertIsNotNone(line)
+                self.assertEqual(sorted(re.findall(r"`([a-z0-9_]+)`", line.group(1))), expected)
+                row = re.search(rf"^\| {re.escape(level)} \| \d+: (.*) \|$", architecture, re.M)
+                self.assertIsNotNone(row)
+                self.assertEqual(sorted(re.findall(r"`([a-z0-9_]+)`", row.group(1))), expected)
+                item = re.search(rf"^- \*\*{re.escape(readme_labels[level])}:\*\* (.*)$", readme, re.M)
+                self.assertIsNotNone(item)
+                listed = re.findall(r"`([a-z0-9_]+)`", item.group(1).split(".")[0])
+                self.assertEqual(sorted(listed), expected)
+
+    def test_docs_state_what_is_not_proven(self):
+        for rel in ("docs/PUBLIC_MCP.md", "docs/ARCHITECTURE.md", "README.md"):
+            doc = self._doc(rel).lower()
+            with self.subTest(doc=rel):
+                for text in ("not proven", "deployment", "real clients", "backup/restore", "publicmcpready"):
+                    self.assertIn(text, doc)
+        self.assertTrue(any("PublicMCPReady" in x for x in self.manifest["not_proven"]))
+
+
 if __name__ == "__main__":
     unittest.main()
