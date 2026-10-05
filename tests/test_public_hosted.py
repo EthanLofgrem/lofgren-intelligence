@@ -435,7 +435,7 @@ class EconomicGateTests(unittest.TestCase):
 
 class MigrationContractTests(unittest.TestCase):
     def test_first_1000_rule_and_rls_are_present(self):
-        sql = Path("supabase/migrations/20261004190000_public_mcp.sql").read_text(encoding="utf-8")
+        sql = Path("supabase/migrations/20261004201650_public_mcp.sql").read_text(encoding="utf-8")
         self.assertIn("v_num <= 1000", sql)
         self.assertIn("'founding_free'", sql)
         self.assertIn("'paid_required'", sql)
