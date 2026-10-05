@@ -120,6 +120,23 @@ def build_mcp(base_url: str) -> MCPServer:
     )
 
     @mcp.tool()
+    def clarify_objective(
+        objective: str,
+        answers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Clarify a large or ambiguous objective before research begins.
+
+        Returns 3–7 high-information questions, accepts explicit unknown/skip/default
+        answers, and produces a Case Charter when the objective is scoped enough for
+        user approval.
+        """
+        _, service = _caller()
+        return service.clarify_objective({
+            "objective": objective,
+            "answers": answers or {},
+        })
+
+    @mcp.tool()
     def compile_objective(
         objective: str,
         max_spend_usd: float = 5.0,
@@ -135,6 +152,8 @@ def build_mcp(base_url: str) -> MCPServer:
     @mcp.tool()
     def plan_research(
         objective: str,
+        answers: dict[str, str] | None = None,
+        case_charter: dict[str, Any] | None = None,
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
@@ -149,11 +168,17 @@ def build_mcp(base_url: str) -> MCPServer:
         return service.plan_research(_source_args(
             texts=texts, urls=urls, search=search, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
-        ) | {"objective": objective})
+        ) | {
+            "objective": objective,
+            "answers": answers or {},
+            "case_charter": case_charter,
+        })
 
     @mcp.tool()
     def investigate(
         objective: str,
+        answers: dict[str, str] | None = None,
+        case_charter: dict[str, Any] | None = None,
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
@@ -168,7 +193,11 @@ def build_mcp(base_url: str) -> MCPServer:
         return service.investigate(user_id, _source_args(
             texts=texts, urls=urls, search=search, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
-        ) | {"objective": objective})
+        ) | {
+            "objective": objective,
+            "answers": answers or {},
+            "case_charter": case_charter,
+        })
 
     @mcp.tool()
     def verify_claim(
