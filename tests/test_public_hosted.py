@@ -536,6 +536,23 @@ class HostedLifecycleTests(HostedDiscoveryTests):
         self.assertTrue(recovered["receipt_intact"])
 
 
+class QuotaReservationTests(unittest.TestCase):
+    def test_inflight_reservation_prevents_concurrent_oversubscription(self):
+        store = FakeStore(quota=500)
+        self.assertTrue(store.reserve_usage("r1", "u1", "research", 300))
+        self.assertFalse(store.reserve_usage("r2", "u1", "research", 300))
+        self.assertTrue(store.finalize_usage("r1", None, 250, 0, []))
+        self.assertTrue(store.reserve_usage("r3", "u1", "research", 250))
+        self.assertFalse(store.reserve_usage("r4", "u1", "research", 1))
+
+    def test_release_returns_reserved_capacity(self):
+        store = FakeStore(quota=100)
+        self.assertTrue(store.reserve_usage("r1", "u1", "research", 100))
+        self.assertFalse(store.reserve_usage("r2", "u1", "research", 1))
+        self.assertTrue(store.release_usage("r1"))
+        self.assertTrue(store.reserve_usage("r3", "u1", "research", 100))
+
+
 class PublicSecurityTests(unittest.TestCase):
     def test_remote_rejects_server_file_paths(self):
         with self.assertRaises(PublicInputError):
