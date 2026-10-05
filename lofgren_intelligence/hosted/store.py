@@ -62,6 +62,30 @@ class SupabaseStore:
             headers["prefer"] = prefer
         return json_request(url, method, headers=headers, body=body).body
 
+    def _select_all(self, table: str, query: dict[str, Any], *, page: int = 1000, cap: int | None = None) -> list[dict[str, Any]]:
+        """Read every matching row, page by page.
+
+        PostgREST silently truncates a response at the project's max-rows
+        setting (1000 by default on Supabase), so a single GET cannot be
+        trusted for sums or exports. Paging stops only on an empty page, which
+        stays correct whatever max-rows is configured to.
+        """
+        out: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            want = page if cap is None else min(page, cap - len(out))
+            if want <= 0:
+                break
+            q = dict(query)
+            q["limit"] = str(want)
+            q["offset"] = str(offset)
+            rows = list(self._table(table, query=q) or [])
+            if not rows:
+                break
+            out.extend(rows)
+            offset += len(rows)
+        return out
+
     def rpc(self, name: str, body: dict[str, Any]) -> Any:
         return json_request(
             f"{self.url}/rest/v1/rpc/{name}",
@@ -197,29 +221,19 @@ class SupabaseStore:
                 return bool(next(iter(value.values()), False))
         return bool(result)
 
-    def list_runs(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_runs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_runs",
-            query={
-                "select": "*",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": str(min(max(1, int(limit)), 1000)),
-            },
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,run_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
-    def list_usage(self, user_id: str, limit: int = 5000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_usage(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_usage_events",
-            query={
-                "select": "*",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": str(min(max(1, int(limit)), 5000)),
-            },
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def delete_auth_user(self, user_id: str) -> None:
         quoted = urllib.parse.quote(user_id, safe="")
@@ -244,28 +258,24 @@ class SupabaseStore:
         )
         return rows[0] if rows else None
 
-    def list_discoveries(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = self._table(
+    def list_discoveries(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
             "li_discoveries",
-            query={
-                "select": "*",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": str(min(max(1, int(limit)), 1000)),
-            },
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,discovery_id.asc"},
+            cap=limit,
         )
-        return list(rows or [])
 
     def record_usage(self, row: dict[str, Any]) -> None:
         self._table("li_usage_events", "POST", body=row, prefer="return=minimal")
 
     def usage_units_since(self, user_id: str, since_iso: str) -> float:
-        rows = self._table(
+        rows = self._select_all(
             "li_usage_events",
-            query={
+            {
                 "select": "units",
                 "user_id": f"eq.{user_id}",
                 "created_at": f"gte.{since_iso}",
+                "order": "created_at.asc,id.asc",
             },
         )
         return float(sum(float(r.get("units") or 0.0) for r in (rows or [])))

@@ -11,7 +11,10 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from lofgren_intelligence.hosted import stripe as li_stripe
+from lofgren_intelligence.hosted import store as li_store
 from lofgren_intelligence.hosted import web_app
+from lofgren_intelligence.hosted.entitlements import access_for_run
+from lofgren_intelligence.hosted.http import JSONResponse
 from lofgren_intelligence.hosted.service import PublicService
 from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError
 
@@ -143,6 +146,58 @@ class StripeCancellationTests(unittest.TestCase):
         with self.assertRaises(StripeError):
             self._delete(store, _FakeStripe(urllib.error.URLError("down")))
         self.assertFalse(hasattr(store, "deleted_user"))
+
+
+class _PostgREST:
+    """Fake PostgREST that truncates every response at max_rows, like Supabase."""
+
+    def __init__(self, rows, max_rows=1000):
+        self.rows, self.max_rows, self.requests = rows, max_rows, 0
+
+    def __call__(self, url, method="GET", headers=None, body=None, **kw):
+        import urllib.parse as up
+        self.requests += 1
+        q = dict(up.parse_qsl(up.urlsplit(url).query))
+        offset = int(q.get("offset", 0))
+        limit = min(int(q.get("limit", 10**9)), self.max_rows)
+        mine = [r for r in self.rows if q.get("user_id") == "eq." + r["user_id"]]
+        return JSONResponse(200, {}, mine[offset:offset + limit])
+
+
+class StorePaginationTests(unittest.TestCase):
+    def _store(self, rows, max_rows=1000):
+        fake = _PostgREST(rows, max_rows)
+        store = li_store.SupabaseStore("https://db.example", "service-role-test", "publishable-test")
+        return store, fake
+
+    def test_weekly_usage_sum_is_not_truncated_by_max_rows(self):
+        rows = [{"user_id": "u1", "id": str(i), "units": 1} for i in range(2500)]
+        store, fake = self._store(rows)
+        with patch.object(li_store, "json_request", fake):
+            self.assertEqual(store.usage_units_since("u1", "2026-01-01T00:00:00+00:00"), 2500.0)
+
+    def test_paging_survives_a_smaller_server_max_rows(self):
+        rows = [{"user_id": "u1", "id": str(i), "units": 1} for i in range(1234)]
+        store, fake = self._store(rows, max_rows=100)
+        with patch.object(li_store, "json_request", fake):
+            self.assertEqual(len(store.list_usage("u1")), 1234)
+
+    def test_account_export_lists_are_complete_and_tenant_scoped(self):
+        rows = [{"user_id": "u1", "run_id": f"R{i}"} for i in range(1500)]
+        rows += [{"user_id": "u2", "run_id": "OTHER"}]
+        store, fake = self._store(rows)
+        with patch.object(li_store, "json_request", fake):
+            got = store.list_runs("u1")
+        self.assertEqual(len(got), 1500)
+        self.assertNotIn("OTHER", {r["run_id"] for r in got})
+
+
+class QuotaPolicyTests(unittest.TestCase):
+    def test_explicit_zero_quota_blocks_instead_of_granting_plan_default(self):
+        store = FakeStore(kind="founding_free", quota=0.0)
+        decision = access_for_run(store, "u1", 1.0)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.quota_units, 0.0)
 
 
 if __name__ == "__main__":
