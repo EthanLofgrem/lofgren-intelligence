@@ -209,7 +209,7 @@ async def oauth_authorize(request: Request) -> Response:
         "", "", "",
     ))
     client_name = str(client.get("client_name") or client.get("client_id") or "Unknown MCP client")
-    consent_intro = consent_intro_html(client_name, params["scope"])
+    consent_intro = consent_intro_html(client_name, params["scope"], params["redirect_uri"])
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect Lofgren Intelligence</title>
