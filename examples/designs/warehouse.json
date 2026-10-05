@@ -1,0 +1,171 @@
+{
+  "model": {
+    "name": "warehouse-profit",
+    "version": "1",
+    "outcomes": {
+      "profit": {
+        "op": "sub",
+        "args": [
+          {
+            "op": "mul",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "sqft"
+                  },
+                  {
+                    "op": "var",
+                    "name": "rent"
+                  }
+                ]
+              },
+              {
+                "op": "var",
+                "name": "occupancy"
+              }
+            ]
+          },
+          {
+            "op": "mul",
+            "args": [
+              {
+                "op": "var",
+                "name": "sqft"
+              },
+              {
+                "op": "var",
+                "name": "build_cost"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "units": {
+      "sqft": "sqft",
+      "rent": "usd/sqft",
+      "occupancy": "",
+      "build_cost": "usd/sqft"
+    }
+  },
+  "value_metric": "profit",
+  "success": {
+    "lhs": {
+      "op": "var",
+      "name": "profit"
+    },
+    "op": ">=",
+    "rhs": {
+      "op": "const",
+      "value": 0,
+      "unit": "usd"
+    }
+  },
+  "distributions": {
+    "occupancy": {
+      "dist": "triangular",
+      "low": 0.6,
+      "mode": 0.85,
+      "high": 0.95
+    }
+  },
+  "assumptions": [
+    {
+      "statement": "Market rent is 12 USD per square foot per year (fictional)",
+      "why_assumed": "the V1 map has no verified rent",
+      "name": "rent",
+      "value": 12,
+      "unit": "usd/sqft"
+    },
+    {
+      "statement": "Annualized build cost is 8 USD per square foot (fictional)",
+      "why_assumed": "engineering estimate",
+      "name": "build_cost",
+      "value": 8,
+      "unit": "usd/sqft"
+    },
+    {
+      "statement": "The budget allows at most 200000 square feet (fictional)",
+      "why_assumed": "owner input",
+      "name": "max_sqft",
+      "value": 200000,
+      "unit": "sqft"
+    }
+  ],
+  "constraints": [
+    {
+      "name": "size within budget",
+      "kind": "resource",
+      "relation": {
+        "lhs": {
+          "op": "var",
+          "name": "sqft"
+        },
+        "op": "<=",
+        "rhs": {
+          "op": "var",
+          "name": "max_sqft"
+        }
+      },
+      "variable_units": {
+        "sqft": "sqft",
+        "max_sqft": "sqft"
+      },
+      "assumption": "max_sqft"
+    }
+  ],
+  "candidates": [
+    {
+      "description": "Build 100000 sqft (fictional)",
+      "parameters": {
+        "sqft": [
+          100000,
+          "sqft"
+        ],
+        "occupancy": [
+          0.85,
+          ""
+        ]
+      },
+      "test_requirements": [
+        "Pre-leasing commitments for the first phase"
+      ]
+    },
+    {
+      "description": "Build 150000 sqft (fictional)",
+      "parameters": {
+        "sqft": [
+          150000,
+          "sqft"
+        ],
+        "occupancy": [
+          0.85,
+          ""
+        ]
+      },
+      "test_requirements": [
+        "Pre-leasing commitments for the first phase"
+      ]
+    },
+    {
+      "description": "Build 250000 sqft (fictional)",
+      "parameters": {
+        "sqft": [
+          250000,
+          "sqft"
+        ],
+        "occupancy": [
+          0.85,
+          ""
+        ]
+      }
+    }
+  ],
+  "simulation": {
+    "seed": 11,
+    "iterations": 500
+  }
+}
