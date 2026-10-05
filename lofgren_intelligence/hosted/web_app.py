@@ -222,6 +222,7 @@ input{{background:#0e1218;color:white;border:1px solid #344054}}button{{backgrou
 small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
 </style></head>
 <body><main>{consent_intro}
+<button id="continue" hidden>Approve and continue</button>
 <label for="email">Email</label>
 <input id="email" type="email" autocomplete="email" placeholder="you@example.com" aria-describedby="status">
 <label for="password">Password</label>
@@ -235,14 +236,23 @@ const sb=supabase.createClient({safe_url},{safe_key});
 const status=document.querySelector('#status');
 const email=document.querySelector('#email');
 const password=document.querySelector('#password');
+const cont=document.querySelector('#continue');
+let pendingSession=null;
 async function complete(session){{
   const r=await fetch('/oauth/authorize/complete',{{method:'POST',headers:{{'content-type':'application/json','authorization':'Bearer '+session.access_token}},body:JSON.stringify(cfg)}});
   const d=await r.json(); if(!r.ok) throw new Error(d.error_description||d.error||'authorization failed');
   location.href=d.redirect_url;
 }}
-async function existing(){{const x=await sb.auth.getSession();if(x.data.session)await complete(x.data.session);}}
-document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Signing in…';const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;await complete(x.data.session)}}catch(e){{status.textContent=e.message}}}};
-document.querySelector('#signup').onclick=async()=>{{try{{status.textContent='Creating account…';const x=await sb.auth.signUp({{email:email.value,password:password.value,options:{{emailRedirectTo:location.href}}}});if(x.error)throw x.error;if(x.data.session)await complete(x.data.session);else status.textContent='Check your email to confirm the account, then return here.'}}catch(e){{status.textContent=e.message}}}};
+function arm(session){{
+  pendingSession=session;
+  cont.textContent='Approve and continue as '+(((session.user||{{}}).email)||'the signed-in user');
+  cont.hidden=false;
+  status.textContent='Review the client request, then approve explicitly.';
+}}
+cont.onclick=async()=>{{try{{if(!pendingSession)throw new Error('Sign in first.');cont.disabled=true;status.textContent='Authorizing…';await complete(pendingSession)}}catch(e){{status.textContent=e.message;cont.disabled=false}}}};
+async function existing(){{const x=await sb.auth.getSession();if(x.data.session)arm(x.data.session);}}
+document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Signing in…';const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;arm(x.data.session)}}catch(e){{status.textContent=e.message}}}};
+document.querySelector('#signup').onclick=async()=>{{try{{status.textContent='Creating account…';const x=await sb.auth.signUp({{email:email.value,password:password.value,options:{{emailRedirectTo:location.href}}}});if(x.error)throw x.error;if(x.data.session)arm(x.data.session);else status.textContent='Check your email to confirm the account, then return here.'}}catch(e){{status.textContent=e.message}}}};
 existing().catch(e=>status.textContent=e.message);
 </script></main></body></html>"""
     csp = (
