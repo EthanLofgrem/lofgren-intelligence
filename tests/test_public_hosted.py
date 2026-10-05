@@ -35,6 +35,10 @@ class FakeStore:
         self.refresh_tokens = {}
         self.runs = {}
         self.discoveries = {}
+        self.artifacts = {}
+        self.actions = {}
+        self.outcomes = {}
+        self.improvements = {}
         self.usage = []
         self.billing_events = {}
         self.verified_user = {"id": "u1", "email": "u@example.com"}
@@ -93,6 +97,42 @@ class FakeStore:
     def list_discoveries(self, user_id, limit=1000):
         return [row for (uid, _), row in self.discoveries.items() if uid == user_id][:limit]
 
+    def save_artifact(self, row):
+        self.artifacts[(row["user_id"], row["artifact_id"])] = dict(row)
+
+    def get_artifact(self, user_id, artifact_id):
+        return self.artifacts.get((user_id, artifact_id))
+
+    def list_artifacts(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.artifacts.items() if uid == user_id][:limit]
+
+    def save_action(self, row):
+        self.actions[(row["user_id"], row["action_id"])] = dict(row)
+
+    def get_action(self, user_id, action_id):
+        return self.actions.get((user_id, action_id))
+
+    def list_actions(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.actions.items() if uid == user_id][:limit]
+
+    def save_outcome(self, row):
+        self.outcomes[(row["user_id"], row["outcome_id"])] = dict(row)
+
+    def get_outcome(self, user_id, outcome_id):
+        return self.outcomes.get((user_id, outcome_id))
+
+    def list_outcomes(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.outcomes.items() if uid == user_id][:limit]
+
+    def save_improvement(self, row):
+        self.improvements[(row["user_id"], row["improvement_id"])] = dict(row)
+
+    def get_improvement(self, user_id, improvement_id):
+        return self.improvements.get((user_id, improvement_id))
+
+    def list_improvements(self, user_id, limit=1000):
+        return [row for (uid, _), row in self.improvements.items() if uid == user_id][:limit]
+
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
 
@@ -108,6 +148,10 @@ class FakeStore:
         self.entitlement = None
         self.runs = {k: v for k, v in self.runs.items() if k[0] != user_id}
         self.discoveries = {k: v for k, v in self.discoveries.items() if k[0] != user_id}
+        self.artifacts = {k: v for k, v in self.artifacts.items() if k[0] != user_id}
+        self.actions = {k: v for k, v in self.actions.items() if k[0] != user_id}
+        self.outcomes = {k: v for k, v in self.outcomes.items() if k[0] != user_id}
+        self.improvements = {k: v for k, v in self.improvements.items() if k[0] != user_id}
         self.usage = [row for row in self.usage if row["user_id"] != user_id]
 
     def record_usage(self, row):
