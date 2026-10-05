@@ -298,5 +298,39 @@ class WebhookOrderingTests(unittest.TestCase):
                 li_stripe.current_subscription_status("sub_x")
 
 
+class SSRFAddressTests(unittest.TestCase):
+    """Fix 5: shared/CGNAT and IPv4-in-IPv6 special addresses are not public."""
+
+    BLOCKED = [
+        "100.100.100.200",         # CGNAT / shared space; cloud metadata on some providers
+        "100.64.0.1",
+        "198.18.0.1",              # benchmarking
+        "::ffff:169.254.169.254",  # IPv4-mapped metadata
+        "::ffff:127.0.0.1",        # IPv4-mapped loopback
+        "64:ff9b::a9fe:a9fe",      # NAT64 of 169.254.169.254
+        "2002:7f00:1::1",          # 6to4 of 127.0.0.1
+        "::127.0.0.1",             # IPv4-compatible loopback
+    ]
+
+    def test_special_purpose_literals_are_refused(self):
+        from lofgren_intelligence.adapters.net import UnsafeURL, validate_public_url
+        for addr in self.BLOCKED:
+            host = f"[{addr}]" if ":" in addr else addr
+            with self.subTest(addr=addr), self.assertRaises(UnsafeURL):
+                validate_public_url(f"http://{host}/latest/meta-data/")
+
+    def test_hostname_resolving_to_cgnat_is_refused(self):
+        from lofgren_intelligence.adapters.net import UnsafeURL, validate_public_url
+        fake = lambda *a, **k: [(2, 1, 6, "", ("100.100.100.200", 80))]
+        with patch("lofgren_intelligence.adapters.net.socket.getaddrinfo", fake), self.assertRaises(UnsafeURL):
+            validate_public_url("http://metadata.attacker.example/")
+
+    def test_global_address_is_still_allowed(self):
+        from lofgren_intelligence.adapters.net import validate_public_url
+        fake = lambda *a, **k: [(2, 1, 6, "", ("93.184.215.14", 443))]
+        with patch("lofgren_intelligence.adapters.net.socket.getaddrinfo", fake):
+            self.assertEqual(validate_public_url("https://example.com/x"), "https://example.com/x")
+
+
 if __name__ == "__main__":
     unittest.main()
