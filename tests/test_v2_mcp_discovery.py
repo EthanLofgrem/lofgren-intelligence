@@ -11,7 +11,7 @@ from pathlib import Path
 
 import lofgren_intelligence.certification as C
 from lofgren_intelligence.discovery import fixtures as F
-from lofgren_intelligence.mcp.server import CONTRACT, DISCOVERY_TOOLS, TOOLS, Server
+from lofgren_intelligence.mcp.server import CONTRACT, DISCOVERY_TOOLS, PRODUCTION_TOOLS, TOOLS, Server
 
 ROOT = Path(__file__).resolve().parent.parent
 V1_TOOLS = ["compile_objective", "plan_research", "investigate", "verify_claim", "get_finding", "find_contradictions",
@@ -45,13 +45,13 @@ class InProcess(unittest.TestCase):
 
     def test_contract(self):
         self.assertEqual([t["name"] for t in TOOLS[:len(V1_TOOLS)]], V1_TOOLS)
-        self.assertEqual(CONTRACT, "lofgren.mcp/2")
+        self.assertEqual(CONTRACT, "lofgren.mcp/3")  # additive over /2: V3 tools only
         names = [t["name"] for t in TOOLS]
         self.assertEqual(len(names), len(set(names)))
         for t in DISCOVERY_TOOLS:
             self.assertTrue(t["description"] and t["inputSchema"]["type"] == "object", t["name"])
         listed = self.srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]
-        self.assertEqual(len(listed), len(V1_TOOLS) + len(DISCOVERY_TOOLS))
+        self.assertEqual(len(listed), len(V1_TOOLS) + len(DISCOVERY_TOOLS) + len(PRODUCTION_TOOLS))
         init = self.srv.handle({"jsonrpc": "2.0", "id": 3, "method": "initialize", "params": {}})["result"]
         self.assertIn(CONTRACT, init["instructions"])
 
