@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .. import build_registry
 from ..billing.pricing import PLANS, cheapest_plan, estimate, monthly_bill
@@ -41,6 +42,36 @@ from .security import validate_remote_args
 from .snapshots import durable_discovery_snapshot, durable_snapshot, restore_discovery_context, summary
 from .store import SupabaseStore, utcnow
 from .stripe import cancel_subscription, create_billing_portal, create_checkout
+
+
+# Intelligence units charged per call of an ad hoc tool. These tools do bounded
+# compute against an existing run (or, for satellite_passes, against supplied or
+# fetched element sets) and persist nothing, so they are charged a flat,
+# documented amount per successful call through the same atomic
+# li_reserve_usage -> li_finalize_usage path as investigate/discover. A call that
+# fails releases its reservation and is not charged. Operators may override a
+# cost with LI_UNITS_<TOOL> (for example LI_UNITS_SIMULATE_CANDIDATE=8); a
+# value that is not a finite number >= 0 is ignored. See docs/PUBLIC_MCP.md.
+ADHOC_UNIT_COSTS: dict[str, float] = {
+    "find_prior_art": 2.0,
+    "simulate_candidate": 5.0,
+    "analyze_sensitivity": 5.0,
+    "optimize_solution": 5.0,
+    "satellite_passes": 1.0,
+}
+
+
+def adhoc_unit_cost(operation: str) -> float:
+    units = ADHOC_UNIT_COSTS[operation]
+    raw = os.environ.get("LI_UNITS_" + operation.upper(), "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return units
+        if math.isfinite(value) and value >= 0:
+            return value
+    return units
 
 
 MAX_PASS_HOURS = 168.0
@@ -147,6 +178,30 @@ class PublicService:
             raise QuotaExceeded(decision.reason)
         if decision.used_units >= decision.quota_units:
             raise QuotaExceeded("weekly intelligence-unit quota reached")
+
+    def _metered(self, user_id: str, operation: str, run_id: str | None, work: Callable[[], Any]) -> Any:
+        """Run one ad hoc call under an atomic usage reservation.
+
+        reserve (li_reserve_usage) -> work -> settle (li_finalize_usage). Any
+        failure in the work releases the reservation (li_release_usage), so a
+        refused or crashed call is never charged. The open-quota check stays in
+        front of the reservation so an inactive entitlement is refused first.
+        """
+        self._require_open_quota(user_id)
+        units = adhoc_unit_cost(operation)
+        reservation_id = self._reserve_usage(user_id, operation, units)
+        try:
+            out = work()
+        except Exception:
+            self._release_quietly(reservation_id)
+            raise
+        self._finalize_usage(
+            reservation_id,
+            run_id=run_id,
+            actual_units=units,
+            unpriced_components=[f"{operation}_compute"],
+        )
+        return out
 
     @staticmethod
     def _location(a: dict[str, Any]) -> dict[str, Any] | None:
@@ -387,7 +442,10 @@ class PublicService:
         return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
 
     def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        self._require_open_quota(user_id)
+        run_id = str(a["run_id"])
+        return self._metered(user_id, "find_prior_art", run_id, lambda: self._find_prior_art(user_id, a))
+
+    def _find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         provider, _ = _prior_art_provider({
             k: a[k] for k in ("records", "coverage") if k in a
@@ -440,7 +498,6 @@ class PublicService:
         }
 
     def _adhoc_discovery(self, user_id: str, a: dict[str, Any]):
-        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         framed = frame_problem(ctx, ctx.ensure(DiscoveryObjective("Ad hoc analysis", ctx.research_id)))
         if framed.frame is None:
@@ -458,6 +515,10 @@ class PublicService:
         return evaluate_candidates(ctx, framed, space)
 
     def simulate_candidate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        return self._metered(user_id, "simulate_candidate", str(a["run_id"]),
+                             lambda: self._simulate_candidate(user_id, a))
+
+    def _simulate_candidate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         result = self._adhoc_discovery(user_id, a)
         if not result.simulations:
             raise PublicServiceError("the parameters do not give every model input a value")
@@ -468,6 +529,10 @@ class PublicService:
         }
 
     def analyze_sensitivity(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        return self._metered(user_id, "analyze_sensitivity", str(a["run_id"]),
+                             lambda: self._analyze_sensitivity(user_id, a))
+
+    def _analyze_sensitivity(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         result = self._adhoc_discovery(user_id, a)
         if not result.sensitivities:
             raise PublicServiceError("the parameters do not give every model input a value")
@@ -480,7 +545,10 @@ class PublicService:
         }
 
     def optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        self._require_open_quota(user_id)
+        return self._metered(user_id, "optimize_solution", str(a["run_id"]),
+                             lambda: self._optimize_solution(user_id, a))
+
+    def _optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         problem = ctx.ensure(problem_from_json(a["problem"]))
         result = optimize(ctx, problem)
@@ -859,7 +927,9 @@ class PublicService:
         }
 
     def satellite_passes(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        self._require_open_quota(user_id)
+        return self._metered(user_id, "satellite_passes", None, lambda: self._satellite_passes(a))
+
+    def _satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
         lat, lon = float(a["lat"]), float(a["lon"])
         hours = float(a.get("hours", 24))
         min_el = float(a.get("min_elevation_deg", 30))

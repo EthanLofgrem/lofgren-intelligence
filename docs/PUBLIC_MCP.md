@@ -118,9 +118,30 @@ Metered work (`investigate`, `verify_claim`, `discover`, `build_artifact`,
 explicit stored weekly quota of 0 blocks; only a missing quota falls back to
 the plan default. `satellite_passes` is bounded to 168 hours, 20 element sets
 and 20,000 characters of TLE text per call, with valid coordinates and
-elevation; it and the ad hoc `simulate_candidate`, `analyze_sensitivity`,
-`optimize_solution` and `find_prior_art` tools require an active entitlement
-with weekly quota remaining (they are gated, not metered).
+elevation.
+
+The ad hoc tools are metered too. Each call requires an active entitlement
+with weekly quota remaining, reserves a flat number of intelligence units
+through `li_reserve_usage`, and settles that amount through
+`li_finalize_usage` only when the call succeeds; a call that fails (bad
+arguments, unknown run, corrupt state, a crash) releases its reservation
+through `li_release_usage` and is not charged. Unit costs per call:
+
+| Tool | Units per call |
+| --- | --- |
+| `find_prior_art` | 2 |
+| `simulate_candidate` | 5 |
+| `analyze_sensitivity` | 5 |
+| `optimize_solution` | 5 |
+| `satellite_passes` | 1 |
+
+The operator may override a cost with `LI_UNITS_<TOOL>` (for example
+`LI_UNITS_SIMULATE_CANDIDATE=8`); a value that is not a finite number >= 0 is
+ignored. The values live in `ADHOC_UNIT_COSTS` in
+`lofgren_intelligence/hosted/service.py` and a test keeps this table equal to
+it. Settled ad hoc usage records `<tool>_compute` as an unpriced component,
+so it counts against quota but keeps the paid-plan economic gate closed until
+its cost is measured.
 
 Weekly usage sums and privacy exports read every row page by page, so they are
 not truncated at the PostgREST max-rows setting. Database failures reach

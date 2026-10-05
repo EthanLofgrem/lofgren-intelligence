@@ -225,5 +225,195 @@ class CorruptDiscoveryStateMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("DISCOVERY_STATE_INVALID", self._text(result))
 
 
+def _tle():
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent / "examples" / "sample.tle").read_text(encoding="utf-8")
+
+
+class LockedFakeStore(FakeStore):
+    """FakeStore whose reserve/finalize/release are serialized, as the li_* SQL functions take an advisory lock."""
+
+    def __init__(self, *a, **k):
+        import threading
+        super().__init__(*a, **k)
+        self._lock = threading.Lock()
+        self.reserve_attempts = 0
+
+    def reserve_usage(self, *a, **k):
+        with self._lock:
+            self.reserve_attempts += 1
+            return super().reserve_usage(*a, **k)
+
+    def finalize_usage(self, *a, **k):
+        with self._lock:
+            return super().finalize_usage(*a, **k)
+
+    def release_usage(self, *a, **k):
+        with self._lock:
+            return super().release_usage(*a, **k)
+
+
+class AdHocChargingTests(unittest.TestCase):
+    """Item 2: ad hoc tools are charged through reserve -> settle -> release."""
+
+    @classmethod
+    def setUpClass(cls):
+        from lofgren_intelligence.discovery import fixtures as F
+        cls.base_store, cls.run_id, _ = _discovered_store()
+        params = {"sqft": [1000, "sqft"], "occupancy": [0.85, ""], "rent": [12, "usd/sqft"],
+                  "build_cost": [8, "usd/sqft"]}
+        cls.calls = {
+            "simulate_candidate": {"run_id": cls.run_id, "model": F.PROFIT_MODEL, "parameters": params},
+            "analyze_sensitivity": {"run_id": cls.run_id, "model": F.PROFIT_MODEL, "parameters": params,
+                                    "success": F.rel(F.V("profit"), ">=", F.K(0, "usd"))},
+            "optimize_solution": {"run_id": cls.run_id, "problem": F.resource_design()["optimization"]},
+            "find_prior_art": {"run_id": cls.run_id, "subject": F.PRIOR_ART_MATCHING["subject"],
+                               "queries": F.PRIOR_ART_MATCHING["queries"],
+                               "records": F.PRIOR_ART_MATCHING["records"],
+                               "coverage": F.PRIOR_ART_MATCHING["coverage"]},
+            "satellite_passes": {"lat": 33.4, "lon": -112.0, "hours": 6, "tle_text": _tle()},
+        }
+
+    def _store(self, quota=None):
+        store = copy.deepcopy(self.base_store)
+        store.reservations = {}
+        store.usage = []
+        if quota is not None:
+            store.entitlement["quota_units_per_week"] = quota
+        return store
+
+    def test_documented_unit_costs_cover_every_ad_hoc_tool(self):
+        from pathlib import Path
+        from lofgren_intelligence.hosted.service import ADHOC_UNIT_COSTS
+        self.assertEqual(set(ADHOC_UNIT_COSTS), set(self.calls))
+        doc = (Path(__file__).resolve().parent.parent / "docs" / "PUBLIC_MCP.md").read_text(encoding="utf-8")
+        for tool, units in ADHOC_UNIT_COSTS.items():
+            self.assertIn(f"| `{tool}` | {units:g} |", doc)
+
+    def test_successful_call_settles_exactly_its_documented_units(self):
+        from lofgren_intelligence.hosted.service import ADHOC_UNIT_COSTS
+        for tool, args in self.calls.items():
+            store = self._store()
+            with self.subTest(tool=tool):
+                getattr(PublicService(store), tool)("u1", copy.deepcopy(args))
+                self.assertEqual([r["status"] for r in store.reservations.values()], ["settled"])
+                self.assertEqual(len(store.usage), 1)
+                event = store.usage[0]
+                self.assertEqual(event["operation"], tool)
+                self.assertEqual(event["units"], ADHOC_UNIT_COSTS[tool])
+                self.assertEqual(event["unpriced_components"], [f"{tool}_compute"])
+                self.assertEqual(event["run_id"], None if tool == "satellite_passes" else self.run_id)
+
+    def test_failed_call_releases_its_reservation_and_is_not_charged(self):
+        bad = {
+            "simulate_candidate": {"run_id": self.run_id, "model": {"outcomes": "nonsense"}, "parameters": {}},
+            "analyze_sensitivity": {"run_id": self.run_id, "model": {}, "parameters": {}},
+            "optimize_solution": {"run_id": self.run_id, "problem": {"variables": []}},
+            "find_prior_art": {"run_id": "RR-unknown", "subject": "x", "queries": ["x"], "records": [],
+                               "coverage": {}},
+            "satellite_passes": {"lat": 91, "lon": 0, "tle_text": _tle()},
+        }
+        for tool, args in bad.items():
+            store = self._store()
+            with self.subTest(tool=tool):
+                with self.assertRaises(Exception):
+                    getattr(PublicService(store), tool)("u1", args)
+                self.assertEqual([r["status"] for r in store.reservations.values()], ["released"])
+                self.assertEqual(store.usage, [])
+
+    def test_crash_inside_the_work_releases_the_reservation(self):
+        store = self._store()
+        with patch("lofgren_intelligence.hosted.service.find_passes", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                PublicService(store).satellite_passes("u1", self.calls["satellite_passes"])
+        self.assertEqual([r["status"] for r in store.reservations.values()], ["released"])
+        self.assertEqual(store.usage, [])
+
+    def test_call_that_would_overrun_quota_is_refused_before_compute(self):
+        from lofgren_intelligence.hosted.service import QuotaExceeded
+        store = self._store(quota=4.0)
+        with patch("lofgren_intelligence.hosted.service.evaluate_candidates") as compute:
+            with self.assertRaises(QuotaExceeded):
+                PublicService(store).simulate_candidate("u1", copy.deepcopy(self.calls["simulate_candidate"]))
+        compute.assert_not_called()
+        self.assertEqual(store.usage, [])
+
+    def test_repeated_calls_drain_the_weekly_quota(self):
+        from lofgren_intelligence.hosted.service import QuotaExceeded
+        store = self._store(quota=10.0)
+        service = PublicService(store)
+        service.simulate_candidate("u1", copy.deepcopy(self.calls["simulate_candidate"]))
+        service.optimize_solution("u1", copy.deepcopy(self.calls["optimize_solution"]))
+        with self.assertRaises(QuotaExceeded):
+            service.satellite_passes("u1", self.calls["satellite_passes"])
+        self.assertEqual(sum(e["units"] for e in store.usage), 10.0)
+
+    def test_operator_can_override_a_unit_cost(self):
+        store = self._store()
+        with patch.dict(os.environ, {"LI_UNITS_SATELLITE_PASSES": "3"}):
+            PublicService(store).satellite_passes("u1", self.calls["satellite_passes"])
+        self.assertEqual(store.usage[0]["units"], 3.0)
+        for junk in ("-1", "nan", "inf", "lots"):
+            store = self._store()
+            with self.subTest(value=junk), patch.dict(os.environ, {"LI_UNITS_SATELLITE_PASSES": junk}):
+                PublicService(store).satellite_passes("u1", self.calls["satellite_passes"])
+                self.assertEqual(store.usage[0]["units"], 1.0)
+
+    def test_concurrent_calls_never_oversubscribe_the_quota(self):
+        import threading
+        from lofgren_intelligence.hosted.service import QuotaExceeded
+        from lofgren_intelligence.orbital.propagate import find_passes as real_find_passes
+
+        store = LockedFakeStore(quota=2.0)
+        go = threading.Event()
+
+        def slow_find_passes(*a, **k):
+            # Hold every in-flight reservation open until all callers have tried to reserve.
+            go.wait(10)
+            return real_find_passes(*a, **k)
+
+        outcomes = []
+
+        def call():
+            try:
+                PublicService(store).satellite_passes("u1", self.calls["satellite_passes"])
+                outcomes.append("ok")
+            except QuotaExceeded:
+                outcomes.append("quota")
+
+        with patch("lofgren_intelligence.hosted.service.find_passes", slow_find_passes):
+            threads = [threading.Thread(target=call) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for _ in range(1000):
+                if store.reserve_attempts >= 5:
+                    break
+                threading.Event().wait(0.01)
+            go.set()
+            for t in threads:
+                t.join(20)
+        self.assertEqual(store.reserve_attempts, 5)
+        self.assertEqual(sorted(outcomes), ["ok", "ok", "quota", "quota", "quota"])
+        self.assertEqual(sum(e["units"] for e in store.usage), 2.0)
+        self.assertEqual(sorted(r["status"] for r in store.reservations.values()), ["settled", "settled"])
+
+    def test_mcp_tool_call_is_charged(self):
+        import asyncio
+        store = self._store()
+
+        async def run():
+            with (
+                patch("lofgren_intelligence.hosted.mcp_sdk.get_access_token", return_value=TOKEN),
+                patch("lofgren_intelligence.hosted.mcp_sdk.SupabaseStore", return_value=store),
+                patch.dict(os.environ, RUN_ENV, clear=False),
+            ):
+                async with Client(build_mcp("https://li.example")) as client:
+                    return await client.call_tool("satellite_passes", self.calls["satellite_passes"])
+
+        result = asyncio.run(run())
+        self.assertFalse(result.is_error)
+        self.assertEqual([(e["operation"], e["units"]) for e in store.usage], [("satellite_passes", 1.0)])
+
+
 if __name__ == "__main__":
     unittest.main()
