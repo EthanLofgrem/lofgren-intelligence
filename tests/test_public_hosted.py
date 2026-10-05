@@ -40,6 +40,7 @@ class FakeStore:
         self.outcomes = {}
         self.improvements = {}
         self.usage = []
+        self.reservations = {}
         self.billing_events = {}
         self.verified_user = {"id": "u1", "email": "u@example.com"}
 
@@ -132,6 +133,48 @@ class FakeStore:
 
     def list_improvements(self, user_id, limit=1000):
         return [row for (uid, _), row in self.improvements.items() if uid == user_id][:limit]
+
+    def reserve_usage(self, reservation_id, user_id, operation, units):
+        quota = float(self.entitlement.get("quota_units_per_week") or 0)
+        active = bool(self.entitlement.get("active"))
+        used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == user_id)
+        reserved = sum(float(x["units"]) for x in self.reservations.values()
+                       if x["user_id"] == user_id and x["status"] == "reserved")
+        if not active or used + reserved + float(units) > quota + 1e-9:
+            return False
+        self.reservations[reservation_id] = {
+            "user_id": user_id, "operation": operation, "units": float(units), "status": "reserved",
+        }
+        return True
+
+    def finalize_usage(self, reservation_id, run_id, actual_units, known_cost_usd, unpriced_components):
+        row = self.reservations.get(reservation_id)
+        if not row or row["status"] != "reserved":
+            return False
+        quota = float(self.entitlement.get("quota_units_per_week") or 0)
+        used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == row["user_id"])
+        other = sum(float(x["units"]) for rid, x in self.reservations.items()
+                    if rid != reservation_id and x["user_id"] == row["user_id"] and x["status"] == "reserved")
+        if used + other + float(actual_units) > quota + 1e-9:
+            return False
+        self.usage.append({
+            "id": reservation_id,
+            "user_id": row["user_id"],
+            "run_id": run_id,
+            "operation": row["operation"],
+            "units": float(actual_units),
+            "known_cost_usd": float(known_cost_usd),
+            "unpriced_components": list(unpriced_components),
+        })
+        row["status"] = "settled"
+        return True
+
+    def release_usage(self, reservation_id):
+        row = self.reservations.get(reservation_id)
+        if not row or row["status"] != "reserved":
+            return False
+        row["status"] = "released"
+        return True
 
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
