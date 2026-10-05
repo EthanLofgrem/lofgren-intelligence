@@ -182,6 +182,11 @@ async def oauth_authorize(request: Request) -> Response:
     if not supabase_url or not public_key:
         return _error(503, "temporarily_unavailable", "authorization provider is not configured")
 
+    # Dynamic client registration is open, so the client name is caller-chosen.
+    # Show it together with the redirect host the code will be sent to, and
+    # never issue a code without an explicit click on this page.
+    client_label = html.escape(str(client.get("client_name") or params["client_id"]))
+    redirect_host = html.escape(urllib.parse.urlsplit(params["redirect_uri"]).netloc or params["redirect_uri"])
     safe_params = json.dumps(params).replace("<", "\\u003c")
     safe_url = json.dumps(supabase_url).replace("<", "\\u003c")
     safe_key = json.dumps(public_key).replace("<", "\\u003c")
@@ -204,6 +209,8 @@ small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
 </style></head>
 <body><main><h1>Lofgren Intelligence</h1>
 <p>Connect your AI client to certified V1 Evidence Intelligence.</p>
+<p id="consent"><strong>{client_label}</strong> is requesting access to your Lofgren Intelligence account (scope <code>mcp</code>). After you approve, the authorization code is sent to <strong>{redirect_host}</strong>. Only continue if you started this connection from your own AI client.</p>
+<button id="continue" hidden>Approve and continue</button>
 <input id="email" type="email" autocomplete="email" placeholder="Email">
 <input id="password" type="password" autocomplete="current-password" placeholder="Password">
 <button id="signin">Sign in &amp; connect</button>
@@ -220,7 +227,8 @@ async function complete(session){{
   const d=await r.json(); if(!r.ok) throw new Error(d.error_description||d.error||'authorization failed');
   location.href=d.redirect_url;
 }}
-async function existing(){{const x=await sb.auth.getSession();if(x.data.session)await complete(x.data.session);}}
+const cont=document.querySelector('#continue');
+async function existing(){{const x=await sb.auth.getSession();const s=x.data.session;if(!s)return;cont.textContent='Approve and continue as '+((s.user&&s.user.email)||'the signed-in user');cont.hidden=false;cont.onclick=async()=>{{try{{status.textContent='Authorizing…';await complete(s)}}catch(e){{status.textContent=e.message}}}};}}
 document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Signing in…';const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;await complete(x.data.session)}}catch(e){{status.textContent=e.message}}}};
 document.querySelector('#signup').onclick=async()=>{{try{{status.textContent='Creating account…';const x=await sb.auth.signUp({{email:email.value,password:password.value,options:{{emailRedirectTo:location.href}}}});if(x.error)throw x.error;if(x.data.session)await complete(x.data.session);else status.textContent='Check your email to confirm the account, then return here.'}}catch(e){{status.textContent=e.message}}}};
 existing().catch(e=>status.textContent=e.message);
