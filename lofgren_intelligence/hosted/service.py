@@ -97,6 +97,21 @@ class PublicService:
             "plan_id": decision.entitlement.get("plan_id"),
         }
 
+    def _require_open_quota(self, user_id: str) -> None:
+        """Refuse compute for inactive/unpaid entitlements or an exhausted week.
+
+        Ad hoc discovery tools (simulation, sensitivity, optimization, prior
+        art) do not record usage units, so without this check they stayed
+        callable after the weekly quota was spent or the entitlement lapsed.
+        """
+        decision = access_for_run(self.store, user_id, 0.0)
+        if not decision.allowed:
+            if decision.entitlement.get("kind") == "paid_required":
+                raise PaymentRequired(decision.reason)
+            raise QuotaExceeded(decision.reason)
+        if decision.used_units >= decision.quota_units:
+            raise QuotaExceeded("weekly intelligence-unit quota reached")
+
     def compile_objective(self, a: dict[str, Any]) -> dict[str, Any]:
         a = validate_remote_args(a)
         c = compile_intent(
@@ -301,6 +316,7 @@ class PublicService:
         return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
 
     def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         provider, _ = _prior_art_provider({
             k: a[k] for k in ("records", "coverage") if k in a
@@ -353,6 +369,7 @@ class PublicService:
         }
 
     def _adhoc_discovery(self, user_id: str, a: dict[str, Any]):
+        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         framed = frame_problem(ctx, ctx.ensure(DiscoveryObjective("Ad hoc analysis", ctx.research_id)))
         if framed.frame is None:
@@ -392,6 +409,7 @@ class PublicService:
         }
 
     def optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         problem = ctx.ensure(problem_from_json(a["problem"]))
         result = optimize(ctx, problem)

@@ -17,7 +17,7 @@ from lofgren_intelligence.hosted import store as li_store
 from lofgren_intelligence.hosted import web_app
 from lofgren_intelligence.hosted.entitlements import access_for_run
 from lofgren_intelligence.hosted.http import JSONResponse
-from lofgren_intelligence.hosted.service import PublicService, PublicServiceError
+from lofgren_intelligence.hosted.service import PaymentRequired, PublicService, PublicServiceError, QuotaExceeded
 from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError
 
 from .test_public_hosted import FakeStore
@@ -250,6 +250,29 @@ class SatellitePassBoundsTests(unittest.TestCase):
         out = PublicService(FakeStore()).satellite_passes(
             {"lat": 33.4, "lon": -112.0, "hours": 24, "min_elevation_deg": 10, "tle_text": TLE})
         self.assertIn("passes", out)
+
+
+class AdHocComputeQuotaTests(unittest.TestCase):
+    CALLS = {
+        "simulate_candidate": {"run_id": "RR-1", "model": {}, "parameters": {}},
+        "analyze_sensitivity": {"run_id": "RR-1", "model": {}, "parameters": {}},
+        "optimize_solution": {"run_id": "RR-1", "problem": {}},
+        "find_prior_art": {"run_id": "RR-1", "subject": "x", "queries": ["x"], "records": [], "coverage": {}},
+    }
+
+    def _assert_refused(self, store, exc):
+        service = PublicService(store)
+        for name, args in self.CALLS.items():
+            with self.subTest(tool=name), self.assertRaises(exc):
+                getattr(service, name)("u1", dict(args))
+
+    def test_exhausted_weekly_quota_refuses_unmetered_compute(self):
+        store = FakeStore(quota=10.0)
+        store.record_usage({"id": "e1", "user_id": "u1", "run_id": None, "units": 10.0})
+        self._assert_refused(store, QuotaExceeded)
+
+    def test_unpaid_account_is_refused_before_any_compute(self):
+        self._assert_refused(FakeStore(activation_number=1001, kind="paid_required", quota=0.0), PaymentRequired)
 
 
 if __name__ == "__main__":
