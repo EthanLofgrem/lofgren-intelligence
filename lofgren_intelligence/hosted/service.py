@@ -457,7 +457,12 @@ class PublicService:
             "report": snap["report"],
         }
 
-    def satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
+    def satellite_passes(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        # Propagation (and fetch=true, an outbound CelesTrak call) is unmetered
+        # compute; it used to be callable by unpaid (#1001+) accounts and after
+        # the weekly quota was spent. It now needs the same open entitlement as
+        # the other unmetered tools.
+        self._require_open_quota(user_id)
         # Bounded public work: unbounded hours or a large TLE list turns one
         # call into minutes of propagation on the shared serverless runtime.
         lat, lon = float(a["lat"]), float(a["lon"])

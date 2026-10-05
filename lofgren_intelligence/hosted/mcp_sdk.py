@@ -249,8 +249,8 @@ def build_mcp(base_url: str) -> MCPServer:
         fetch: bool = False,
     ) -> dict[str, Any]:
         """Predict open-data imaging-satellite passes over a location."""
-        _, service = _caller()
-        return service.satellite_passes({
+        user_id, service = _caller()
+        return service.satellite_passes(user_id, {
             "lat": lat, "lon": lon, "hours": hours,
             "min_elevation_deg": min_elevation_deg,
             "tle_text": tle_text, "fetch": fetch,
