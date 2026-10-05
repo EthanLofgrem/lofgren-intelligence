@@ -425,6 +425,53 @@ class HostedLifecycleTests(HostedDiscoveryTests):
         self.assertIsNotNone(store.get_artifact("u1", built["artifact_id"]))
         self.assertIsNotNone(store.get_artifact("u2", built["artifact_id"]))
 
+    def test_stored_then_reloaded_discovery_still_builds_an_artifact(self):
+        # A durable store hands back JSON, never the in-memory discovery: round-trip every row through JSON
+        # and build from a fresh service instance. The V3 upstream check must still pass untouched.
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        for key, row in list(store.discoveries.items()):
+            store.discoveries[key] = json.loads(json.dumps(row))
+        for key, row in list(store.runs.items()):
+            store.runs[key] = json.loads(json.dumps(row))
+        snap = store.get_discovery("u1", discovery["discovery_id"])["snapshot"]
+        recorded = set(snap["receipt"]["objects"])
+        self.assertEqual({x["object"]["id"] for x in snap["context_objects"]["objects"]}, recorded)
+        built = PublicService(store).build_artifact("u1", {
+            "discovery_id": discovery["discovery_id"],
+            "kind": "structured_bundle",
+        })
+        self.assertTrue(built["verified"])
+
+    def test_tampered_stored_discovery_object_is_refused(self):
+        from lofgren_intelligence.hosted.service import PublicServiceError
+        from lofgren_intelligence.production.errors import ProductionError
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        row = json.loads(json.dumps(store.get_discovery("u1", discovery["discovery_id"])))
+        stored = row["snapshot"]["context_objects"]["objects"]
+        assumption = next(x for x in stored if x["type"] == "assumption")
+        assumption["object"]["value"] = float(assumption["object"]["value"]) * 2 + 1
+        store.save_discovery(row)
+        with self.assertRaises((PublicServiceError, ProductionError)) as caught:
+            PublicService(store).build_artifact("u1", {"discovery_id": discovery["discovery_id"]})
+        self.assertIn(assumption["object"]["id"], str(caught.exception))
+        self.assertEqual(store.artifacts, {})
+        del row["snapshot"]["context_objects"]
+        store.save_discovery(row)
+        with self.assertRaises(PublicServiceError):
+            PublicService(store).build_artifact("u1", {"discovery_id": discovery["discovery_id"]})
+
     def test_v4_action_requires_browser_approval_before_execution(self):
         store = FakeStore(quota=5000)
         run = self._research(store)

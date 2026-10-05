@@ -121,6 +121,7 @@ def durable_discovery_snapshot(result: Any) -> dict[str, Any]:
         "receipt": receipt,
         "receipt_intact": verify_discovery_receipt(receipt),
         "receipt_object_problems": objects_match_receipt(receipt, result.context.objects()),
+        "context_objects": export_context_objects(result.context),
         "handoff": handoff,
         "handoff_problems": handoff_problems,
         "report": render_discovery_markdown(result),
@@ -129,3 +130,66 @@ def durable_discovery_snapshot(result: Any) -> dict[str, Any]:
         "usage_units": float(result.ledger.total_units if result.ledger else 0.0),
         "charge_usd": float(result.ledger.total_usd if result.ledger else 0.0),
     }
+
+
+# -- the discovery context ------------------------------------------------------------
+#
+# A discovery registers its V2 objects (objective, assumptions, candidates, scenarios, simulations, decision ...)
+# in a DiscoveryContext built over the V1 knowledge map, and its receipt records each one's digest. A context
+# rebuilt from the V1 run alone holds none of them, so V3 correctly refuses the handoff ("recorded but missing").
+# The snapshot therefore keeps every registered object, and restore_discovery_context re-registers them into a
+# fresh context over the same V1 map, re-running every reference and semantic check. Nothing is trusted: V3 still
+# compares the restored objects against the receipt's digests.
+
+CONTEXT_OBJECTS_SCHEMA = "lofgren.hosted.discovery-context-objects/1"
+
+
+class SnapshotRestoreError(ValueError):
+    """A stored discovery snapshot cannot be restored faithfully."""
+
+
+def export_context_objects(context: Any) -> dict[str, Any]:
+    from ..discovery.types import ALL_TYPES
+
+    names = {cls: name for name, cls in ALL_TYPES.items()}
+    objects = []
+    for obj in context.objects():
+        name = names.get(type(obj))
+        if name is None:
+            raise SnapshotRestoreError(f"{obj.id}: {type(obj).__name__} has no durable form")
+        objects.append({"type": name, "object": obj.to_dict()})
+    return json.loads(json.dumps({"schema": CONTEXT_OBJECTS_SCHEMA, "research_id": context.research_id,
+                                  "objects": objects}))
+
+
+def restore_discovery_context(base: Any, stored: Any) -> Any:
+    """Re-register a snapshot's objects into `base`, a fresh context over the discovery's V1 map.
+
+    Objects are registered as soon as everything they cite is present; any other refusal is final."""
+    from ..discovery.errors import DiscoveryError, UnknownReference
+    from ..discovery.types import from_dict
+
+    if not isinstance(stored, dict) or stored.get("schema") != CONTEXT_OBJECTS_SCHEMA:
+        raise SnapshotRestoreError("the discovery snapshot does not carry its context objects; run discover again")
+    if stored.get("research_id") != base.research_id:
+        raise SnapshotRestoreError("the discovery snapshot belongs to another research run")
+    if base.objects():
+        raise SnapshotRestoreError("a discovery context can only be restored into a fresh context")
+    try:
+        pending = [from_dict(x["type"], dict(x["object"])) for x in stored.get("objects") or []]
+    except (DiscoveryError, KeyError, TypeError) as exc:
+        raise SnapshotRestoreError(f"stored discovery object is invalid: {exc}") from None
+    while pending:
+        waiting, last = [], None
+        for obj in pending:
+            try:
+                base.register(obj)
+            except UnknownReference as exc:
+                waiting.append(obj)
+                last = exc
+            except DiscoveryError as exc:
+                raise SnapshotRestoreError(f"stored discovery object {obj.id} is refused: {exc}") from None
+        if len(waiting) == len(pending):
+            raise SnapshotRestoreError(f"stored discovery objects cite what the snapshot lacks: {last}")
+        pending = waiting
+    return base
