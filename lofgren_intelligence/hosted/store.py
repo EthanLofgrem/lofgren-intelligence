@@ -256,6 +256,78 @@ class SupabaseStore:
         )
         return list(rows or [])
 
+    def save_artifact(self, row: dict[str, Any]) -> None:
+        self._table("li_artifacts", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
+
+    def get_artifact(self, user_id: str, artifact_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_artifacts",
+            query={"select": "*", "user_id": f"eq.{user_id}", "artifact_id": f"eq.{artifact_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def list_artifacts(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_artifacts",
+            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
+                   "limit": str(min(max(1, int(limit)), 1000))},
+        )
+        return list(rows or [])
+
+    def save_action(self, row: dict[str, Any]) -> None:
+        self._table("li_action_proposals", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
+
+    def get_action(self, user_id: str, action_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_action_proposals",
+            query={"select": "*", "user_id": f"eq.{user_id}", "action_id": f"eq.{action_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def list_actions(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_action_proposals",
+            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
+                   "limit": str(min(max(1, int(limit)), 1000))},
+        )
+        return list(rows or [])
+
+    def save_outcome(self, row: dict[str, Any]) -> None:
+        self._table("li_outcomes", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
+
+    def get_outcome(self, user_id: str, outcome_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_outcomes",
+            query={"select": "*", "user_id": f"eq.{user_id}", "outcome_id": f"eq.{outcome_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def list_outcomes(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_outcomes",
+            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
+                   "limit": str(min(max(1, int(limit)), 1000))},
+        )
+        return list(rows or [])
+
+    def save_improvement(self, row: dict[str, Any]) -> None:
+        self._table("li_improvements", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
+
+    def get_improvement(self, user_id: str, improvement_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_improvements",
+            query={"select": "*", "user_id": f"eq.{user_id}", "improvement_id": f"eq.{improvement_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def list_improvements(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._table(
+            "li_improvements",
+            query={"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc",
+                   "limit": str(min(max(1, int(limit)), 1000))},
+        )
+        return list(rows or [])
+
     def record_usage(self, row: dict[str, Any]) -> None:
         self._table("li_usage_events", "POST", body=row, prefer="return=minimal")
 
