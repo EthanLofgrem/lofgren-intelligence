@@ -331,6 +331,86 @@ sb.auth.getSession().then(x=>ready(x.data.session));
     return HTMLResponse(page, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
 
 
+async def action_details(request: Request) -> Response:
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).action_status(str(user["id"]), {"action_id": request.path_params["action_id"]})
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _error(400, "action_unavailable", str(exc))
+
+
+async def action_approve(request: Request) -> Response:
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).approve_action(str(user["id"]), request.path_params["action_id"])
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _error(400, "approval_refused", str(exc))
+
+
+async def action_page(request: Request) -> Response:
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    public_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+    if not supabase_url or not public_key:
+        return _error(503, "action_approval_not_configured")
+    nonce = secrets.token_urlsafe(18)
+    safe_url = json.dumps(supabase_url).replace("<", "\\u003c")
+    safe_key = json.dumps(public_key).replace("<", "\\u003c")
+    safe_action = json.dumps(str(request.path_params["action_id"])).replace("<", "\\u003c")
+    origin = urllib.parse.urlunsplit((
+        urllib.parse.urlsplit(supabase_url).scheme,
+        urllib.parse.urlsplit(supabase_url).netloc,
+        "", "", "",
+    ))
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Approve action · Lofgren Intelligence</title>
+<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style nonce="{nonce}">
+body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh;padding:24px}}
+main{{width:min(94vw,720px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
+input,button{{width:100%;box-sizing:border-box;padding:12px;margin:7px 0;border-radius:9px}}
+input{{background:#0e1218;color:white;border:1px solid #344054}}button{{background:#2563eb;color:white;border:0;font-weight:700;cursor:pointer}}
+button[disabled]{{opacity:.45;cursor:not-allowed}}pre{{white-space:pre-wrap;word-break:break-word;background:#0d131c;border:1px solid #344054;padding:14px;border-radius:10px}}
+.warn{{border-left:3px solid #e6b450;padding:12px 14px;background:#1a160d;color:#dac99b}}#status{{min-height:24px;color:#e6b450}}
+</style></head><body><main>
+<h1>Approve an exact external action</h1>
+<p class="warn">Lofgren Intelligence will not execute this action until you sign in and explicitly approve the exact target and payload shown below. Approval expires after ten minutes and does not authorize a different action.</p>
+<label for="email">Email</label><input id="email" type="email" autocomplete="email">
+<label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
+<button id="signin">Sign in to review</button>
+<h2>Action</h2><pre id="details">Sign in to load the exact action.</pre>
+<button id="approve" disabled>Approve this exact action</button>
+<div id="status" role="status" aria-live="polite"></div>
+<script nonce="{nonce}">
+const sb=supabase.createClient({safe_url},{safe_key});
+const actionId={safe_action};
+let session=null;
+const status=document.querySelector('#status'), details=document.querySelector('#details'), approve=document.querySelector('#approve');
+async function load(){{
+  if(!session)return;
+  const r=await fetch('/actions/'+encodeURIComponent(actionId)+'/details',{{headers:{{authorization:'Bearer '+session.access_token}}}});
+  const d=await r.json(); if(!r.ok)throw new Error(d.error_description||d.error||'Could not load action');
+  details.textContent=JSON.stringify({{action_id:d.action_id,status:d.status,request:d.request}},null,2);
+  approve.disabled=d.status!=='awaiting_approval';
+}}
+document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Signing in…';const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;session=x.data.session;status.textContent='Review the exact action before approving.';await load()}}catch(e){{status.textContent=e.message}}}};
+approve.onclick=async()=>{{try{{approve.disabled=true;status.textContent='Recording approval…';const r=await fetch('/actions/'+encodeURIComponent(actionId)+'/approve',{{method:'POST',headers:{{authorization:'Bearer '+session.access_token}}}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'Approval failed');status.textContent='Approved. Return to your AI client and call execute_action before '+d.expires_at;await load()}}catch(e){{status.textContent=e.message;approve.disabled=false}}}};
+sb.auth.getSession().then(async x=>{{session=x.data.session;if(session){{status.textContent='Review the exact action before approving.';await load()}}}}).catch(e=>status.textContent=e.message);
+</script></main></body></html>"""
+    csp = (
+        "default-src 'none'; "
+        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"style-src 'nonce-{nonce}'; "
+        f"connect-src 'self' {origin}; "
+        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return HTMLResponse(page, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
+
+
 async def stripe_webhook(request: Request) -> Response:
     raw = await request.body()
     if len(raw) > 2_000_000:
@@ -434,6 +514,9 @@ def build_app():
         Route("/oauth/authorize/complete", oauth_complete, methods=["POST"]),
         Route("/oauth/token", oauth_token, methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
+        Route("/actions/{action_id:str}", action_page, methods=["GET"]),
+        Route("/actions/{action_id:str}/details", action_details, methods=["GET"]),
+        Route("/actions/{action_id:str}/approve", action_approve, methods=["POST"]),
         Route("/account", account_page, methods=["GET"]),
         Route("/account/export", account_export, methods=["GET"]),
         Route("/account/delete", account_delete, methods=["POST"]),
