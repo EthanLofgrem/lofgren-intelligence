@@ -896,5 +896,59 @@ class CapabilityManifestTests(unittest.TestCase):
         self.assertTrue(any("PublicMCPReady" in x for x in self.manifest["not_proven"]))
 
 
+class CITriggerTests(unittest.TestCase):
+    """Item 6: operational gate on build/** and release/** pushes and every PR; V3-V6 exact-SHA gates on
+    the public hardening branches. No other job condition is loosened."""
+
+    def _workflow(self, name):
+        from pathlib import Path
+        return (Path(__file__).resolve().parent.parent / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+    def _on_block(self, text):
+        return text[text.index("\non:\n") + 5:text.index("\npermissions:")]
+
+    def test_operational_quality_runs_on_build_and_release_pushes_and_every_pull_request(self):
+        import re
+        on = self._on_block(self._workflow("operational-quality.yml"))
+        push = on[on.index("push:"):on.index("pull_request:")]
+        branches = re.findall(r'^\s+- "([^"]+)"$', push, re.M)
+        for pattern in ("build/**", "release/**", "ops/**"):
+            self.assertIn(pattern, branches)
+        pull = on[on.index("pull_request:"):]
+        # No branch filter: every pull request runs the gate.
+        self.assertNotIn("branches", pull)
+        self.assertRegex(pull, r"^pull_request:\s*$")
+
+    def _job_condition(self, text, job):
+        start = text.index(f"\n  {job}:\n")
+        block = text[start:text.index("\n    steps:", start)]
+        return next(line for line in block.splitlines() if line.strip().startswith("if:"))
+
+    def test_v3_to_v6_gate_jobs_run_for_the_public_hardening_branches(self):
+        text = self._workflow("tests.yml")
+        original = {
+            "v3-ready-for-v4": ("build/v3-production", "build/v3-complete", "release/public-v1-v6"),
+            "v4-ready-for-v5": ("build/v4-execution", "release/public-v1-v6"),
+            "v5-ready-for-v6": ("build/v5-outcomes", "release/public-v1-v6"),
+            "v6-complete": ("build/v6-improve", "release/public-v1-v6"),
+        }
+        for job, branches in original.items():
+            cond = self._job_condition(text, job)
+            with self.subTest(job=job):
+                # Still push-only and still an exact branch list (no wildcard, no PR runs).
+                self.assertIn("github.event_name == 'push' && (", cond)
+                self.assertNotIn("startsWith", cond)
+                self.assertNotIn("pull_request", cond)
+                for branch in branches + ("build/public-ops-hardening", "build/public-hardening-rebased"):
+                    self.assertIn(f"github.ref_name == '{branch}'", cond)
+                self.assertEqual(cond.count("github.ref_name =="), len(branches) + 2)
+                self.assertIn("needs: test", text[text.index(f"\n  {job}:\n"):][:400])
+
+    def test_v2_gate_job_is_unchanged(self):
+        cond = self._job_condition(self._workflow("tests.yml"), "v2-ready-for-v3")
+        self.assertEqual(cond.strip(), "if: ${{ github.event_name == 'push' && (github.ref_name == "
+                                       "'build/v2-complete' || github.ref_name == 'build/public-v2-integration') }}")
+
+
 if __name__ == "__main__":
     unittest.main()

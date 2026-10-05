@@ -91,7 +91,7 @@ jobs:
 
 
   v3-ready-for-v4:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -114,7 +114,7 @@ jobs:
 
 
   v4-ready-for-v5:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -137,7 +137,7 @@ jobs:
 
 
   v5-ready-for-v6:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -160,7 +160,7 @@ jobs:
 
 
   v6-complete:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
