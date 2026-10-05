@@ -22,6 +22,7 @@ from .. import __version__
 from .auth import AuthError, OAuthService
 from .mcp_sdk import build_mcp
 from .journey import checkout_return_html, consent_intro_html, landing_html
+from .ratelimit import rate_limited
 from .service import PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
@@ -535,17 +536,17 @@ def build_app():
         Route("/.well-known/oauth-protected-resource", oauth_resource_root, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth_server_metadata, methods=["GET"]),
         Route("/.well-known/openid-configuration", oauth_server_metadata, methods=["GET"]),
-        Route("/oauth/register", oauth_register, methods=["POST"]),
-        Route("/oauth/authorize", oauth_authorize, methods=["GET"]),
-        Route("/oauth/authorize/complete", oauth_complete, methods=["POST"]),
-        Route("/oauth/token", oauth_token, methods=["POST"]),
+        Route("/oauth/register", rate_limited("oauth_register", oauth_register), methods=["POST"]),
+        Route("/oauth/authorize", rate_limited("oauth_authorize", oauth_authorize), methods=["GET"]),
+        Route("/oauth/authorize/complete", rate_limited("oauth_complete", oauth_complete), methods=["POST"]),
+        Route("/oauth/token", rate_limited("oauth_token", oauth_token), methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
-        Route("/actions/{action_id:str}/details", action_details, methods=["GET"]),
-        Route("/actions/{action_id:str}/approve", action_approve, methods=["POST"]),
+        Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
+        Route("/actions/{action_id:str}/approve", rate_limited("actions", action_approve), methods=["POST"]),
         Route("/account", account_page, methods=["GET"]),
-        Route("/account/export", account_export, methods=["GET"]),
-        Route("/account/delete", account_delete, methods=["POST"]),
+        Route("/account/export", rate_limited("account", account_export), methods=["GET"]),
+        Route("/account/delete", rate_limited("account", account_delete), methods=["POST"]),
         Route("/billing/success", billing_success, methods=["GET"]),
         Route("/billing/cancelled", billing_cancelled, methods=["GET"]),
     ]
