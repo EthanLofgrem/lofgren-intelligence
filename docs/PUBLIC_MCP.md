@@ -54,6 +54,30 @@ The current migration seeds 500 intelligence units per rolling 7-day period
 for Founding Free. This is an operational safety limit and can be deliberately
 changed after measured COGS review.
 
+Anti-abuse in front of activation. Activation happens on the first
+authorization of a new account (`/oauth/authorize/complete`), and only that
+first authorization is checked; re-authorizing an existing account takes
+nothing. `li_activate_account` is idempotent per user, so a retry or a
+concurrent duplicate never consumes a second slot.
+
+- **Confirmed email.** The Supabase user fetched from `/auth/v1/user` must
+  have an email and a non-empty `email_confirmed_at`, otherwise the server
+  answers `403 email_not_confirmed` and no slot is taken. The check is on by
+  default; only `LI_REQUIRE_CONFIRMED_EMAIL=false` (or `0`/`no`/`off`)
+  disables it.
+- **Rate limits.** New activations are limited per client IP (5 per hour,
+  `LI_IP_RATE_LIMIT_ACTIVATION_IP`) and per email domain (30 per hour,
+  `LI_IP_RATE_LIMIT_ACTIVATION_DOMAIN`) through the global store-backed
+  limiter (`429` with `Retry-After`). If the limiter cannot answer, the
+  activation is refused with `503` (fail closed). The keyed rate-limit
+  migration must therefore be applied before sign-ups are opened.
+- **Owner settings, not code.** Supabase "Confirm email" and CAPTCHA (Supabase
+  Auth bot protection with hCaptcha or Cloudflare Turnstile) are configured by
+  the owner in the Supabase dashboard; each is an owner setting this
+  repository cannot turn on or verify. The server-side confirmed-email check
+  is only meaningful while "Confirm email" is on: with it off, Supabase
+  auto-confirms every sign-up. Neither setting is proven by any test here.
+
 ## Billing
 
 Stripe-hosted Checkout is implemented behind `LI_BILLING_ENABLED`. Public

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import math
 import secrets
 import time
 import re
@@ -24,6 +25,33 @@ from .store import SupabaseStore
 
 class AuthError(RuntimeError):
     pass
+
+
+class ActivationRefused(AuthError):
+    """A new Founding Free/paid-required activation was refused before any slot was taken.
+
+    `error` is the OAuth-style error code and `status` the HTTP status the web
+    layer answers with; `retry_after` is set for rate limits.
+    """
+
+    def __init__(self, error: str, description: str, status: int, retry_after: int | None = None) -> None:
+        super().__init__(description)
+        self.error = error
+        self.status = status
+        self.retry_after = retry_after
+
+
+def require_confirmed_email() -> bool:
+    """LI_REQUIRE_CONFIRMED_EMAIL, default ON. Only an explicit 0/false/no/off disables it."""
+    raw = os.environ.get("LI_REQUIRE_CONFIRMED_EMAIL", "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def email_domain(email: Any) -> str | None:
+    if not isinstance(email, str) or email.count("@") != 1:
+        return None
+    domain = email.rsplit("@", 1)[1].strip().lower().rstrip(".")
+    return domain or None
 
 
 _PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
@@ -125,6 +153,7 @@ class OAuthService:
         code_challenge: str,
         scope: str,
         resource: str,
+        client_ip: str | None = None,
     ) -> str:
         if not client_id or not redirect_uri or not code_challenge:
             raise AuthError("client_id, redirect_uri and code_challenge are required")
@@ -136,6 +165,13 @@ class OAuthService:
             raise AuthError("invalid OAuth resource")
         user = self.store.verify_supabase_user(supabase_access_token)
         user_id = str(user["id"])
+        if not self.store.get_account(user_id):
+            # First authorization: this call would take an activation number
+            # (Founding Free for 1..1000). Re-authorizing an existing account
+            # takes nothing and is not re-checked; li_activate_account is
+            # idempotent per user, so a retry or a concurrent duplicate never
+            # consumes a second slot.
+            self._admit_activation(user, client_ip)
         self.store.activate_account(user_id, user.get("email"))
         raw = new_opaque("lic_")
         self.store.put_oauth_code(
@@ -151,6 +187,42 @@ class OAuthService:
             }
         )
         return raw
+
+    def _admit_activation(self, user: dict[str, Any], client_ip: str | None) -> None:
+        """Anti-abuse checks in front of a new activation.
+
+        1. The Supabase user must have a confirmed email (`email_confirmed_at`
+           on the user that verify_supabase_user fetched from /auth/v1/user)
+           unless the operator sets LI_REQUIRE_CONFIRMED_EMAIL=false. This is
+           meaningful only while Supabase "Confirm email" is on: with it off,
+           Supabase auto-confirms every sign-up. CAPTCHA (Supabase Auth bot
+           protection) and "Confirm email" are owner settings in Supabase.
+        2. Global (store-backed) limits per client IP and per email domain;
+           a limiter failure refuses the activation (fail closed).
+        """
+        from .ratelimit import RateLimitUnavailable, take
+
+        domain = email_domain(user.get("email"))
+        if require_confirmed_email() and not (domain and user.get("email_confirmed_at")):
+            raise ActivationRefused(
+                "email_not_confirmed",
+                "confirm your email address using the link Supabase sent you, then sign in again",
+                403,
+            )
+        checks = (("activation_ip", client_ip or "unknown"), ("activation_domain", domain or "unknown"))
+        for bucket, key in checks:
+            try:
+                wait = take(bucket, key, store=self.store)
+            except RateLimitUnavailable:
+                raise ActivationRefused(
+                    "temporarily_unavailable", "account activation is temporarily unavailable; retry shortly",
+                    503, 30,
+                ) from None
+            if wait:
+                raise ActivationRefused(
+                    "rate_limited", "too many new account activations; retry later",
+                    429, max(1, math.ceil(wait)),
+                )
 
     def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str) -> dict[str, Any]:
         access = new_opaque("lit_")

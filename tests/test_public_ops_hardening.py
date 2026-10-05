@@ -606,5 +606,199 @@ class RateLimitMigrationTests(unittest.TestCase):
             self.assertNotRegex(grant, r"\b(anon|authenticated)\b")
 
 
+class ActivationStore(FakeStore):
+    """FakeStore with real activation semantics: accounts appear on activation, numbers never reused.
+
+    activate_account models li_activate_account: serialized and idempotent per user.
+    """
+
+    def __init__(self, users):
+        import threading
+        super().__init__()
+        self.users = users
+        self.accounts = {}
+        self.next_number = 1
+        self.activate_calls = 0
+        self._activation_lock = threading.Lock()
+
+    def verify_supabase_user(self, token):
+        if token not in self.users:
+            raise RuntimeError("bad session")
+        return self.users[token]
+
+    def get_account(self, user_id):
+        return self.accounts.get(user_id)
+
+    def activate_account(self, user_id, email=None):
+        with self._activation_lock:
+            self.activate_calls += 1
+            if user_id not in self.accounts:
+                self.accounts[user_id] = {"user_id": user_id, "email": email,
+                                          "activation_number": self.next_number}
+                self.next_number += 1
+            return self.accounts[user_id]
+
+
+def _user(i, domain="example.org", confirmed=True):
+    return {"id": f"user-{i}", "email": f"person{i}@{domain}",
+            "email_confirmed_at": "2026-10-05T00:00:00Z" if confirmed else None}
+
+
+class FoundingFreeActivationTests(unittest.TestCase):
+    """Item 4: confirmed email, per-IP and per-domain limits, and idempotent retries."""
+
+    REDIRECT = "http://127.0.0.1/callback"
+
+    def setUp(self):
+        from lofgren_intelligence.hosted import ratelimit
+        ratelimit.LIMITER.reset()
+        self.addCleanup(ratelimit.LIMITER.reset)
+        env = patch.dict(os.environ, {"LI_PUBLIC_BASE_URL": "https://li.example"})
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("LI_REQUIRE_CONFIRMED_EMAIL", "LI_IP_RATE_LIMIT_ACTIVATION_IP",
+                     "LI_IP_RATE_LIMIT_ACTIVATION_DOMAIN"):
+            os.environ.pop(name, None)
+
+    def _store(self, users):
+        from lofgren_intelligence.hosted.auth import OAuthService
+        store = ActivationStore({u["id"]: u for u in users})
+        client = OAuthService(store).register_client({"redirect_uris": [self.REDIRECT]})
+        return store, client["client_id"]
+
+    def _authorize(self, store, client_id, user_id, ip="203.0.113.9"):
+        from lofgren_intelligence.hosted.auth import OAuthService, code_challenge_s256
+        return OAuthService(store).authorize_from_supabase_session(
+            supabase_access_token=user_id, client_id=client_id, redirect_uri=self.REDIRECT,
+            code_challenge=code_challenge_s256("v" * 64), scope="mcp",
+            resource="https://li.example/mcp", client_ip=ip,
+        )
+
+    def test_unconfirmed_email_cannot_take_a_slot(self):
+        from lofgren_intelligence.hosted.auth import ActivationRefused
+        store, cid = self._store([_user(1, confirmed=False), {"id": "user-2", "email": None,
+                                                              "email_confirmed_at": "2026-10-05T00:00:00Z"}])
+        for uid in ("user-1", "user-2"):
+            with self.subTest(user=uid), self.assertRaises(ActivationRefused) as ctx:
+                self._authorize(store, cid, uid)
+            self.assertEqual((ctx.exception.error, ctx.exception.status), ("email_not_confirmed", 403))
+        self.assertEqual(store.accounts, {})
+        self.assertEqual(store.next_number, 1)
+        self.assertEqual(store.oauth_codes, {})
+
+    def test_confirmed_email_activates_and_issues_a_code(self):
+        store, cid = self._store([_user(1)])
+        self.assertTrue(self._authorize(store, cid, "user-1").startswith("lic_"))
+        self.assertEqual(store.accounts["user-1"]["activation_number"], 1)
+
+    def test_confirmation_requirement_is_on_by_default_and_configurable(self):
+        from lofgren_intelligence.hosted.auth import ActivationRefused, require_confirmed_email
+        self.assertTrue(require_confirmed_email())
+        for value, expected in (("true", True), ("1", True), ("maybe", True), ("", True),
+                                ("false", False), ("0", False), ("off", False), ("NO", False)):
+            with self.subTest(value=value), patch.dict(os.environ, {"LI_REQUIRE_CONFIRMED_EMAIL": value}):
+                self.assertEqual(require_confirmed_email(), expected)
+        store, cid = self._store([_user(1, confirmed=False)])
+        with self.assertRaises(ActivationRefused):
+            self._authorize(store, cid, "user-1")
+        with patch.dict(os.environ, {"LI_REQUIRE_CONFIRMED_EMAIL": "false"}):
+            self._authorize(store, cid, "user-1")
+        self.assertIn("user-1", store.accounts)
+
+    def test_retries_and_concurrent_duplicates_never_consume_extra_slots(self):
+        import threading
+        store, cid = self._store([_user(1), _user(2)])
+        for _ in range(3):
+            self._authorize(store, cid, "user-1")
+        self.assertEqual(store.accounts["user-1"]["activation_number"], 1)
+        # Re-authorizing an existing account takes no activation rate-limit budget either.
+        events = sum(len(v) for v in store.rate_events.values())
+        self.assertEqual(events, 2)  # one per-IP and one per-domain take, for the first activation only
+
+        errors = []
+
+        def first_authorization():
+            try:
+                self._authorize(store, cid, "user-2", ip="198.51.100.20")
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=first_authorization) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(a["activation_number"] for a in store.accounts.values()), [1, 2])
+        self.assertEqual(store.next_number, 3)
+
+    def test_activation_is_limited_per_ip(self):
+        from lofgren_intelligence.hosted.auth import ActivationRefused
+        users = [_user(i, domain=f"d{i}.example") for i in range(1, 8)]
+        store, cid = self._store(users)
+        for i in range(1, 6):
+            self._authorize(store, cid, f"user-{i}", ip="203.0.113.50")
+        with self.assertRaises(ActivationRefused) as ctx:
+            self._authorize(store, cid, "user-6", ip="203.0.113.50")
+        self.assertEqual((ctx.exception.error, ctx.exception.status), ("rate_limited", 429))
+        self.assertGreaterEqual(ctx.exception.retry_after, 1)
+        self.assertNotIn("user-6", store.accounts)
+        self._authorize(store, cid, "user-7", ip="198.51.100.1")
+        self.assertEqual(len(store.accounts), 6)
+
+    def test_activation_is_limited_per_email_domain(self):
+        from lofgren_intelligence.hosted.auth import ActivationRefused
+        users = [_user(1, "burst.example"), _user(2, "burst.example"), _user(3, "BURST.example"),
+                 _user(4, "other.example")]
+        store, cid = self._store(users)
+        with patch.dict(os.environ, {"LI_IP_RATE_LIMIT_ACTIVATION_DOMAIN": "2"}):
+            self._authorize(store, cid, "user-1", ip="192.0.2.1")
+            self._authorize(store, cid, "user-2", ip="192.0.2.2")
+            with self.assertRaises(ActivationRefused):
+                self._authorize(store, cid, "user-3", ip="192.0.2.3")
+            self._authorize(store, cid, "user-4", ip="192.0.2.4")
+        self.assertEqual(sorted(store.accounts), ["user-1", "user-2", "user-4"])
+
+    def test_limiter_failure_refuses_activation(self):
+        from lofgren_intelligence.hosted.auth import ActivationRefused
+        from lofgren_intelligence.hosted.store import StoreError
+        store, cid = self._store([_user(1)])
+        store.rate_limit_error = StoreError("database is unreachable")
+        with self.assertRaises(ActivationRefused) as ctx:
+            self._authorize(store, cid, "user-1")
+        self.assertEqual((ctx.exception.error, ctx.exception.status), ("temporarily_unavailable", 503))
+        self.assertEqual(store.accounts, {})
+
+    def test_authorize_complete_endpoint_reports_the_refusal(self):
+        import asyncio
+        from starlette.requests import Request
+        from lofgren_intelligence.hosted import web_app
+        from lofgren_intelligence.hosted.auth import code_challenge_s256
+        store, cid = self._store([_user(1, confirmed=False)])
+        body = json.dumps({"client_id": cid, "redirect_uri": self.REDIRECT,
+                           "code_challenge": code_challenge_s256("v" * 64), "scope": "mcp",
+                           "resource": "https://li.example/mcp"}).encode()
+        scope = {"type": "http", "method": "POST", "path": "/oauth/authorize/complete",
+                 "raw_path": b"/oauth/authorize/complete", "query_string": b"",
+                 "headers": [(b"authorization", b"Bearer user-1"), (b"content-type", b"application/json")],
+                 "scheme": "https", "server": ("li.example", 443), "client": ("203.0.113.9", 1), "root_path": ""}
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        with patch.object(web_app, "SupabaseStore", return_value=store):
+            response = asyncio.run(web_app.oauth_complete(Request(scope, receive)))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(json.loads(response.body)["error"], "email_not_confirmed")
+        self.assertEqual(store.accounts, {})
+
+    def test_owner_settings_are_documented(self):
+        from pathlib import Path
+        doc = (Path(__file__).resolve().parent.parent / "docs" / "PUBLIC_MCP.md").read_text(encoding="utf-8")
+        for text in ("LI_REQUIRE_CONFIRMED_EMAIL", "email_confirmed_at", "CAPTCHA", "owner setting",
+                     "Confirm email", "LI_IP_RATE_LIMIT_ACTIVATION_IP", "LI_IP_RATE_LIMIT_ACTIVATION_DOMAIN"):
+            self.assertIn(text, doc)
+
+
 if __name__ == "__main__":
     unittest.main()

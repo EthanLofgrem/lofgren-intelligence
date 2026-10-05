@@ -3,7 +3,7 @@
 The MCP endpoint is limited per user in the database (`li_take_rate_limit`).
 The OAuth, account and action-approval endpoints, and Founding Free
 activation, are reachable before (or while) a user is established, so they are
-limited per client IP here.
+limited per client IP here; activation is also limited per email domain.
 
 Two backends, one rule (sliding window of `limit` requests per `window` s):
 
@@ -47,10 +47,14 @@ DEFAULT_LIMITS: dict[str, tuple[int, int]] = {
     "oauth_token": (60, 60),
     "account": (20, 60),
     "actions": (60, 60),
+    # Founding Free activation (the first authorization, which takes a slot):
+    # per client IP and per email domain, always store-backed and fail closed.
+    "activation_ip": (5, 3600),
+    "activation_domain": (30, 3600),
 }
 
 # Sign-up/activation buckets: a store error refuses instead of falling back.
-FAIL_CLOSED_BUCKETS = frozenset({"oauth_register", "oauth_complete"})
+FAIL_CLOSED_BUCKETS = frozenset({"oauth_register", "oauth_complete", "activation_ip", "activation_domain"})
 
 MAX_TRACKED_KEYS = 10_000
 UNAVAILABLE_RETRY_AFTER_S = 30

@@ -19,10 +19,10 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 from .. import __version__
-from .auth import AuthError, OAuthService
+from .auth import ActivationRefused, AuthError, OAuthService
 from .mcp_sdk import build_mcp
 from .journey import checkout_return_html, consent_intro_html, landing_html
-from .ratelimit import rate_limited
+from .ratelimit import client_ip, rate_limited
 from .service import PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
@@ -137,6 +137,7 @@ async def oauth_complete(request: Request) -> Response:
             code_challenge=str(body.get("code_challenge") or ""),
             scope=str(body.get("scope") or "mcp"),
             resource=str(body.get("resource") or ""),
+            client_ip=client_ip(request),
         )
         redirect = str(body["redirect_uri"])
         query: dict[str, str] = {"code": code}
@@ -144,6 +145,12 @@ async def oauth_complete(request: Request) -> Response:
             query["state"] = str(body["state"])
         separator = "&" if urllib.parse.urlsplit(redirect).query else "?"
         return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)})
+    except ActivationRefused as exc:
+        headers = {"Cache-Control": "no-store"}
+        if exc.retry_after:
+            headers["Retry-After"] = str(exc.retry_after)
+        return JSONResponse({"error": exc.error, "error_description": str(exc)}, status_code=exc.status,
+                            headers=headers)
     except (ValueError, KeyError, AuthError, StoreError) as exc:
         return _error(400, "invalid_request", str(exc))
 
