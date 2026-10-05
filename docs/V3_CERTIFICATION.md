@@ -29,7 +29,7 @@ provider, no network, no model). A scenario passes only by returning; an asserti
 | V4HandoffValidated | the V4 handoff grants nothing, matches the receipt, and five forged variants are refused |
 | V3E2ECertificationPassing | the full journey for all kinds (warehouse) and for three more domains: software dependencies, an LP optimum, a measured sensor fact |
 | V2CertifiedUpstream | all V2 code terms still hold |
-| HandoffBoundToDiscovery | edited specifications, outcomes, criteria and constraints are refused (V2's validator alone accepts them) |
+| HandoffBoundToDiscovery | edited specifications, outcomes, criteria, constraints, objective, assumptions (edited or dropped), candidate and verified facts are refused (V2's validator alone accepts them) |
 | SpecificationCompiled | numbered typed requirements; six malformed specifications refused |
 | ArtifactPlanTraceable | every requirement covered; a plan that drops the tests is refused |
 | GeneratedTestsExecuted | the generated tests run in an isolated interpreter, and a broken check makes them fail |

@@ -9,7 +9,10 @@ V3 closes that before building anything:
    a V1 known claim;
 3. every expected outcome equals the selected candidate's simulation;
 4. every constraint equals the context constraint with its id;
-5. the "success" criterion equals the design recorded in the receipt and every other criterion equals a constraint.
+5. the "success" criterion equals the design recorded in the receipt and every other criterion equals a constraint;
+6. the descriptive record equals the discovery too: the objective equals the receipt's, every assumption equals its
+   context assumption (and none is dropped), the selected candidate and each alternative match their context
+   candidates, each verified fact matches its known fact, and each hypothesis matches its context hypothesis.
 """
 
 from __future__ import annotations
@@ -91,4 +94,51 @@ def handoff_integrity_problems(handoff: Mapping[str, Any], receipt: Mapping[str,
         if expected is None or expected != rel:
             problems.append(f"acceptance_criteria[{i}] {name!r}: not the recorded design success relation or a "
                             "constraint of this discovery")
+
+    problems += _descriptive_problems(handoff, receipt, context, obj)
+    return problems
+
+
+def _measures(c: Any) -> dict:
+    return {"technical_feasibility": c.technical_feasibility, "economic_feasibility": c.economic_feasibility,
+            "expected_value": c.expected_value, "robustness": getattr(c.robustness, "value", c.robustness)}
+
+
+def _descriptive_problems(handoff: Mapping[str, Any], receipt: Mapping[str, Any], context: DiscoveryContext,
+                          obj: Any) -> list[str]:
+    problems = []
+    if handoff.get("objective") != receipt.get("objective"):
+        problems.append("objective differs from the objective recorded in the discovery receipt")
+
+    listed = set()
+    for i, a in enumerate(handoff.get("assumptions") or []):
+        o = obj(a.get("id"))
+        listed.add(a.get("id"))
+        if type(o).__name__ != "Assumption" or any(
+                not _same(getattr(o, k, None), a.get(k)) for k in ("statement", "name", "value", "unit", "sensitivity")):
+            problems.append(f"assumptions[{i}] {a.get('id')!r}: differs from the context assumption")
+    hidden = sorted(o.id for o in context.objects() if type(o).__name__ == "Assumption" and o.id not in listed)
+    if hidden:
+        problems.append(f"assumptions of this discovery are missing from the handoff: {hidden}")
+
+    def candidate(where: str, entry: Mapping[str, Any]) -> None:
+        o = obj(entry.get("id"))
+        if type(o).__name__ != "Candidate" or o.description != entry.get("description") or any(
+                not _same(v, (entry.get("measures") or {}).get(k)) for k, v in _measures(o).items()):
+            problems.append(f"{where} {entry.get('id')!r}: differs from the context candidate")
+
+    candidate("selected_candidate", handoff.get("selected_candidate") or {})
+    for i, alt in enumerate(handoff.get("alternatives") or []):
+        candidate(f"alternatives[{i}]", alt)
+
+    for i, ev in enumerate(handoff.get("verified_evidence") or []):
+        o = obj(ev.get("known_fact_id"))
+        if type(o).__name__ != "KnownFact" or o.claim_id != ev.get("claim_id") or o.statement != ev.get("statement"):
+            problems.append(f"verified_evidence[{i}] {ev.get('claim_id')!r}: differs from its known fact")
+
+    for i, hyp in enumerate(handoff.get("hypotheses") or []):
+        o = obj(hyp.get("id"))
+        if type(o).__name__ not in ("Hypothesis", "CounterHypothesis") or o.statement != hyp.get("statement") or \
+                getattr(o.status, "value", o.status) != hyp.get("status"):
+            problems.append(f"hypotheses[{i}] {hyp.get('id')!r}: differs from the context hypothesis")
     return problems

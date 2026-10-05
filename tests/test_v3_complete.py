@@ -198,6 +198,24 @@ class UpstreamTests(Base):
             self.build(handoff=bad)
         self.assertIn("rent", str(cm.exception))
 
+    def test_descriptive_record_is_bound(self):
+        edits = {
+            "objective": lambda h: h.update(objective="Something else"),
+            "assumption statement": lambda h: h["assumptions"][0].update(statement="Rent is free"),
+            "assumption dropped": lambda h: h["assumptions"].pop(0),
+            "candidate description": lambda h: h["selected_candidate"].update(description="Build a castle"),
+            "candidate measure": lambda h: h["selected_candidate"]["measures"].update(expected_value=1e12),
+            "alternative": lambda h: h["alternatives"][0].update(description="x"),
+            "verified fact": lambda h: h["verified_evidence"][0].update(statement="Made up"),
+        }
+        for label, edit in edits.items():
+            with self.subTest(edit=label):
+                bad = copy.deepcopy(self.handoff)
+                edit(bad)
+                self.assertTrue(handoff_integrity_problems(bad, self.discovery.receipt, self.context))
+                with self.assertRaises(ProductionError):
+                    self.build(handoff=bad)
+
     def test_specification_citing_another_source_is_refused(self):
         bad = copy.deepcopy(self.handoff)
         bad["specifications"][0]["source_id"] = bad["specifications"][1]["source_id"]

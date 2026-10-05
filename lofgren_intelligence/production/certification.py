@@ -298,6 +298,11 @@ def run_v3_certification() -> dict:
             "simulated outcome": lambda h: h["expected_outcomes"][0].update(mean=1e9),
             "acceptance criterion": lambda h: h["acceptance_criteria"][0]["relation"]["rhs"].update(value=-1e12),
             "constraint": lambda h: h["constraints"][0]["relation"].update(op=">="),
+            "objective": lambda h: h.update(objective="Something else"),
+            "assumption": lambda h: h["assumptions"][0].update(statement="Rent is free"),
+            "dropped assumption": lambda h: h["assumptions"].pop(0),
+            "candidate": lambda h: h["selected_candidate"].update(description="Build a castle"),
+            "verified fact": lambda h: h["verified_evidence"][0].update(statement="Made up"),
         }
         for label, edit in edits.items():
             bad = copy.deepcopy(d.handoff)
