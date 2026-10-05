@@ -6,7 +6,7 @@ Open outcome intelligence system for evidence-driven research, verification, dis
 
 > A governed intelligence layer designed to sense the physical and digital world, research problems, verify evidence, generate new possibilities, design solutions, build usable artifacts, execute authorized actions, measure real-world outcomes, and learn from the results.
 >
-> **Built today:** V1 (research and verification), V2 (discovery: hypotheses, candidates, simulation, sensitivity, optimization, decision and a V3 handoff) and V3 (production: a tested, independently verified artifact built from that handoff, with a V4 handoff that grants no authority). Executing actions (V4), measuring outcomes (V5) and learning from them (V6) are not part of this release.
+> **Built today:** the governed V1–V6 stack: V1 research/verification, V2 discovery, V3 production, V4 authorized execution, V5 measured outcomes and V6 reviewed improvement. **Public readiness remains a separate hosted-release gate** covering OAuth, tenant isolation, persistence, deployment identity, real-client interoperability, billing, backup/restore and rollback.
 
 Most AI tools stop at an answer. Lofgren Intelligence is built to carry an objective the whole way to an outcome:
 
@@ -17,7 +17,7 @@ Intent → Plan → Sense → Research → Verify → Imagine → Simulate → O
 
 It is not another chatbot and not another model. Models (Claude, GPT and others) are replaceable suppliers of reasoning. This layer owns what makes results trustworthy: the plan, the evidence, the verification, the authority to act, and the memory of what actually worked.
 
-## Status: V1 — Evidence Intelligence and V2 — Discovery Intelligence
+## Status: governed V1–V6 intelligence stack
 
 V1 runs the first six stages end to end:
 
@@ -55,7 +55,15 @@ The result is a tamper-evident production receipt and a V4 handoff with `authori
 deploys, publishes, purchases, sends or writes to an external repository. It passes its own gate,
 `lofgren certify --v3` ([docs/V3_CERTIFICATION.md](docs/V3_CERTIFICATION.md)).
 
-Later stages are declared in the kernel and show as not yet available in every report. See [docs/ROADMAP.md](docs/ROADMAP.md).
+V4–V6 continue the governed chain:
+
+| Version | Role | Boundary |
+| --- | --- | --- |
+| **V4 — Act** | Executes only identity-bound, explicitly approved, bounded actions with preflight, verification, idempotency and rollback where supported. | Client booleans never grant authority. |
+| **V5 — Measure** | Compares expected outcomes with actual observations, records missing/failed measurements, and keeps descriptive evidence separate from causal claims. | Unmeasured outcomes cannot drive improvement. |
+| **V6 — Improve** | Evaluates candidate improvements against held-out evidence, minimum gain and safety constraints, then produces a review proposal. | V6 cannot silently rewrite policy, history, authority or the running system. |
+
+Each version has its own executable certification gate. The combined lifecycle may be certified while the hosted service still remains **not public-ready** until the public release gate passes.
 
 ### Release 0.2.0: V1 hardened for V2
 
@@ -113,11 +121,14 @@ LOFGREN_PROVIDER=openai-compatible LOFGREN_BASE_URL=http://localhost:11434/v1 LO
 lofgren discover "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources \
   --goal "Choose a warehouse size (fictional)" --design design.json --handoff handoff.json
 
-# The gates: V1, the V1 -> V2 boundary, and V2
+# Version gates
 lofgren certify
 lofgren certify-boundary
 lofgren certify --v2
 lofgren certify --v3
+lofgren certify --v4
+lofgren certify --v5
+lofgren certify --v6
 
 # Production (V3): research, discover, then build, test and verify an artifact
 lofgren produce "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources \
@@ -127,7 +138,7 @@ lofgren verify-artifact build/warehouse
 
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
 
-Lofgren Intelligence has both a local stdio MCP server and a hosted MCP service under release certification. V1 and V2 are certified in the core. The hosted integration now exposes those capabilities through authenticated, tenant-scoped, durable service code, but it is **not public-ready** until the database, OAuth, cross-client, Stripe sandbox, backup/restore, deployment and exact-SHA release evidence gates pass.
+Lofgren Intelligence has both a local stdio MCP server and a hosted MCP service under release certification. The core V1–V6 lifecycle is implemented and certified on the release line. The hosted integration exposes governed lifecycle capabilities through authenticated, tenant-scoped, durable service code, but it is **not public-ready** until OAuth, tenant isolation, restart persistence, real-client, Stripe sandbox, backup/restore, rollback, deployment and exact-SHA release-evidence gates pass.
 
 ```bash
 # Claude Code
@@ -145,9 +156,13 @@ Tools return structured data, not narrative (contract `lofgren.mcp/3`):
 
 - **Research (V1):** `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `export_knowledge_map`, `render_report`, `satellite_passes`, `pricing`.
 - **Discovery (V2):** `discover`, `find_prior_art`, `find_discovery_gaps`, `find_connections`, `generate_hypotheses`, `generate_candidates`, `simulate_candidate`, `analyze_sensitivity`, `optimize_solution`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff`, `render_discovery_report`.
-- **Production (V3):** `build_artifact`, `verify_artifact`, `get_artifact_file`, `get_production_receipt`, `create_v4_handoff`.
+- **Production (V3):** `build_artifact`, `get_artifact`.
+- **Execution (V4):** `propose_action`, `action_status`, `execute_action` — execution remains server-authorized and browser-reviewed; the model cannot self-authorize.
+- **Outcome (V5):** `measure_outcome`, `get_outcome`.
+- **Improvement (V6):** `evaluate_improvement`, `get_improvement`.
+- **Account / billing:** `account_status`, `usage_status`, `create_checkout`, `billing_portal`.
 
-Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server keeps runs/discoveries for its process lifetime. The hosted service uses durable tenant-scoped run and discovery storage and is being certified separately before public release.
+Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server is intended for developer use. The hosted service uses durable tenant-scoped storage for research runs, discoveries, artifacts, actions, outcomes and improvement records and is being certified separately before public release.
 
 ## How a finding earns its status
 
