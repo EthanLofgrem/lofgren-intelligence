@@ -65,13 +65,29 @@ async def readyz(request: Request) -> Response:
         for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_PUBLISHABLE_KEY", "LI_PUBLIC_BASE_URL")
         if not os.environ.get(name)
     ]
+    release_sha = (
+        os.environ.get("LI_RELEASE_SHA")
+        or os.environ.get("VERCEL_GIT_COMMIT_SHA")
+        or os.environ.get("GITHUB_SHA")
+    )
+    if not release_sha:
+        missing.append("release_sha")
     if missing:
         return JSONResponse({"ready": False, "missing": missing}, status_code=503)
     try:
-        SupabaseStore().get_oauth_client("__readiness__")
+        store = SupabaseStore()
+        zero = "00000000-0000-0000-0000-000000000000"
+        store.get_oauth_client("__readiness__")
+        store.get_run(zero, "__readiness__")
+        store.get_discovery(zero, "__readiness__")
+        store.get_artifact(zero, "__readiness__")
+        store.get_action(zero, "__readiness__")
+        store.get_outcome(zero, "__readiness__")
+        store.get_improvement(zero, "__readiness__")
+        store.cost_samples(1)
     except Exception as exc:
-        return JSONResponse({"ready": False, "database": str(exc)}, status_code=503)
-    return JSONResponse({"ready": True})
+        return JSONResponse({"ready": False, "database": str(exc), "release_sha": release_sha}, status_code=503)
+    return JSONResponse({"ready": True, "release_sha": release_sha, "versions": ["V1","V2","V3","V4","V5","V6"]})
 
 
 async def oauth_resource_root(request: Request) -> Response:
