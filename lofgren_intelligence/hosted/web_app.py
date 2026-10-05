@@ -208,7 +208,7 @@ input{{background:#0e1218;color:white;border:1px solid #344054}}button{{backgrou
 small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
 </style></head>
 <body><main><h1>Lofgren Intelligence</h1>
-<p>Connect your AI client to certified V1 Evidence Intelligence.</p>
+<p>Connect your AI client to certified V1 Evidence Intelligence and V2 Discovery Intelligence.</p>
 <p id="consent"><strong>{client_label}</strong> is requesting access to your Lofgren Intelligence account (scope <code>mcp</code>). After you approve, the authorization code is sent to <strong>{redirect_host}</strong>. Only continue if you started this connection from your own AI client.</p>
 <button id="continue" hidden>Approve and continue</button>
 <input id="email" type="email" autocomplete="email" placeholder="Email">
@@ -360,7 +360,7 @@ async def landing(request: Request) -> Response:
     page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lofgren Intelligence</title><style>body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;max-width:760px;margin:60px auto;padding:20px}}code{{background:#171c25;padding:3px 6px;border-radius:5px}}a{{color:#7db2ff}}</style></head>
 <body><h1>Lofgren Intelligence</h1><p>Evidence-driven research and verification through MCP.</p>
-<p><strong>Certified public capability:</strong> V1 Evidence Intelligence. Later versions are not represented as complete until their own gates pass.</p>
+<p><strong>Hosted capability:</strong> V1 Evidence Intelligence and V2 Discovery Intelligence. V3 Production Intelligence is certified for the local CLI/stdio server only and is not exposed here; later versions are not represented as complete until their own gates pass.</p>
 <p>MCP endpoint: <code>{html.escape(base)}/mcp</code></p>
 <p><a href="/healthz">Health</a> · <a href="/.well-known/oauth-authorization-server">OAuth metadata</a> · <a href="/account">Account &amp; privacy</a></p>
 </body></html>"""

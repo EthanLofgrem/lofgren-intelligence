@@ -345,63 +345,6 @@ class RedirectURIValidationTests(unittest.TestCase):
                 self.assertEqual(self._register(uri)["redirect_uris"], [uri])
 
 
-class RedirectURIValidationTests(unittest.TestCase):
-    def _register(self, uri):
-        from lofgren_intelligence.hosted.auth import OAuthService
-        return OAuthService(FakeStore()).register_client({"redirect_uris": [uri]})
-
-    def test_lookalike_loopback_hosts_are_refused(self):
-        from lofgren_intelligence.hosted.auth import AuthError
-        for uri in ("http://localhost.attacker.example/cb", "http://127.0.0.1.attacker.example/cb",
-                    "http://localhostattacker.example/cb", "http://attacker.example/cb",
-                    "http://localhost@attacker.example/cb", "https://user:pw@client.example/cb",
-                    "https://client.example/cb#frag", "javascript:alert(1)", "http://localhost:99999/cb"):
-            with self.subTest(uri=uri), self.assertRaises(AuthError):
-                self._register(uri)
-
-    def test_https_and_exact_loopback_are_accepted(self):
-        for uri in ("https://client.example/cb", "http://localhost/cb", "http://localhost:33418/callback",
-                    "http://127.0.0.1:8080/cb", "http://[::1]:8080/cb", "http://LOCALHOST/cb"):
-            with self.subTest(uri=uri):
-                self.assertEqual(self._register(uri)["redirect_uris"], [uri])
-
-
-class SatellitePassEntitlementTests(unittest.TestCase):
-    ARGS = {"lat": 33.4, "lon": -112.0, "hours": 6, "tle_text": TLE}
-
-    def test_unpaid_account_cannot_run_pass_prediction(self):
-        store = FakeStore(activation_number=1001, kind="paid_required", quota=0.0)
-        with self.assertRaises(PaymentRequired):
-            PublicService(store).satellite_passes("u1", dict(self.ARGS))
-
-    def test_exhausted_quota_refuses_pass_prediction(self):
-        store = FakeStore(quota=10.0)
-        store.record_usage({"id": "e1", "user_id": "u1", "run_id": None, "units": 10.0})
-        with self.assertRaises(QuotaExceeded):
-            PublicService(store).satellite_passes("u1", dict(self.ARGS))
-
-
-class RedirectURIValidationTests(unittest.TestCase):
-    def _register(self, uri):
-        from lofgren_intelligence.hosted.auth import OAuthService
-        return OAuthService(FakeStore()).register_client({"redirect_uris": [uri]})
-
-    def test_lookalike_loopback_hosts_are_refused(self):
-        from lofgren_intelligence.hosted.auth import AuthError
-        for uri in ("http://localhost.attacker.example/cb", "http://127.0.0.1.attacker.example/cb",
-                    "http://localhostattacker.example/cb", "http://attacker.example/cb",
-                    "http://localhost@attacker.example/cb", "https://user:pw@client.example/cb",
-                    "https://client.example/cb#frag", "javascript:alert(1)", "http://localhost:99999/cb"):
-            with self.subTest(uri=uri), self.assertRaises(AuthError):
-                self._register(uri)
-
-    def test_https_and_exact_loopback_are_accepted(self):
-        for uri in ("https://client.example/cb", "http://localhost/cb", "http://localhost:33418/callback",
-                    "http://127.0.0.1:8080/cb", "http://[::1]:8080/cb", "http://LOCALHOST/cb"):
-            with self.subTest(uri=uri):
-                self.assertEqual(self._register(uri)["redirect_uris"], [uri])
-
-
 class SatellitePassEntitlementTests(unittest.TestCase):
     ARGS = {"lat": 33.4, "lon": -112.0, "hours": 6, "tle_text": TLE}
 
@@ -481,6 +424,15 @@ class WebhookOrderingTests(unittest.TestCase):
         with patch.object(li_stripe, "stripe_get", side_effect=StripeAPIError(500, "", "api_error")):
             with self.assertRaises(StripeAPIError):
                 li_stripe.current_subscription_status("sub_x")
+
+
+class HostedCapabilityWordingTests(unittest.TestCase):
+    def test_landing_and_consent_name_the_v2_tools_the_service_exposes(self):
+        with patch.dict(os.environ, ENV, clear=False):
+            landing = _get(web_app.landing, "/").body.decode()
+        self.assertIn("V2 Discovery Intelligence", landing)
+        self.assertIn("not exposed here", landing)
+
 
 if __name__ == "__main__":
     unittest.main()
