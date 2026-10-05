@@ -1,0 +1,87 @@
+name: operational-quality-gate
+
+on:
+  push:
+    branches:
+      - "ops/**"
+      - "build/v2-discovery"
+      - "release/**"
+      - "build/public-hardening"
+  pull_request:
+    branches:
+      - "build/v2-discovery"
+      - "release/**"
+      - "main"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operational-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-certification:
+    name: Offline certification (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install package
+        # The hosted tests on the release line need the hosted extra (mcp, starlette).
+        run: python -m pip install ".[hosted]"
+      - name: Unit and regression tests
+        run: python -m unittest discover -s tests -t . -v
+      - name: V1 certification
+        run: python -m lofgren_intelligence certify
+      - name: Installed CLI smoke test
+        run: |
+          lofgren estimate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources
+          lofgren investigate "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources > /dev/null
+      - name: Import smoke test
+        run: python -c "import lofgren_intelligence; print('import-ok')"
+
+  package:
+    name: Package reproducibility smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Install built wheel in clean venv
+        run: |
+          python -m venv /tmp/lofgren-venv
+          /tmp/lofgren-venv/bin/python -m pip install dist/*.whl
+          /tmp/lofgren-venv/bin/lofgren --help
+      - name: Reject accidental secrets/artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)(\.env($|\.)|.*\.(pem|key|p12|pfx)$)' ; then
+            echo "Tracked secret-like file detected"
+            exit 1
+          fi
+          if git ls-files | grep -E '(^|/)(__pycache__|\.pytest_cache|dist|build)/' ; then
+            echo "Tracked generated artifact detected"
+            exit 1
+          fi

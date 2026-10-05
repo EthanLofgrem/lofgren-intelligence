@@ -22,6 +22,7 @@ from .. import __version__
 from .auth import AuthError, OAuthService
 from .mcp_sdk import build_mcp
 from .journey import checkout_return_html, consent_intro_html, landing_html
+from .ratelimit import rate_limited
 from .service import PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
@@ -209,7 +210,7 @@ async def oauth_authorize(request: Request) -> Response:
         "", "", "",
     ))
     client_name = str(client.get("client_name") or client.get("client_id") or "Unknown MCP client")
-    consent_intro = consent_intro_html(client_name, params["scope"])
+    consent_intro = consent_intro_html(client_name, params["scope"], params["redirect_uri"])
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect Lofgren Intelligence</title>
@@ -535,22 +536,27 @@ def build_app():
         Route("/.well-known/oauth-protected-resource", oauth_resource_root, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth_server_metadata, methods=["GET"]),
         Route("/.well-known/openid-configuration", oauth_server_metadata, methods=["GET"]),
-        Route("/oauth/register", oauth_register, methods=["POST"]),
-        Route("/oauth/authorize", oauth_authorize, methods=["GET"]),
-        Route("/oauth/authorize/complete", oauth_complete, methods=["POST"]),
-        Route("/oauth/token", oauth_token, methods=["POST"]),
+        Route("/oauth/register", rate_limited("oauth_register", oauth_register), methods=["POST"]),
+        Route("/oauth/authorize", rate_limited("oauth_authorize", oauth_authorize), methods=["GET"]),
+        Route("/oauth/authorize/complete", rate_limited("oauth_complete", oauth_complete), methods=["POST"]),
+        Route("/oauth/token", rate_limited("oauth_token", oauth_token), methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
-        Route("/actions/{action_id:str}/details", action_details, methods=["GET"]),
-        Route("/actions/{action_id:str}/approve", action_approve, methods=["POST"]),
+        Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
+        Route("/actions/{action_id:str}/approve", rate_limited("actions", action_approve), methods=["POST"]),
         Route("/account", account_page, methods=["GET"]),
-        Route("/account/export", account_export, methods=["GET"]),
-        Route("/account/delete", account_delete, methods=["POST"]),
+        Route("/account/export", rate_limited("account", account_export), methods=["GET"]),
+        Route("/account/delete", rate_limited("account", account_delete), methods=["POST"]),
         Route("/billing/success", billing_success, methods=["GET"]),
         Route("/billing/cancelled", billing_cancelled, methods=["GET"]),
     ]
 
     mcp = build_mcp(base)
+    # Register the routes through MCPServer.custom_route, the public API in every supported mcp 2.x release.
+    # streamable_http_app(custom_starlette_routes=...) existed only in some releases (2.3.0 rejects it), and
+    # routes registered this way are served without MCP bearer auth, exactly as before.
+    for route in routes:
+        mcp.custom_route(route.path, methods=sorted(route.methods - {"HEAD"}), name=route.name)(route.endpoint)
     app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
@@ -561,7 +567,6 @@ def build_app():
             allowed_hosts=host_entries,
             allowed_origins=origin_entries,
         ),
-        custom_starlette_routes=routes,
         host=hostname,
     )
     app = CORSMiddleware(

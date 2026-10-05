@@ -425,6 +425,61 @@ class HostedLifecycleTests(HostedDiscoveryTests):
         self.assertIsNotNone(store.get_artifact("u1", built["artifact_id"]))
         self.assertIsNotNone(store.get_artifact("u2", built["artifact_id"]))
 
+    def test_stored_then_reloaded_discovery_still_builds_an_artifact(self):
+        # A durable store hands back JSON, never the in-memory discovery: round-trip every row through JSON
+        # and build from a fresh service instance. The V3 upstream check must still pass untouched.
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        for key, row in list(store.discoveries.items()):
+            store.discoveries[key] = json.loads(json.dumps(row))
+        for key, row in list(store.runs.items()):
+            store.runs[key] = json.loads(json.dumps(row))
+        snap = store.get_discovery("u1", discovery["discovery_id"])["snapshot"]
+        self.assertEqual({x["data"]["id"] for x in snap["context_objects"]}, set(snap["receipt"]["objects"]))
+        built = PublicService(store).build_artifact("u1", {
+            "discovery_id": discovery["discovery_id"],
+            "kind": "structured_bundle",
+        })
+        self.assertTrue(built["verified"])
+
+    def test_tampered_or_incomplete_stored_discovery_is_refused(self):
+        store = FakeStore(quota=5000)
+        run = self._research(store)
+        discovery = PublicService(store).discover("u1", {
+            "run_id": run["run_id"],
+            "objective": "Choose a fictional warehouse size",
+            "design": warehouse_design(),
+        })
+        original = json.loads(json.dumps(store.get_discovery("u1", discovery["discovery_id"])))
+        args = {"discovery_id": discovery["discovery_id"]}
+
+        tampered = json.loads(json.dumps(original))
+        assumption = next(x for x in tampered["snapshot"]["context_objects"] if x["type"] == "Assumption")
+        assumption["data"]["value"] = float(assumption["data"]["value"]) * 2 + 1
+        store.save_discovery(tampered)
+        with self.assertRaises(ValueError):
+            PublicService(store).build_artifact("u1", args)
+
+        dropped = json.loads(json.dumps(original))
+        dropped["snapshot"]["context_objects"] = [
+            x for x in dropped["snapshot"]["context_objects"] if x["type"] != "Simulation"
+        ]
+        store.save_discovery(dropped)
+        with self.assertRaises(ValueError):
+            PublicService(store).build_artifact("u1", args)
+
+        missing = json.loads(json.dumps(original))
+        del missing["snapshot"]["context_objects"]
+        store.save_discovery(missing)
+        with self.assertRaises(ValueError):
+            PublicService(store).build_artifact("u1", args)
+        self.assertEqual(store.artifacts, {})
+
     def test_v4_action_requires_browser_approval_before_execution(self):
         store = FakeStore(quota=5000)
         run = self._research(store)
