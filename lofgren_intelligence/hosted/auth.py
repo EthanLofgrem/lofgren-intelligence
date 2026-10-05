@@ -14,6 +14,7 @@ import secrets
 import time
 import re
 import os
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -46,8 +47,28 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
 def _valid_redirect(uri: str) -> bool:
-    return uri.startswith("https://") or uri.startswith("http://localhost") or uri.startswith("http://127.0.0.1")
+    """https anywhere, or plain http only to an exact loopback host.
+
+    A prefix test accepted `http://localhost.attacker.example/` and
+    `http://127.0.0.1.attacker.example/` as loopback, so an authorization code
+    could be sent in clear text to a remote host that the consent page then
+    displayed as "localhost...". The host is parsed and compared exactly.
+    """
+    try:
+        p = urllib.parse.urlsplit(uri)
+        host = (p.hostname or "").lower()
+        p.port  # raises ValueError on a malformed port
+    except ValueError:
+        return False
+    if not host or p.username is not None or p.password is not None or p.fragment:
+        return False
+    if p.scheme == "https":
+        return True
+    return p.scheme == "http" and host in _LOOPBACK_HOSTS
 
 
 @dataclass(frozen=True)

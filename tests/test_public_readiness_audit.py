@@ -323,5 +323,26 @@ class WebhookPaymentStatusTests(unittest.TestCase):
         self.assertEqual(ent["kind"], "paid")
 
 
+
+class RedirectURIValidationTests(unittest.TestCase):
+    def _register(self, uri):
+        from lofgren_intelligence.hosted.auth import OAuthService
+        return OAuthService(FakeStore()).register_client({"redirect_uris": [uri]})
+
+    def test_lookalike_loopback_hosts_are_refused(self):
+        from lofgren_intelligence.hosted.auth import AuthError
+        for uri in ("http://localhost.attacker.example/cb", "http://127.0.0.1.attacker.example/cb",
+                    "http://localhostattacker.example/cb", "http://attacker.example/cb",
+                    "http://localhost@attacker.example/cb", "https://user:pw@client.example/cb",
+                    "https://client.example/cb#frag", "javascript:alert(1)", "http://localhost:99999/cb"):
+            with self.subTest(uri=uri), self.assertRaises(AuthError):
+                self._register(uri)
+
+    def test_https_and_exact_loopback_are_accepted(self):
+        for uri in ("https://client.example/cb", "http://localhost/cb", "http://localhost:33418/callback",
+                    "http://127.0.0.1:8080/cb", "http://[::1]:8080/cb", "http://LOCALHOST/cb"):
+            with self.subTest(uri=uri):
+                self.assertEqual(self._register(uri)["redirect_uris"], [uri])
+
 if __name__ == "__main__":
     unittest.main()
