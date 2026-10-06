@@ -21,6 +21,7 @@ from starlette.routing import Route
 from .. import __version__
 from .auth import ActivationRefused, AuthError, OAuthService
 from .mcp_sdk import build_mcp
+from . import console, site
 from .journey import checkout_return_html, consent_intro_html, landing_html
 from .ratelimit import client_ip, rate_limited
 from .service import PublicService, PublicServiceError
@@ -466,7 +467,40 @@ async def billing_cancelled(request: Request) -> Response:
 
 
 async def landing(request: Request) -> Response:
-    return HTMLResponse(landing_html(public_base()), headers={"Cache-Control": "no-store"})
+    nonce = site.new_nonce()
+    return HTMLResponse(landing_html(public_base(), nonce), headers=site.page_headers(nonce))
+
+
+def _site_page(render, needs_base: bool = False):
+    """Wrap a presentation-only page renderer (no store, no network, no auth)."""
+
+    async def endpoint(request: Request) -> Response:
+        nonce = site.new_nonce()
+        body = render(public_base(), nonce) if needs_base else render(nonce)
+        return HTMLResponse(body, headers=site.page_headers(nonce))
+
+    endpoint.__name__ = "site_" + getattr(render, "__name__", "page")
+    return endpoint
+
+
+async def static_asset(request: Request) -> Response:
+    name = str(request.path_params["name"])
+    data = site.static_bytes(name)
+    if data is None:
+        return PlainTextResponse("not found", status_code=404)
+    return Response(data, media_type=site.STATIC_TYPES[name],
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+# Public site and research-console shell. The MCP transport owns /mcp, so the
+# human-readable MCP page is served at site.MCP_PAGE.
+SITE_ROUTES = (
+    ("/product", site.product_page, False),
+    ("/pricing", site.pricing_page, False),
+    (site.MCP_PAGE, site.mcp_page, True),
+    ("/docs", site.docs_page, True),
+    ("/about", site.about_page, False),
+) + tuple((path, render, False) for path, render in console.PAGES.items())
 
 
 class RequestTelemetry:
@@ -556,7 +590,11 @@ def build_app():
         Route("/account/delete", rate_limited("account", account_delete), methods=["POST"]),
         Route("/billing/success", billing_success, methods=["GET"]),
         Route("/billing/cancelled", billing_cancelled, methods=["GET"]),
+        Route("/static/{name:str}", static_asset, methods=["GET"]),
     ]
+    routes.extend(
+        Route(path, _site_page(render, needs_base), methods=["GET"]) for path, render, needs_base in SITE_ROUTES
+    )
 
     mcp = build_mcp(base)
     # Register the routes through MCPServer.custom_route, the public API in every supported mcp 2.x release.

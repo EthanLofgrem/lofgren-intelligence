@@ -22,3 +22,7 @@ lofgren = "lofgren_intelligence.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["lofgren_intelligence*"]
+
+[tool.setuptools.package-data]
+# Static CSS/JS/SVG for the public site and console shell (served from /static/).
+"lofgren_intelligence.hosted" = ["static/*.css", "static/*.js", "static/*.svg"]
