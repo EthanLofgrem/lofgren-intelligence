@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .. import __version__
-from ..certification import AGREE_AND_CONFLICT, OBJECTIVE, SCOPED, STALE, SYNDICATED, _docs, _run, run_certification
+from ..certification import AGREE_AND_CONFLICT, CERT_NOW, OBJECTIVE, SCOPED, STALE, SYNDICATED, _docs, _run, run_certification
 from ..evidence.graph import EvidenceGraph
 from ..kernel.knowledge_map import export_knowledge_map
 from ..models.provider import HeuristicProvider
@@ -494,7 +494,7 @@ def t_mcp() -> str:
     assert ALIASES == {"compile_intent": "compile_objective", "estimate_cost": "plan_research"}
     assert CONTRACT in ("lofgren.mcp/2", "lofgren.mcp/3")  # /3 adds V3 tools and changes no V1 or V2 tool
     assert all("inputSchema" in t for t in DISCOVERY_TOOLS)
-    srv = Server()
+    srv = Server(now=CERT_NOW)  # fixtures describe 2026: verify them on the certification clock
 
     def call(name, args):
         return srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name,

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..certification import AGREE_AND_CONFLICT, OBJECTIVE, _docs, _run
+from ..certification import AGREE_AND_CONFLICT, CERT_NOW, OBJECTIVE, _docs, _run
 from ..discovery import fixtures as F
 from ..discovery.context import DiscoveryContext
 from ..discovery.fixtures import AT, warehouse_design
@@ -425,7 +425,7 @@ def run_v3_certification() -> dict:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = main(["produce", OBJECTIVE, "--files", str(root / "docs"), "--goal",
                            "Choose a warehouse size (fictional)", "--design", str(root / "design.json"),
-                           "--out-dir", str(root / "art")])
+                           "--out-dir", str(root / "art"), "--as-of", CERT_NOW.isoformat()])
                 assert rc == 0, err.getvalue()
                 assert main(["verify-artifact", str(root / "art")]) == 0
                 (root / "art" / "README.md").write_text("changed", encoding="utf-8")
@@ -437,7 +437,7 @@ def run_v3_certification() -> dict:
         from ..mcp.server import CONTRACT, PRODUCTION_TOOLS, Server
 
         assert CONTRACT == "lofgren.mcp/3" and all("inputSchema" in t and "outputSchema" in t for t in PRODUCTION_TOOLS)
-        srv = Server()
+        srv = Server(now=CERT_NOW)
 
         def call(name, args):
             return srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -488,7 +488,7 @@ def run_v3_certification() -> dict:
         run = _run(OBJECTIVE, _docs(AGREE_AND_CONFLICT))
         d = discover_from_run(run, "Choose a warehouse size (fictional)", design=F.infeasible_design(), at=AT)
         assert d.handoff is None and d.outcome.value == "infeasible"
-        srv = Server()
+        srv = Server(now=CERT_NOW)
         srv.discoveries[d.receipt["discovery_id"]] = d
         out = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                           "params": {"name": "build_artifact", "arguments": {"discovery_id": d.receipt["discovery_id"]}}})

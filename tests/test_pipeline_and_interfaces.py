@@ -207,7 +207,7 @@ class MCPTests(unittest.TestCase):
         from lofgren_intelligence.orbital import format_tle
 
         l1, l2 = format_tle(SUN_SYNC.__class__(**{**SUN_SYNC.__dict__, "epoch": EPOCH}))
-        s = Server()
+        s = Server(now=EPOCH)  # predict from the elements' epoch, not from a wall clock drifting away from it
         out = self.call(s, 5, "tools/call", {"name": "satellite_passes", "arguments": {
             "lat": PHOENIX[0], "lon": PHOENIX[1], "tle_text": f"S2A\n{l1}\n{l2}", "hours": 24}})
         self.assertFalse(out["result"]["isError"])

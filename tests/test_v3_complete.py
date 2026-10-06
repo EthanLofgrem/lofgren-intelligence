@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lofgren_intelligence.certification import AGREE_AND_CONFLICT, OBJECTIVE
+from lofgren_intelligence.certification import AGREE_AND_CONFLICT, CERT_NOW, OBJECTIVE
 from lofgren_intelligence.discovery import fixtures as F
 from lofgren_intelligence.discovery.expr import Relation, env_of
 from lofgren_intelligence.mcp.server import PRODUCTION_TOOLS, Server
@@ -277,7 +277,7 @@ class InterfaceTests(unittest.TestCase):
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                 rc = main(["produce", OBJECTIVE, "--files", str(root / "docs"), "--design", str(root / "design.json"),
-                           "--out-dir", str(root / "art")])
+                           "--out-dir", str(root / "art"), "--as-of", CERT_NOW.isoformat()])
             self.assertEqual(rc, 2)
             self.assertIn("infeasible", err.getvalue())
             self.assertFalse((root / "art").exists())

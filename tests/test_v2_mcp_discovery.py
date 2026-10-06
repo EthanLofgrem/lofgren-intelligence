@@ -26,7 +26,7 @@ def required(tool_name: str) -> list[str]:
 class InProcess(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = Server()
+        cls.srv = Server(now=C.CERT_NOW)  # the fixtures describe 2026: verify on the certification clock
         cls.run_id = cls.call("investigate", {"objective": C.OBJECTIVE, "texts": C.AGREE_AND_CONFLICT})["structuredContent"]["run_id"]
         out = cls.call("discover", {"run_id": cls.run_id, "objective": "Choose a warehouse size (fictional)",
                                     "design": F.warehouse_design()})
@@ -129,7 +129,8 @@ class InProcess(unittest.TestCase):
 
 class OverStdio(unittest.TestCase):
     def test_a_real_session(self):
-        p = subprocess.Popen([sys.executable, "-m", "lofgren_intelligence", "mcp"], cwd=ROOT, stdin=subprocess.PIPE,
+        p = subprocess.Popen([sys.executable, "-m", "lofgren_intelligence", "mcp",
+                              "--as-of", C.CERT_NOW.isoformat()], cwd=ROOT, stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
         n = [0]
 

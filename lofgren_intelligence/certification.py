@@ -253,7 +253,7 @@ def s_offline_behavior() -> str:
 def s_mcp_contract() -> str:
     from .mcp.server import Server
 
-    s = Server()
+    s = Server(now=CERT_NOW)  # the certification clock, like every other scenario
     init = s.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
     assert init["result"]["serverInfo"]["version"] == __version__
     out = s.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",

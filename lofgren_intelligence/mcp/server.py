@@ -35,6 +35,7 @@ from ..orbital.propagate import PROPAGATOR, find_passes
 from ..orbital.tle import parse_tle_text
 from ..report.markdown import render_markdown
 from ..research.planner import gap_unknowns, plan_research
+from ..verification.engine import Verifier
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CONTRACT = "lofgren.mcp/3"  # V1 and V2 tools unchanged; V3 production tools added
@@ -279,7 +280,12 @@ def _out(data: Any) -> dict:
 
 
 class Server:
-    def __init__(self) -> None:
+    def __init__(self, now: datetime | None = None) -> None:
+        # `now` pins the session clock: evidence is verified, and passes predicted, as of that instant.
+        # None (the default, and what `lofgren mcp` uses unless --as-of is given) reads the real clock.
+        if now is not None and now.tzinfo is None:
+            raise ValueError("Server(now=...) needs a timezone-aware datetime")
+        self.now = now
         self.runs: dict[str, RunResult] = {}
         self.discoveries: dict[str, Any] = {}
         self.artifacts: dict[str, Any] = {}
@@ -336,6 +342,12 @@ class Server:
     def _contract(self, objective: str, a: dict):
         return compile_intent(objective, max_spend_usd=float(a.get("max_spend_usd", 5.0)), location=self._location(a))
 
+    def _clock(self) -> datetime:
+        return self.now or datetime.now(timezone.utc)
+
+    def _verifier(self) -> Verifier | None:
+        return Verifier(now=self.now) if self.now is not None else None
+
     def _get_run(self, a: dict) -> RunResult:
         run = self.runs.get(a.get("run_id", ""))
         if run is None:
@@ -344,7 +356,8 @@ class Server:
 
     def _run(self, objective: str, a: dict) -> dict:
         result = run_investigation(self._contract(objective, a), self._registry(a), default_provider(),
-                                   a.get("plan", "payg"), approved=bool(a.get("approve")))
+                                   a.get("plan", "payg"), approved=bool(a.get("approve")),
+                                   verifier=self._verifier())
         run_id = result.receipt.get("research_id")
         self.runs[run_id] = result
         q_index = {q.id: i + 1 for i, q in enumerate(result.contract.questions)}
@@ -436,7 +449,7 @@ class Server:
             tles = fetch_tles([s.norad_id for s in IMAGING_SATELLITES])
         else:
             raise ToolError("provide tle_text, tle_path, or fetch=true")
-        start = datetime.now(timezone.utc)
+        start = self._clock()
         passes = []
         for t in tles:
             passes += find_passes(t, float(a["lat"]), float(a["lon"]), start, float(a.get("hours", 24)),
@@ -680,8 +693,8 @@ def _error(mid: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
-def serve(stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout) -> None:
-    server = Server()
+def serve(stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout, now: datetime | None = None) -> None:
+    server = Server(now=now)
     for line in stdin:
         line = line.strip()
         if not line:

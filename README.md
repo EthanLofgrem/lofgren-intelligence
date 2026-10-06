@@ -136,6 +136,10 @@ lofgren produce "Is industrial construction in the Phoenix metro increasing?" --
 lofgren verify-artifact build/warehouse
 ```
 
+`investigate`, `discover`, `produce` and `mcp` take `--as-of 2026-09-30T12:00:00Z` to verify evidence as of a
+fixed instant instead of now (staleness and future-dated evidence are judged against it). The certifications
+pin their own clock this way, so they give the same answer whenever they run.
+
 ## Use it inside Claude Code, Codex and other AI tools (MCP)
 
 Lofgren Intelligence has both a local stdio MCP server and a hosted MCP service under release certification. The core V1–V6 lifecycle is implemented and certified on the release line. The hosted integration exposes governed lifecycle capabilities through authenticated, tenant-scoped, durable service code, but it is **not public-ready** until OAuth, tenant isolation, restart persistence, real-client, Stripe sandbox, backup/restore, rollback, deployment and exact-SHA release-evidence gates pass.

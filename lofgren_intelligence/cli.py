@@ -23,6 +23,7 @@ from .kernel.pipeline import estimate_run, run_investigation
 from .kernel.knowledge_map import export_knowledge_map
 from .kernel.state import export_state
 from .verification.calibration import PredictionLog
+from .verification.engine import Verifier
 from .models.provider import default_provider
 from .orbital.catalog import IMAGING_SATELLITES, fetch_tles, load_tles
 from .orbital.propagate import PROPAGATOR, find_passes
@@ -45,6 +46,27 @@ def _add_sources(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lon", type=float)
     p.add_argument("--plan", default="payg", choices=sorted(PLANS))
     p.add_argument("--max-spend", type=float, default=5.0, help="research spend cap in USD")
+
+
+def _as_of(text: str) -> datetime:
+    """An explicit, timezone-aware ISO 8601 instant (a trailing Z means UTC)."""
+    try:
+        value = datetime.fromisoformat(text.strip().replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an ISO 8601 instant: {text!r}") from None
+    if value.tzinfo is None:
+        raise argparse.ArgumentTypeError(f"--as-of needs a timezone offset or Z: {text!r}")
+    return value.astimezone(timezone.utc)
+
+
+def _add_as_of(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--as-of", dest="as_of", type=_as_of, default=None, metavar="INSTANT",
+                   help="verify evidence as of this ISO 8601 instant, e.g. 2026-09-30T12:00:00Z (default: now)")
+
+
+def _verifier(args: argparse.Namespace) -> Verifier | None:
+    as_of = getattr(args, "as_of", None)
+    return Verifier(now=as_of) if as_of is not None else None
 
 
 def _setup(args: argparse.Namespace):
@@ -77,7 +99,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     contract, registry = _setup(args)
     log = PredictionLog(args.log) if args.log else None
     result = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve,
-                               prediction_log=log)
+                               prediction_log=log, verifier=_verifier(args))
     md = render_markdown(result)
     if args.out:
         Path(args.out).write_text(md, encoding="utf-8")
@@ -131,7 +153,8 @@ def cmd_discover(args: argparse.Namespace) -> int:
     from .discovery.report import render_discovery_markdown
 
     contract, registry = _setup(args)
-    run = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve)
+    run = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve,
+                            verifier=_verifier(args))
     result = discover_from_run(run, args.goal or args.objective, design=_json_file(args.design, "design"),
                                prior_art=_json_file(args.prior_art, "prior-art"))
     md = render_discovery_markdown(result)
@@ -161,7 +184,8 @@ def cmd_produce(args: argparse.Namespace) -> int:
     from .production import ProductionError, build_artifact, write_artifact
 
     contract, registry = _setup(args)
-    run = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve)
+    run = run_investigation(contract, registry, default_provider(), args.plan, approved=args.approve,
+                            verifier=_verifier(args))
     result = discover_from_run(run, args.goal or args.objective, design=_json_file(args.design, "design"),
                                prior_art=_json_file(args.prior_art, "prior-art"))
     if result.handoff is None:
@@ -302,10 +326,10 @@ def cmd_satellites(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_mcp(_: argparse.Namespace) -> int:
+def cmd_mcp(args: argparse.Namespace) -> int:
     from .mcp.server import serve
 
-    serve()
+    serve(now=getattr(args, "as_of", None))
     return 0
 
 
@@ -316,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("investigate", help="run the V1 loop and write a verified report")
     _add_sources(p)
+    _add_as_of(p)
     p.add_argument("--approve", action="store_true", help="approve actions that need approval")
     p.add_argument("--out", help="write the Markdown report here")
     p.add_argument("--json", help="write the full run (findings, graph, ledger, receipt) as JSON here")
@@ -355,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("discover", help="research an objective (V1), then run Discovery Intelligence (V2) over it")
     _add_sources(p)
+    _add_as_of(p)
     p.add_argument("--goal", help="the discovery objective, if different from the research objective")
     p.add_argument("--design", help="design space JSON: model, assumptions, constraints, candidates, optimization")
     p.add_argument("--prior-art", dest="prior_art", help="prior-art fixture JSON: subject, queries, records, coverage")
@@ -367,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("produce", help="research (V1), discover (V2), then build and verify an artifact (V3)")
     _add_sources(p)
+    _add_as_of(p)
     p.add_argument("--goal", help="the discovery objective, if different from the research objective")
     p.add_argument("--design", required=True, help="design space JSON (see docs/DISCOVERY.md)")
     p.add_argument("--prior-art", dest="prior_art", help="prior-art fixture JSON")
@@ -394,7 +421,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_certify_boundary)
 
     sub.add_parser("satellites", help="list open-data imaging satellites").set_defaults(fn=cmd_satellites)
-    sub.add_parser("mcp", help="run as an MCP server over stdio").set_defaults(fn=cmd_mcp)
+    p = sub.add_parser("mcp", help="run as an MCP server over stdio")
+    _add_as_of(p)
+    p.set_defaults(fn=cmd_mcp)
 
     args = parser.parse_args(argv)
     _utf8_output()
