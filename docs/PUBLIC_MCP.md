@@ -21,7 +21,7 @@ The exact hosted tool list is generated, not hand-maintained:
 registry `build_mcp` serves and assigns each tool its level. A test keeps the
 registry, the manifest and this list equal.
 
-- **V1** (Evidence intelligence (research and verification)): `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
+- **V1** (Evidence intelligence (research and verification)): `cancel_research`, `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_job_status`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `start_research`, `trace_claim`, `verify_claim`.
 - **V2** (Discovery intelligence): `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
 - **V3** (Production (verified artifacts)): `build_artifact`, `get_artifact`.
 - **V4** (Authorized execution (browser-approved actions)): `action_status`, `execute_action`, `propose_action`.
@@ -79,6 +79,29 @@ charter versions, approvals and an audit trail (`li_case_events`) are stored
 by migration `20261006060000_intelligence_cases.sql` (RLS enabled, no
 anon/authenticated grants). `case_status` reads a case and its approval
 state.
+
+## Durable research jobs
+
+`investigate` runs inside one HTTP request, and that request is capped at 60
+seconds. It therefore accepts only bounded work. Anything larger is refused
+with `ASYNC_REQUIRED`. `start_research` handles that work. It takes the same
+inputs plus `idempotency_key` and an optional `max_units` budget. It reserves
+usage, enqueues a durable job and returns its `job_id` at once. The same key
+returns the same job and never runs it twice.
+
+With a `case_id`, the approval is consumed once at enqueue. The job stores the
+approved charter's objective, sources and budget, and the worker uses only
+those. `get_job_status` reads a job's status, attempts, units so far and,
+once it has succeeded, the run summary. `cancel_research` cancels a queued job
+at once. A running job stops at its next stage, is charged only for the work
+done and reports `cancelled`. A finished job is not changed.
+
+Refusals are typed: `JOB_NOT_FOUND` (this is also returned for another
+account's job), `JOB_INVALID` and `ASYNC_REQUIRED`. Jobs are stored by
+migration `20261006070000_li_research_jobs.sql`, with RLS enabled and no
+anon/authenticated grants. An always-on worker process runs them; see
+[WORKER_RUNTIME.md](WORKER_RUNTIME.md). No worker deployment is verified by
+this repository.
 
 ## Identity and OAuth
 

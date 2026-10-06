@@ -264,6 +264,55 @@ def build_mcp(base_url: str) -> MCPServer:
         return service.investigate(user_id, args, base)
 
     @tool()
+    def start_research(
+        objective: str,
+        answers: dict[str, str] | None = None,
+        case_id: str | None = None,
+        idempotency_key: str | None = None,
+        max_units: float | None = None,
+        texts: dict[str, str] | None = None,
+        urls: list[str] | None = None,
+        search: str | None = None,
+        lat: float | None = None,
+        lon: float | None = None,
+        fetch_orbits: bool = False,
+        imagery: bool = False,
+        max_spend_usd: float = 5.0,
+    ) -> dict[str, Any]:
+        """Queue V1 research as a durable job and return its job_id at once (no 60 s request limit).
+
+        A background worker runs the job; poll get_job_status, stop it with cancel_research.
+        Usage is reserved now and held for the job's life. The same idempotency_key returns the
+        same job and never runs twice. With case_id the approved charter is consumed once and its
+        frozen objective, sources and budget are the only inputs the worker uses.
+        """
+        user_id, service = _caller()
+        args = _source_args(
+            texts=texts, urls=urls, search=search, lat=lat, lon=lon,
+            fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
+        ) | {"objective": objective, "answers": answers or {}}
+        if case_id is not None:
+            args["case_id"] = case_id
+        if idempotency_key is not None:
+            args["idempotency_key"] = idempotency_key
+        if max_units is not None:
+            args["max_units"] = max_units
+        return service.start_research(user_id, args, base)
+
+    @tool()
+    def get_job_status(job_id: str) -> dict[str, Any]:
+        """Read one of your research jobs: status, attempts, units so far and, once it succeeded, the result."""
+        user_id, service = _caller()
+        return service.get_job_status(user_id, {"job_id": job_id})
+
+    @tool()
+    def cancel_research(job_id: str) -> dict[str, Any]:
+        """Cancel one of your research jobs: a queued job ends now; a running job stops at its next stage
+        and is charged only for the work done; a finished job is unchanged."""
+        user_id, service = _caller()
+        return service.cancel_research(user_id, {"job_id": job_id})
+
+    @tool()
     def verify_claim(
         claim: str,
         texts: dict[str, str] | None = None,

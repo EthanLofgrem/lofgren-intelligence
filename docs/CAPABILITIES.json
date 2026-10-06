@@ -7,6 +7,7 @@
       "title": "Evidence intelligence (research and verification)",
       "public": true,
       "tools": [
+        "cancel_research",
         "case_status",
         "clarify_objective",
         "compile_objective",
@@ -15,11 +16,13 @@
         "find_contradictions",
         "find_gaps",
         "get_finding",
+        "get_job_status",
         "get_receipt",
         "investigate",
         "plan_research",
         "render_report",
         "satellite_passes",
+        "start_research",
         "trace_claim",
         "verify_claim"
       ]
@@ -133,6 +136,15 @@
       "gated_by": null,
       "metering": {
         "kind": "reserved"
+      }
+    },
+    {
+      "name": "cancel_research",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
       }
     },
     {
@@ -326,6 +338,15 @@
       }
     },
     {
+      "name": "get_job_status",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
+      }
+    },
+    {
       "name": "get_outcome",
       "level": "V5",
       "public": true,
@@ -434,6 +455,15 @@
       "metering": {
         "kind": "flat",
         "units_per_call": 5.0
+      }
+    },
+    {
+      "name": "start_research",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "reserved"
       }
     },
     {

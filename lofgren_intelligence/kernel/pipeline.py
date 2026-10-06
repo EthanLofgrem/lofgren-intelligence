@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Callable
 from datetime import datetime, timezone
 
 from ..adapters.base import AdapterRegistry
@@ -117,7 +118,17 @@ def run_investigation(
     approved: bool = False,
     prediction_log: PredictionLog | None = None,
     ledger: CostLedger | None = None,
+    stage_hook: Callable[[str], None] | None = None,
 ) -> RunResult:
+    """Run one investigation.
+
+    `stage_hook`, when given, is called with the name of the next stage at each
+    stage boundary ("sense" before every source call, then "verify" and
+    "report"). A durable worker uses it to checkpoint, honour a cancel request
+    or stop on an exhausted budget by raising; the ledger keeps the cost
+    incurred so far readable after such a raise. Without a hook the run is
+    unchanged.
+    """
     provider = provider or HeuristicProvider()
     verifier = verifier or Verifier()
     graph = EvidenceGraph()
@@ -163,6 +174,8 @@ def run_investigation(
         if not rule.worth_it(task, budget_units - used_units):
             skipped += 1
             continue
+        if stage_hook is not None:
+            stage_hook("sense")
         adapter = registry.get(task.adapter_id)
         out = adapter.gather(questions[task.question_id], contract)
         used_units += task.work_units
@@ -202,6 +215,8 @@ def run_investigation(
                     f"independent lineages, {len(graph.evidence)} evidence items, {len(graph.claims)} claims"))
 
     # ---- VERIFY -------------------------------------------------------------
+    if stage_hook is not None:
+        stage_hook("verify")
     verifier.verify(graph, contract.evidence_standard.min_independent_sources,
                     contract.evidence_standard.min_confidence)
     result.factors = dict(verifier.factors)
@@ -218,6 +233,8 @@ def run_investigation(
         result.add_unknown(u)
 
     # ---- REPORT -------------------------------------------------------------
+    if stage_hook is not None:
+        stage_hook("report")
     result.findings = build_findings(result)
     used_units += REPORT_UNITS
     ledger.record("report", "report", "report", REPORT_UNITS, 0.0, f"{len(result.findings)} findings")
