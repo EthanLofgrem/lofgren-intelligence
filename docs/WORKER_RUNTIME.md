@@ -52,7 +52,15 @@ with no attempts left, and a job that waits past the queue TTL.
 
 Checkpoint phases `result_saved` and `finalizing` make finishing idempotent. A
 worker that resumes a reclaimed job in one of these phases settles and
-finishes it without running the research again.
+finishes it without running the research again. Such a requeue uses no
+attempt, so it is counted separately (`finalize_reclaims`, migration
+20261006080000_li_research_job_finalize_cap). After
+`LI_JOB_MAX_FINALIZE_RECLAIMS` requeues, the next expired lease fails the job
+with `SETTLEMENT_ABANDONED` instead of requeueing it forever: a saved result is
+kept (`result_run_id`, shown by `get_job_status`), and the recorded work is
+left as an unsettled-usage marker (with the run id when the result was saved)
+that the next reconcile charges exactly once. A reservation that was already
+settled or marked is left alone.
 
 ## Retries, leases and timings (environment)
 
@@ -63,6 +71,7 @@ finishes it without running the research again.
 | `LI_WORKER_HEARTBEAT_SECONDS` | 30 | Heartbeat interval (capped at lease/3). |
 | `LI_RESERVATION_HOLD_GRACE_SECONDS` | 300 | Reservation hold beyond the lease. |
 | `LI_JOB_MAX_ATTEMPTS` | 3 | Attempts before a retryable failure becomes `failed` (1-10). |
+| `LI_JOB_MAX_FINALIZE_RECLAIMS` | 3 | Requeues of a job whose worker died while settling it before it fails with `SETTLEMENT_ABANDONED` (1-10). |
 | `LI_JOB_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | 30 / 900 | Exponential retry backoff. |
 | `LI_JOB_QUEUE_TTL_SECONDS` | 86400 | A queued job not started within this fails with `QUEUE_EXPIRED`. |
 | `LI_WORKER_POLL_SECONDS` | 5 | Idle poll interval. |

@@ -85,7 +85,8 @@ class Worker:
         out: dict[str, Any] = {}
         try:
             out["reclaimed"] = self.store.reclaim_research_jobs(self.settings.reclaim_limit,
-                                                                self.settings.queue_ttl_seconds)
+                                                                self.settings.queue_ttl_seconds,
+                                                                self.settings.max_finalize_reclaims)
         except Exception:
             _LOG.warning("reclaiming expired research jobs failed; retrying next cycle")
             out["reclaimed"] = None

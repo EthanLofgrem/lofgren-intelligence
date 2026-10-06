@@ -58,6 +58,10 @@ class JobSettings:
     heartbeat_seconds: float = 30.0
     hold_grace_seconds: int = 300
     max_attempts: int = 3
+    # Requeues allowed for a job whose worker keeps dying while it settles (checkpoint
+    # phase result_saved/finalizing); the next expired lease fails it with
+    # SETTLEMENT_ABANDONED, keeping the result and leaving an unsettled-usage marker.
+    max_finalize_reclaims: int = 3
     queue_ttl_seconds: int = 86_400
     backoff_base_seconds: int = 30
     backoff_max_seconds: int = 900
@@ -77,6 +81,7 @@ class JobSettings:
             heartbeat_seconds=heartbeat,
             hold_grace_seconds=_int_env("LI_RESERVATION_HOLD_GRACE_SECONDS", 300, 0),
             max_attempts=min(10, _int_env("LI_JOB_MAX_ATTEMPTS", 3, 1)),
+            max_finalize_reclaims=min(10, _int_env("LI_JOB_MAX_FINALIZE_RECLAIMS", 3, 1)),
             queue_ttl_seconds=_int_env("LI_JOB_QUEUE_TTL_SECONDS", 86_400, 60),
             backoff_base_seconds=_int_env("LI_JOB_BACKOFF_BASE_SECONDS", 30, 0),
             backoff_max_seconds=_int_env("LI_JOB_BACKOFF_MAX_SECONDS", 900, 0),

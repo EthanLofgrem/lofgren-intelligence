@@ -203,6 +203,35 @@ class FakeStore:
         elif res["status"] == "reserved":
             res.update({"status": "released", "held_until": None})
 
+    def _job_abandon_settlement(self, job):
+        """li_research_job_abandon_settlement (finalize-cap migration): account a job whose settlement
+        was abandoned. Open reservation: an unsettled marker with the checkpoint's units, cost and
+        unpriced components (and the run for a saved result); settled or marked: unchanged."""
+        res = self.reservations.get(job["reservation_id"])
+        if res is None:
+            return
+        cp = job["checkpoint"]
+
+        def number(key):
+            v = cp.get(key)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+        saved = cp.get("phase") == "result_saved"
+        units = max(float(job["cost_so_far"] or 0.0), number("units"), 0.0)
+        cost = max(number("known_cost_usd"), 0.0)
+        unpriced = list(cp["unpriced"]) if isinstance(cp.get("unpriced"), list) else []
+        if not saved:
+            unpriced.append("partial_run")
+        unpriced.append("settlement_abandoned")
+        if units > 0 or cost > 0:
+            if res["status"] in ("reserved", "expired", "released"):
+                res.update({"status": "unsettled", "run_id": job["result_run_id"] if saved else None,
+                            "pending_units": units, "pending_known_cost_usd": cost,
+                            "pending_unpriced_components": unpriced})
+        elif res["status"] == "reserved":
+            res["status"] = "released"
+        res["held_until"] = None
+
     def enqueue_research_job(self, job_id, user_id, case_id, kind, idempotency_key, job_input,
                              reservation_id, max_attempts, queue_ttl_seconds):
         from datetime import timedelta
@@ -227,6 +256,7 @@ class FakeStore:
                 "reservation_id": reservation_id, "result_run_id": None, "error_code": None, "cost_so_far": 0.0,
                 "not_before": now, "queue_expires_at": until, "created_at": now, "updated_at": now,
                 "started_at": None, "finished_at": None, "cancel_requested_at": None,
+                "finalize_reclaims": 0,
             }
             return self._job_out(self.jobs[job_id], created=True)
 
@@ -326,18 +356,28 @@ class FakeStore:
                 row.update({"status": "cancel_requested", "cancel_requested_at": now, "updated_at": now})
             return self._job_out(row)
 
-    def reclaim_research_jobs(self, limit, queue_ttl_seconds):
+    def reclaim_research_jobs(self, limit, queue_ttl_seconds, max_finalize_reclaims=3):
         from datetime import timedelta
         with self._job_lock:
             now = self._job_now()
             until = now + timedelta(seconds=max(int(queue_ttl_seconds or 86400), 1))
+            cap = min(max(int(3 if max_finalize_reclaims is None else max_finalize_reclaims), 1), 10)
             ids = []
             expired = sorted((r for r in self.jobs.values() if r["status"] in ("running", "cancel_requested")
                               and r["lease_expires_at"] is not None and r["lease_expires_at"] <= now),
                              key=lambda r: (r["lease_expires_at"], r["id"]))[:max(int(limit or 100), 1)]
             for row in expired:
                 finishing = row["checkpoint"].get("phase") in ("result_saved", "finalizing")
-                if not finishing and (row["status"] == "cancel_requested" or row["attempts"] >= row["max_attempts"]):
+                if finishing and row["finalize_reclaims"] >= cap:
+                    run_id = row["checkpoint"].get("run_id")
+                    if row["checkpoint"].get("phase") == "result_saved" and run_id:
+                        row["result_run_id"] = str(run_id)
+                    row.update({"status": "failed", "error_code": "SETTLEMENT_ABANDONED",
+                                "finalize_reclaims": row["finalize_reclaims"] + 1,
+                                "lease_owner": None, "lease_expires_at": None, "finished_at": now, "updated_at": now})
+                    self._job_abandon_settlement(row)
+                elif not finishing and (row["status"] == "cancel_requested"
+                                        or row["attempts"] >= row["max_attempts"]):
                     cancelled = row["status"] == "cancel_requested"
                     row.update({"status": "cancelled" if cancelled else "failed",
                                 "error_code": "CANCELLED" if cancelled else "LEASE_EXPIRED",
@@ -345,6 +385,7 @@ class FakeStore:
                     self._job_account(row, row["error_code"].lower())
                 else:
                     row.update({"status": "queued", "lease_owner": None, "lease_expires_at": None,
+                                "finalize_reclaims": row["finalize_reclaims"] + (1 if finishing else 0),
                                 "not_before": now, "queue_expires_at": until, "updated_at": now})
                     self._hold(row, until)
                 ids.append(row["id"])

@@ -98,7 +98,8 @@ done and reports `cancelled`. A finished job is not changed.
 
 Refusals are typed: `JOB_NOT_FOUND` (this is also returned for another
 account's job), `JOB_INVALID` and `ASYNC_REQUIRED`. Jobs are stored by
-migration `20261006070000_li_research_jobs.sql`, with RLS enabled and no
+migration `20261006070000_li_research_jobs.sql` (plus the settlement cap in
+`20261006080000_li_research_job_finalize_cap.sql`), with RLS enabled and no
 anon/authenticated grants. An always-on worker process runs them; see
 [WORKER_RUNTIME.md](WORKER_RUNTIME.md). No worker deployment is verified by
 this repository.

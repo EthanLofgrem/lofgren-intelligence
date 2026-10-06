@@ -1172,10 +1172,11 @@ class PublicService:
         return row
 
     def get_job_status(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        """The tenant's own job: status, attempts, units so far and, when it succeeded, the run summary."""
+        """The tenant's own job: status, attempts, units so far and, when its result was saved, the run
+        summary (a job that succeeded, or one whose settlement was abandoned after the result was saved)."""
         job = self._job(user_id, a.get("job_id"))
         view = job_model.public_job_view(job)
-        if view["status"] == "succeeded" and view["run_id"]:
+        if view["run_id"]:
             stored = self.store.get_run(user_id, str(view["run_id"]))
             if stored and isinstance(stored.get("snapshot"), dict):
                 result = summary(stored["snapshot"])

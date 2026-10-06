@@ -463,9 +463,10 @@ class SupabaseStore:
             "p_id": job_id, "p_user_id": user_id,
         }), "li_request_cancel_research_job")
 
-    def reclaim_research_jobs(self, limit: int, queue_ttl_seconds: int) -> list[str]:
+    def reclaim_research_jobs(self, limit: int, queue_ttl_seconds: int, max_finalize_reclaims: int = 3) -> list[str]:
         result = self.rpc("li_reclaim_research_jobs", {
             "p_limit": int(limit), "p_queue_ttl_seconds": int(queue_ttl_seconds),
+            "p_max_finalize_reclaims": int(max_finalize_reclaims),
         })
         if isinstance(result, dict) and len(result) == 1 and "li_reclaim_research_jobs" in result:
             result = result["li_reclaim_research_jobs"]
