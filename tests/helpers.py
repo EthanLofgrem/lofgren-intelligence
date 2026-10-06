@@ -26,3 +26,26 @@ TEXTS = {
         "Industrial vacancy in the Phoenix metro rose to 11 percent in 2026."
     ),
 }
+
+
+# --- plan catalog test fixtures -------------------------------------------------
+# The shipped catalog grants no paid plan (every paid allowance is undecided), so
+# webhook/checkout mechanics are exercised against a copy in which "researcher"
+# is open with a hypothetical allowance. This is a test fixture, not a decision.
+TEST_PRICE_ID = "price_test_researcher"
+TEST_PAID_UNITS = 2000.0
+STRIPE_TEST_ENV = {"LI_STRIPE_MODE": "test", "LI_STRIPE_PRICE_ID_RESEARCHER_TEST": TEST_PRICE_ID}
+
+
+def open_researcher_catalog(units: float = TEST_PAID_UNITS):
+    import dataclasses
+
+    from lofgren_intelligence.billing.catalog import AVAILABLE, CATALOG, QUOTA_WINDOW
+
+    plan = CATALOG.get("researcher")
+    allowance = dataclasses.replace(plan.allowance, units=float(units), window=QUOTA_WINDOW)
+    return CATALOG.replace_plan("researcher", status=AVAILABLE, allowance=allowance)
+
+
+def active_researcher(_sub=None):
+    return {"status": "active", "price_ids": [TEST_PRICE_ID]}

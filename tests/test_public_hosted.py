@@ -16,7 +16,7 @@ from lofgren_intelligence.hosted.service import DiscoveryStateInvalid, PaymentRe
 from lofgren_intelligence.hosted.stripe import apply_webhook, verify_webhook
 from lofgren_intelligence.discovery.fixtures import warehouse_design
 
-from .helpers import TEXTS
+from .helpers import STRIPE_TEST_ENV, TEXTS, active_researcher, open_researcher_catalog
 
 OBJECTIVE = "Is industrial construction in the Phoenix metro increasing?"
 
@@ -836,21 +836,20 @@ class StripeWebhookTests(unittest.TestCase):
             }},
         }
         raw = json.dumps(event, separators=(",", ":")).encode()
-        with patch.dict(os.environ, {
-            "STRIPE_WEBHOOK_SECRET": "whsec_test",
-            "LI_PAID_PLAN_ID": "researcher",
-            "LI_PAID_WEEKLY_UNITS": "2000",
-        }, clear=False):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_test", **STRIPE_TEST_ENV}, clear=False):
             ts = 1_800_000_000
             sig = hmac.new(b"whsec_test", str(ts).encode() + b"." + raw, hashlib.sha256).hexdigest()
             parsed = verify_webhook(raw, f"t={ts},v1={sig}", now_s=ts)
+            catalog = open_researcher_catalog()
             self.assertEqual(
-                apply_webhook(store, parsed, subscription_status=lambda _: "active"),
+                apply_webhook(store, parsed, subscription_status=active_researcher, catalog=catalog),
                 "processed",
             )
             self.assertEqual(store.entitlement["kind"], "paid")
+            self.assertEqual(store.entitlement["plan_id"], "researcher")
+            self.assertEqual(store.entitlement["quota_units_per_week"], 2000.0)
             self.assertEqual(
-                apply_webhook(store, parsed, subscription_status=lambda _: "active"),
+                apply_webhook(store, parsed, subscription_status=active_researcher, catalog=catalog),
                 "duplicate",
             )
 
@@ -863,10 +862,7 @@ class StripeWebhookTests(unittest.TestCase):
             "stripe_customer_id": "cus_test",
             "active": True,
         })
-        with patch.dict(os.environ, {
-            "LI_PAID_PLAN_ID": "researcher",
-            "LI_PAID_WEEKLY_UNITS": "2000",
-        }, clear=False):
+        with patch.dict(os.environ, STRIPE_TEST_ENV, clear=False):
             failed = {
                 "id": "evt_failed",
                 "type": "invoice.payment_failed",
@@ -890,7 +886,8 @@ class StripeWebhookTests(unittest.TestCase):
                 }},
             }
             self.assertEqual(
-                apply_webhook(store, recovered, subscription_status=lambda _: "active"),
+                apply_webhook(store, recovered, subscription_status=active_researcher,
+                              catalog=open_researcher_catalog()),
                 "processed",
             )
             self.assertEqual(store.entitlement["kind"], "paid")

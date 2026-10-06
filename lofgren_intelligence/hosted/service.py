@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .. import build_registry
+from ..billing.catalog import CATALOG, checkout_plans
 from ..billing.pricing import PLANS, cheapest_plan, estimate, monthly_bill
 from ..evidence.types import to_dict
 from ..discovery import DiscoveryObjective
@@ -1575,12 +1576,34 @@ class PublicService:
             d["cheapest"] = cheapest_plan(su, hj)
         d["example_estimate"] = estimate("payg", 40).as_dict()
         d["notice"] = "Published pricing is provisional until P95 actual COGS is fully measured."
+        # The versioned plan catalog is what the hosted service sells and grants.
+        d["catalog"] = CATALOG.as_dict()
         return d
 
-    def checkout(self, user_id: str, base_url: str) -> dict[str, Any]:
+    # The only checkout field a client may send. Price ids, allowances and
+    # entitlement values are server-side catalog/configuration, never input.
+    CHECKOUT_FIELDS = frozenset({"plan_id"})
+
+    def checkout(self, user_id: str, base_url: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
+        request = dict(request or {})
+        extra = sorted(str(k) for k in request if k not in self.CHECKOUT_FIELDS)
+        if extra:
+            raise PublicServiceError(
+                "checkout accepts only plan_id; prices, allowances and entitlements are set by the server")
+        requested = request.get("plan_id")
+        if requested is not None and not isinstance(requested, str):
+            raise PublicServiceError("plan_id must be a string")
         if os.environ.get("LI_BILLING_ENABLED", "").lower() not in {"1", "true", "yes"}:
             raise PublicServiceError("billing checkout is not enabled")
-        gate = certify_paid_plan(self.store.cost_samples())
+        sellable = checkout_plans()
+        if requested is None:
+            if len(sellable) != 1:
+                raise PublicServiceError("no single paid plan is open for checkout")
+            requested = next(iter(sellable))
+        if requested not in sellable:
+            raise PublicServiceError("plan is not available for checkout")
+        plan = CATALOG.get(requested)
+        gate = certify_paid_plan(self.store.cost_samples(), plan)
         if not gate.passed:
             raise PublicServiceError("paid plan has not passed the P95 economic certification gate")
         ent = self.store.get_entitlement(user_id)
@@ -1592,10 +1615,11 @@ class PublicService:
             raise PublicServiceError("account already has a paid entitlement; use billing portal")
         session = create_checkout(
             user_id,
+            plan_id=requested,
             success_url=base_url.rstrip("/") + "/billing/success?session_id={CHECKOUT_SESSION_ID}",
             cancel_url=base_url.rstrip("/") + "/billing/cancelled",
         )
-        return {"checkout_url": session.get("url"), "session_id": session.get("id")}
+        return {"checkout_url": session.get("url"), "session_id": session.get("id"), "plan_id": requested}
 
 
     def billing_portal(self, user_id: str, base_url: str) -> dict[str, Any]:

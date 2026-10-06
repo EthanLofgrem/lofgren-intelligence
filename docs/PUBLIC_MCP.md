@@ -170,9 +170,21 @@ The server expects:
 
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
-- `LI_STRIPE_PRICE_ID`
-- `LI_PAID_PLAN_ID`
-- `LI_PAID_WEEKLY_UNITS`
+- `LI_STRIPE_MODE` (`test` or `live`; must agree with the secret key)
+- per plan, `LI_STRIPE_PRICE_ID_<PLAN>_TEST` / `LI_STRIPE_PRICE_ID_<PLAN>_LIVE`
+  (names in `docs/PLAN_CATALOG.json`)
+
+Plans, allowances and the price allowlist come from the versioned plan catalog
+(`lofgren_intelligence/billing/catalog.py`, `docs/PLAN_CATALOG.md`). Checkout
+sells only a catalog plan that is `available`, has a decided allowance and a
+price configured for the current mode; clients may send only `plan_id`. A
+webhook maps the subscription's price id to its catalog plan and grants that
+plan's allowance; an unknown price grants nothing. `LI_STRIPE_PRICE_ID` and
+`LI_PAID_PLAN_ID` are no longer read. `LI_FOUNDER_WEEKLY_UNITS` and
+`LI_PAID_WEEKLY_UNITS` remain only as operator overrides of a decided catalog
+allowance (Founding Free and Researcher respectively); the granted value is
+stored in the entitlement's `quota_units_per_week`. An override never decides
+an undecided allowance: an undecided plan fails closed.
 
 ## Required deployment variables
 

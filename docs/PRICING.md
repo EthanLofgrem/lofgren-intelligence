@@ -2,6 +2,11 @@
 
 Implemented in `lofgren_intelligence/billing/pricing.py`. All numbers are starting points to be checked against measured cost to serve during beta.
 
+What the hosted service sells and grants is the versioned plan catalog
+(`docs/PLAN_CATALOG.md`, `docs/PLAN_CATALOG.json`). The "Limit" column below
+(entries) is a proposal that no code enforces; the catalog records it as
+`unenforced_proposal` and marks every paid allowance `undecided`.
+
 ## Base unit and job classes
 
 Base unit **u = $0.0312**. A job is metered in work units (WU) and falls into a class:

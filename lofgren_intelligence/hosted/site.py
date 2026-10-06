@@ -18,6 +18,9 @@ import html
 import secrets
 from importlib import resources
 
+from typing import Any
+
+from ..billing.catalog import AVAILABLE, CATALOG, FOUNDING_FREE_MAX_ACTIVATION, CatalogPlan, effective_allowance_units
 from . import capabilities
 
 e = html.escape
@@ -195,42 +198,47 @@ def client_list(link: bool = True) -> str:
     return f'<ul class="client-list">{"".join(items)}</ul>'
 
 
-PLANS = (
-    {
-        "id": "founding-free", "name": "Founding Free", "who": "Accounts 1–1,000",
-        "price": "$0", "unit": "", "detail": "Quota-limited access for the first 1,000 activated accounts.",
-        "features": ("Research and verification tools", "Evidence and source links", "Weekly usage limit shown by usage_status"),
-        "planned": False,
-    },
-    {
-        "id": "payg", "name": "Pay as you go", "who": "Flexible, occasional use",
-        "price": "$0.0312", "unit": "per prompted research", "detail": "Heavy work: $12.48 each.",
-        "features": ("No subscription", "Pay only for estimated, approved work", "Same evidence and traceability"),
-        "planned": True,
-    },
-    {
-        "id": "researcher", "name": "Researcher", "who": "For regular researchers",
-        "price": "$49.99", "unit": "/ month", "detail": "400 weekly entries · $0.0156 each.",
-        "features": ("Everything in Pay as you go", "Lower per-entry rate", "Included heavy credits"),
-        "planned": True,
-    },
-    {
-        "id": "good-idea", "name": "Good Idea", "who": "For power users and teams",
-        "price": "$79.99", "unit": "/ month", "detail": "20,000 monthly entries · $0.0050 each.",
-        "features": ("Everything in Researcher", "Lowest per-entry rate", "Build, act and measure at scale"),
-        "planned": True,
-    },
-)
+def _money(value: float, places: int = 2) -> str:
+    return f"${value:,.{places}f}" if value else "$0"
+
+
+def plan_view(plan: CatalogPlan) -> dict[str, Any]:
+    """What the pricing page shows for one catalog plan; every figure comes from the catalog."""
+    allowance = effective_allowance_units(plan, {})  # the published value, not an operator override
+    if allowance is None:
+        allowance_text = "Allowance: not yet decided."
+    else:
+        allowance_text = f"{allowance:,.0f} intelligence units per rolling 7 days (UTC)."
+    if plan.billing_interval == "none":
+        price, unit = _money(plan.price_usd), ""
+        detail = allowance_text
+    elif plan.billing_interval == "usage":
+        price, unit = _money(plan.rate_usd_per_work_unit or 0.0, 4), "per work unit"
+        detail = f"Heavy work: {_money(plan.heavy_job_price_usd or 0.0)} each. {allowance_text}"
+    else:
+        price, unit = _money(plan.price_usd), f"/ {plan.billing_interval}"
+        detail = (f"{_money(plan.rate_usd_per_work_unit or 0.0, 4)} per work unit · "
+                  f"{plan.included_heavy_jobs} heavy jobs included. {allowance_text}")
+    return {
+        "id": plan.id.replace("_", "-"), "name": plan.name, "who": plan.audience,
+        "price": price, "unit": unit, "detail": detail, "features": plan.features,
+        "planned": plan.status != AVAILABLE,
+    }
+
+
+def plan_views() -> tuple[dict[str, Any], ...]:
+    return tuple(plan_view(p) for p in CATALOG.plans)
 
 
 def plan_cards(heading: str = "h3") -> str:
     cards = []
-    for p in PLANS:
+    for p in plan_views():
         features = "".join(f'<li><span aria-hidden="true">✓</span> {e(f)}</li>' for f in p["features"])
         if p["planned"]:
             status = f'<p class="plan-status planned"><span aria-hidden="true">◷</span> {e(PLANNED_LABEL)}</p>'
         else:
-            status = '<p class="plan-status available"><strong>Founding access</strong> — limited to the first 1,000 accounts.</p>'
+            status = ('<p class="plan-status available"><strong>Founding access</strong> — limited to the first '
+                      f'{FOUNDING_FREE_MAX_ACTIVATION:,} accounts.</p>')
         unit = f' <span class="plan-unit">{e(p["unit"])}</span>' if p["unit"] else ""
         cards.append(
             f'<article class="plan" id="plan-{p["id"]}" aria-labelledby="plan-{p["id"]}-name">'

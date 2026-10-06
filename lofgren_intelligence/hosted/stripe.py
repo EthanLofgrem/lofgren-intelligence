@@ -4,6 +4,13 @@ Checkout is Stripe-hosted. Webhooks are signature-checked and entitlement
 mutation is applied transactionally with the event receipt in Supabase.
 Live charging is still separately gated by LI_BILLING_ENABLED, measured P95
 economics, deployment configuration and owner release authorization.
+
+Plans and prices come from the versioned plan catalog (billing/catalog.py):
+checkout sells only a catalog plan that is available, has a decided allowance
+and a price id configured for the current LI_STRIPE_MODE; a webhook maps the
+subscription's price id back to that plan and grants the catalog allowance.
+A price id the catalog does not map grants nothing. Clients never supply a
+price id, an allowance or an entitlement value.
 """
 
 from __future__ import annotations
@@ -16,8 +23,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
+from ..billing.catalog import (
+    CATALOG_VERSION,
+    Catalog,
+    CatalogPlan,
+    checkout_plans,
+    effective_allowance_units,
+    plan_for_price,
+    stripe_mode,
+)
 from .store import SupabaseStore
 
 
@@ -32,11 +48,16 @@ def _secret() -> str:
     return value
 
 
-def _price_id() -> str:
-    value = os.environ.get("LI_STRIPE_PRICE_ID", "")
-    if not value:
-        raise StripeError("LI_STRIPE_PRICE_ID is not configured")
-    return value
+def _require_mode_matches_key() -> str:
+    """The configured LI_STRIPE_MODE; refuses when it is unset or contradicts the secret key's mode."""
+    mode = stripe_mode()
+    if mode is None:
+        raise StripeError("LI_STRIPE_MODE must be 'test' or 'live'")
+    key = os.environ.get("STRIPE_SECRET_KEY", "")
+    other = "live" if mode == "test" else "test"
+    if key.startswith((f"sk_{other}_", f"rk_{other}_")):
+        raise StripeError("LI_STRIPE_MODE does not match the configured Stripe key")
+    return mode
 
 
 class StripeAPIError(StripeError):
@@ -126,16 +147,30 @@ def cancel_subscription(subscription_id: str) -> dict[str, Any]:
         raise
 
 
-def create_checkout(user_id: str, *, success_url: str, cancel_url: str) -> dict[str, Any]:
+def checkout_price_for(plan_id: str, catalog: Catalog | None = None) -> str:
+    """The server-configured price id for a checkout-able catalog plan, or StripeError."""
+    _require_mode_matches_key()
+    price = checkout_plans(catalog).get(plan_id)
+    if not price:
+        raise StripeError("plan is not available for checkout")
+    return price
+
+
+def create_checkout(user_id: str, *, plan_id: str, success_url: str, cancel_url: str,
+                    catalog: Catalog | None = None) -> dict[str, Any]:
+    price = checkout_price_for(plan_id, catalog)
     params: dict[str, Any] = {
         "mode": "subscription",
-        "line_items[0][price]": _price_id(),
+        "line_items[0][price]": price,
         "line_items[0][quantity]": "1",
         "success_url": success_url,
         "cancel_url": cancel_url,
         "client_reference_id": user_id,
         "metadata[li_user_id]": user_id,
         "subscription_data[metadata][li_user_id]": user_id,
+        "metadata[li_plan_id]": plan_id,
+        "metadata[li_catalog_version]": CATALOG_VERSION,
+        "subscription_data[metadata][li_plan_id]": plan_id,
         "allow_promotion_codes": "true",
     }
     return stripe_post("/v1/checkout/sessions", params)
@@ -214,22 +249,51 @@ def _payload_hash(event: dict[str, Any]) -> str:
 _ACTIVE = {"active", "trialing"}
 
 
-def current_subscription_status(subscription_id: str) -> str:
-    """The subscription's status as Stripe reports it now ("canceled" if it no longer exists)."""
+def _price_ids(subscription: Mapping[str, Any]) -> list[str]:
+    items = subscription.get("items") or {}
+    rows = items.get("data") if isinstance(items, Mapping) else None
+    out: list[str] = []
+    for row in rows or []:
+        price = row.get("price") if isinstance(row, Mapping) else None
+        pid = price.get("id") if isinstance(price, Mapping) else price
+        if isinstance(pid, str) and pid:
+            out.append(pid)
+    return out
+
+
+def current_subscription(subscription_id: str) -> dict[str, Any]:
+    """The subscription's status and price ids as Stripe reports them now."""
     path = "/v1/subscriptions/" + urllib.parse.quote(subscription_id, safe="")
     try:
-        return str(stripe_get(path).get("status") or "")
+        sub = stripe_get(path)
     except StripeAPIError as exc:
         if exc.status == 404:
-            return "canceled"
+            return {"status": "canceled", "price_ids": []}
         raise
+    return {"status": str(sub.get("status") or ""), "price_ids": _price_ids(sub)}
+
+
+def _grantable_plan(price_ids: list[str], catalog: Catalog | None, livemode: Any) -> CatalogPlan | None:
+    """Exactly one catalog plan for the subscription's prices, in the configured mode; else None."""
+    mode = stripe_mode()
+    if isinstance(livemode, bool) and mode != ("live" if livemode else "test"):
+        return None
+    if len(set(price_ids)) != 1:
+        return None
+    return plan_for_price(price_ids[0], catalog)
+
+
+def current_subscription_status(subscription_id: str) -> str:
+    """The subscription's status as Stripe reports it now ("canceled" if it no longer exists)."""
+    return str(current_subscription(subscription_id)["status"])
 
 
 def apply_webhook(
     store: SupabaseStore,
     event: dict[str, Any],
     *,
-    subscription_status: Callable[[str], str] | None = None,
+    subscription_status: Callable[[str], str | Mapping[str, Any]] | None = None,
+    catalog: Catalog | None = None,
 ) -> str:
     """Apply one Stripe lifecycle event exactly once.
 
@@ -242,13 +306,30 @@ def apply_webhook(
     additionally needs a paid (or no-payment-required) session. If the status
     cannot be read, nothing is applied and Stripe retries the delivery.
     Unrelated Stripe events are still receipted but do not mutate an entitlement.
+
+    The plan and allowance come from the catalog through the subscription's
+    price id (read from Stripe together with the status; an injected lookup
+    that returns a bare status falls back to the event object's own items).
+    An unknown price, a plan that is not available or an undecided allowance
+    grants nothing: the entitlement is left untouched, except that an earlier
+    grant on the same subscription is revoked, so a plan change can never
+    keep a stale grant.
     """
-    status_of = subscription_status or current_subscription_status
+    lookup = subscription_status or current_subscription
+    seen_prices: list[str] = []
     event_id = str(event["id"])
     kind = str(event["type"])
     obj = ((event.get("data") or {}).get("object") or {})
     if not isinstance(obj, dict):
         raise StripeError("Stripe event object must be a JSON object")
+
+    def status_of(sub_id: str) -> str:
+        result = lookup(sub_id)
+        if isinstance(result, Mapping):
+            seen_prices[:] = [str(p) for p in (result.get("price_ids") or []) if p]
+            return str(result.get("status") or "")
+        seen_prices[:] = _price_ids(obj) if str(obj.get("id") or "") == sub_id else []
+        return str(result)
 
     user_id: str | None = _user_id(obj)
     customer_id: str | None = obj.get("customer")
@@ -291,6 +372,15 @@ def apply_webhook(
         active = status_of(str(subscription_id)) in _ACTIVE
         mutate = True
 
+    plan = _grantable_plan(seen_prices, catalog, event.get("livemode")) if mutate else None
+    quota = effective_allowance_units(plan) if plan is not None else None
+    if mutate and active and quota is None:
+        # Unknown price, unavailable plan or undecided allowance: grant nothing.
+        active = False
+        current = (store.get_entitlement(str(user_id)) or {}) if user_id else {}
+        if not subscription_id or str(current.get("stripe_subscription_id") or "") != str(subscription_id):
+            mutate = False
+
     if mutate and not active and user_id and subscription_id:
         # A lapsed subscription must not revoke access granted by a newer one
         # (an old subscription's deletion delivered after the user re-subscribed).
@@ -299,8 +389,7 @@ def apply_webhook(
         if current.get("active") and newer and newer != str(subscription_id):
             mutate = False
 
-    plan_id = os.environ.get("LI_PAID_PLAN_ID", "researcher")
-    quota = float(os.environ.get("LI_PAID_WEEKLY_UNITS", "2000"))
+    plan_id = plan.id if plan is not None else "paid_required"
     applied = store.apply_stripe_entitlement_event(
         event_id=event_id,
         event_type=kind,
@@ -310,6 +399,6 @@ def apply_webhook(
         subscription_id=subscription_id,
         active=active,
         plan_id=plan_id,
-        quota_units_per_week=quota,
+        quota_units_per_week=float(quota) if active and quota is not None else 0.0,
     )
     return "processed" if applied else "duplicate"

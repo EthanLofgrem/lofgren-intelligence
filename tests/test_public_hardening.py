@@ -22,6 +22,7 @@ from lofgren_intelligence.hosted.journey import consent_intro_html
 from lofgren_intelligence.hosted.service import PublicService
 from lofgren_intelligence.hosted.stripe import StripeAPIError, StripeError, apply_webhook
 
+from .helpers import STRIPE_TEST_ENV, active_researcher, open_researcher_catalog
 from .test_public_hosted import FakeStore
 
 ENV = {
@@ -212,7 +213,8 @@ class WebhookPaymentStatusTests(unittest.TestCase):
     def _apply(self, obj):
         store = FakeStore(activation_number=1001, kind="paid_required", quota=0)
         event = {"id": "evt_" + str(len(obj)), "type": "checkout.session.completed", "data": {"object": obj}}
-        apply_webhook(store, event, subscription_status=lambda s: "active")
+        with patch.dict(os.environ, STRIPE_TEST_ENV, clear=False):
+            apply_webhook(store, event, subscription_status=active_researcher, catalog=open_researcher_catalog())
         return store.entitlement
 
     def test_missing_payment_status_does_not_grant_paid_access(self):
@@ -235,7 +237,7 @@ class WebhookPaymentStatusTests(unittest.TestCase):
 class WebhookOrderingTests(unittest.TestCase):
     """Fix 10: Stripe does not order deliveries; the subscription's current status decides."""
 
-    ENV = {"LI_PAID_PLAN_ID": "researcher", "LI_PAID_WEEKLY_UNITS": "2000"}
+    ENV = STRIPE_TEST_ENV
 
     def _event(self, event_id, kind, obj):
         return {"id": event_id, "type": kind, "data": {"object": obj}}
@@ -247,12 +249,13 @@ class WebhookOrderingTests(unittest.TestCase):
 
     def test_stale_incomplete_created_event_does_not_revoke_paid_access(self):
         store = FakeStore(activation_number=1001, kind="paid_required", quota=0)
-        stripe_now = lambda sub: "active"
+        stripe_now = active_researcher
         with patch.dict(os.environ, self.ENV, clear=False):
-            apply_webhook(store, self._checkout(), subscription_status=stripe_now)
+            apply_webhook(store, self._checkout(), subscription_status=stripe_now, catalog=open_researcher_catalog())
             stale = self._event("evt_created", "customer.subscription.created", {
                 "id": "sub_new", "customer": "cus_t", "status": "incomplete", "metadata": {"li_user_id": "u1"}})
-            self.assertEqual(apply_webhook(store, stale, subscription_status=stripe_now), "processed")
+            self.assertEqual(apply_webhook(store, stale, subscription_status=stripe_now,
+                                           catalog=open_researcher_catalog()), "processed")
         self.assertTrue(store.entitlement["active"])
         self.assertEqual(store.entitlement["kind"], "paid")
 
