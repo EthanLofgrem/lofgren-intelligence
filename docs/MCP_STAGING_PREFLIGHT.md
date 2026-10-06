@@ -1,0 +1,9 @@
+# Exact-SHA staging MCP preflight
+
+Run `python scripts/li_mcp_preflight.py --base-url https://YOUR-STAGING-ORIGIN --expected-sha FULL_40_CHARACTER_SHA` and retain the JSON output with its execution timestamp. This performs five bounded read-only HTTP requests; the unauthenticated MCP initialize request must be rejected before tool execution. It registers no clients, sends no credentials, starts no research, and follows no redirects. It requires a directly reachable HTTPS deployment; a platform sign-in wall will fail this check rather than count as LI health.
+
+Checks: service health, ready response and exact SHA, protected-resource discovery, authorization-server metadata with S256 and refresh support, and HTTP 401 with a resource-metadata challenge. Failures are nonzero exit status. Validate the supplied SHA against the candidate CI separately: environment-reported identity alone does not prove the deployed bytes.
+
+This is preflight evidence only. Follow with real client connection, explicit browser consent, PKCE exchange, authenticated initialize and tools/list, a bounded approved research case, receipt retrieval, refresh/revoke/expiry, cross-tenant denial and restart retrieval. Use the portable worker for longer jobs. Record exact client versions, transport, timestamps, IDs and redacted results. Never retain access tokens, refresh tokens, authorization codes or signing keys in artifacts.
+
+Public activation still requires the full signed 36-term gate, recovery proofs and configured owner protections. Passing preflight does not establish real-client compatibility, worker health, payment readiness or PublicMCPReady. LI is an MCP service consumed by supporting AI clients, not itself a foundation model. Keep paid checkout closed until catalog policy and economics are certified.
