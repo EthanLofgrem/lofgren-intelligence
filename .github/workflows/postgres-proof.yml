@@ -84,6 +84,26 @@ jobs:
           fi
           grep -E "^Ran [0-9]+ tests? in" pg-proof.log
           grep -qxE "OK" pg-proof.log
+      - name: Publish per-test results
+        # Job logs and artifacts need repository rights to download; check-run
+        # annotations do not, so the per-test verdicts are also published there.
+        if: always()
+        run: |
+          python - <<'EOF'
+          import os, re
+          from pathlib import Path
+          log = Path("pg-proof.log")
+          text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+          lines = [m.group(0).strip() for m in re.finditer(r"^test_\S+ \(\S+\) \.\.\. .*$", text, re.M)]
+          lines += [l for l in text.splitlines() if re.match(r"^(Ran \d+ tests? in|OK\b|FAILED\b)", l)]
+          if not lines:
+              lines = ["no per-test results were found in pg-proof.log"]
+          body = "\n".join(lines)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("### postgres-proof per-test results\n\n```\n" + body + "\n```\n")
+          esc = body.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::notice title=postgres-proof per-test results::" + esc)
+          EOF
       - name: Upload the test log
         if: always()
         uses: actions/upload-artifact@v4
