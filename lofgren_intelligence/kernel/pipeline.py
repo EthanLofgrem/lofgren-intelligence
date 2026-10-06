@@ -116,12 +116,15 @@ def run_investigation(
     verifier: Verifier | None = None,
     approved: bool = False,
     prediction_log: PredictionLog | None = None,
+    ledger: CostLedger | None = None,
 ) -> RunResult:
     provider = provider or HeuristicProvider()
     verifier = verifier or Verifier()
     graph = EvidenceGraph()
     rs = plan_research(contract, registry)
-    ledger = CostLedger(PLANS[plan_id].rate)
+    # A caller may supply the (empty) ledger so that the cost incurred so far is
+    # still readable when the run raises part-way through (hosted usage settlement).
+    ledger = ledger if ledger is not None else CostLedger(PLANS[plan_id].rate)
     result = RunResult(contract, rs, graph, provider=provider.name, calibrated=verifier.calibrator.calibrated,
                        ledger=ledger)
     log = result.stages.append

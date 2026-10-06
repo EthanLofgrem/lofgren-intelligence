@@ -262,6 +262,41 @@ class SupabaseStore:
     def release_usage(self, reservation_id: str) -> bool:
         return self._rpc_bool(self.rpc("li_release_usage", {"p_id": reservation_id}))
 
+    def mark_usage_unsettled(
+        self,
+        reservation_id: str,
+        run_id: str | None,
+        actual_units: float,
+        known_cost_usd: float,
+        unpriced_components: list[str],
+    ) -> bool:
+        """Durable reconciliation marker (li_mark_usage_unsettled) for work that ran but did not settle."""
+        return self._rpc_bool(self.rpc("li_mark_usage_unsettled", {
+            "p_id": reservation_id,
+            "p_run_id": run_id,
+            "p_actual_units": float(actual_units),
+            "p_known_cost_usd": float(known_cost_usd),
+            "p_unpriced_components": unpriced_components,
+        }))
+
+    def settle_usage(self, reservation_id: str) -> str:
+        """Idempotent reconcile (li_settle_usage): 'settled', 'already_settled', 'not_unsettled' or 'missing'."""
+        result = self.rpc("li_settle_usage", {"p_id": reservation_id})
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if result not in ("settled", "already_settled", "not_unsettled", "missing"):
+            raise StoreError("usage settlement returned an invalid answer")
+        return str(result)
+
+    def list_unsettled_usage(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self._select_all(
+            "li_usage_reservations",
+            {"select": "*", "status": "eq.unsettled", "order": "marked_at.asc,id.asc"},
+            cap=max(0, int(limit)),
+        )
+
     def take_rate_limit(self, user_id: str, bucket: str = "mcp", limit: int = 60, window_seconds: int = 60) -> bool:
         result = self.rpc("li_take_rate_limit", {
             "p_user_id": user_id,

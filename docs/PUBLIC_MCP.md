@@ -160,7 +160,19 @@ expires after ten minutes.
 
 Metered work (`investigate`, `verify_claim`, `discover`, `build_artifact`,
 `measure_outcome`, `evaluate_improvement`) reserves units atomically through
-`li_reserve_usage` before running and settles actual units afterwards. An
+`li_reserve_usage` before running and settles actual units afterwards. A
+refusal before any work (unknown input, the public per-run cost ceiling)
+releases the reservation. A failure after work incurred cost charges what is
+known so far (a run that fails part-way is charged its measured units with the
+`partial_run` component; work whose result could not be stored is charged
+without a run id). Work that ran is charged even when `li_finalize_usage`
+refuses or fails: the actual usage is recorded on the reservation as an
+`unsettled` marker (`li_mark_usage_unsettled`) that counts against quota and
+never expires, and `li_settle_usage` settles it exactly once
+(`PublicService.reconcile_usage` / `reconcile_unsettled_usage`; migration
+`20261006060100_usage_settlement.sql`). The usage event id is the
+reservation id, so a retry never charges twice, and a stored result is kept
+when only its settlement failed. An
 explicit stored weekly quota of 0 blocks; only a missing quota falls back to
 the plan default. `satellite_passes` is bounded to 168 hours, 20 element sets
 and 20,000 characters of TLE text per call, with valid coordinates and

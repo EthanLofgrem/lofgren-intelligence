@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import uuid
@@ -20,6 +21,7 @@ from ..discovery.pipeline import _prior_art_provider, run_discovery
 from ..discovery.prior_art import assess_prior_art
 from ..intent.compiler import compile_intent
 from ..intent.clarification import clarify_objective as clarify_case_objective, requires_clarification, to_dict as clarification_to_dict
+from ..kernel.ledger import CostLedger
 from ..kernel.pipeline import estimate_run, run_investigation
 from ..models.provider import default_provider
 from ..orbital.catalog import IMAGING_SATELLITES, fetch_tles
@@ -111,6 +113,9 @@ class RunStateInvalid(PublicServiceError):
     code = "RUN_STATE_INVALID"
 
 
+_LOG = logging.getLogger("lofgren_intelligence.public")
+
+
 DISCOVERY_STATE_INVALID_MESSAGE = (
     "the stored discovery state is invalid or incomplete and cannot be used; "
     "run discover again to create a new discovery"
@@ -129,6 +134,18 @@ class PublicService:
     def __init__(self, store: SupabaseStore | None = None) -> None:
         self.store = store or SupabaseStore()
 
+    # ---- usage: reserve -> work -> settle --------------------------------------------------
+    #
+    # Every metered call follows one accounting rule set:
+    #   * a refusal before any work releases the reservation (li_release_usage);
+    #   * a failure after work incurred cost charges the units/cost known so far;
+    #   * work that ran is charged even when li_finalize_usage refuses (actual units
+    #     overran the quota, the reservation expired) or fails: the actual usage is
+    #     recorded on the reservation as an 'unsettled' marker (li_mark_usage_unsettled)
+    #     and settled exactly once (li_settle_usage, via reconcile_usage). The usage event
+    #     id is the reservation id, so a retry never charges twice and a saved result is
+    #     never discarded because settlement failed.
+
     def _reserve_usage(self, user_id: str, operation: str, units: float) -> str:
         ent = self.store.get_entitlement(user_id)
         if not ent:
@@ -140,7 +157,7 @@ class PublicService:
             raise QuotaExceeded("rolling usage quota would be exceeded")
         return reservation_id
 
-    def _finalize_usage(
+    def _settle_work(
         self,
         reservation_id: str,
         *,
@@ -148,16 +165,49 @@ class PublicService:
         actual_units: float,
         known_cost_usd: float = 0.0,
         unpriced_components: list[str] | None = None,
-    ) -> None:
-        if not self.store.finalize_usage(
-            reservation_id,
-            run_id,
-            float(actual_units),
-            float(known_cost_usd),
-            list(unpriced_components or []),
-        ):
-            self.store.release_usage(reservation_id)
-            raise QuotaExceeded("actual work exceeded the reserved usage allowance")
+    ) -> str:
+        """Charge work that already ran. Returns 'settled' or 'unsettled' (marker awaits reconcile).
+
+        Never raises: the work's result must not be lost because accounting failed.
+        """
+        args = (run_id, float(actual_units), float(known_cost_usd), list(unpriced_components or []))
+        try:
+            if self.store.finalize_usage(reservation_id, *args):
+                return "settled"
+        except Exception:
+            _LOG.warning("usage finalize failed for reservation %s; recording a reconciliation marker",
+                         reservation_id)
+        try:
+            self.store.mark_usage_unsettled(reservation_id, *args)
+        except Exception:
+            _LOG.error("could not record the usage reconciliation marker for reservation %s", reservation_id)
+            return "unsettled"
+        try:
+            if self.reconcile_usage(reservation_id) in ("settled", "already_settled"):
+                return "settled"
+        except Exception:
+            _LOG.warning("usage settlement for reservation %s is pending reconciliation", reservation_id)
+        return "unsettled"
+
+    def reconcile_usage(self, reservation_id: str) -> str:
+        """Settle one unsettled reservation exactly once (idempotent; safe to retry).
+
+        Returns 'settled' when this call charged it, 'already_settled' when an earlier
+        call (or the original finalize) did, 'not_unsettled' when nothing is pending
+        and 'missing' for an unknown reservation.
+        """
+        return self.store.settle_usage(str(reservation_id))
+
+    def reconcile_unsettled_usage(self, limit: int = 100) -> dict[str, Any]:
+        """Settle every pending reconciliation marker; one failure does not stop the rest."""
+        outcomes: dict[str, str] = {}
+        for row in self.store.list_unsettled_usage(limit):
+            rid = str(row["id"])
+            try:
+                outcomes[rid] = self.reconcile_usage(rid)
+            except Exception:
+                outcomes[rid] = "error"
+        return {"reconciled": outcomes}
 
     def _release_quietly(self, reservation_id: str) -> None:
         """Release a reservation on a failed call without masking the original error.
@@ -183,20 +233,20 @@ class PublicService:
     def _metered(self, user_id: str, operation: str, run_id: str | None, work: Callable[[], Any]) -> Any:
         """Run one ad hoc call under an atomic usage reservation.
 
-        reserve (li_reserve_usage) -> work -> settle (li_finalize_usage). Any
-        failure in the work releases the reservation (li_release_usage), so a
-        refused or crashed call is never charged. The open-quota check stays in
-        front of the reservation so an inactive entitlement is refused first.
+        reserve (li_reserve_usage) -> work -> settle. A refused or crashed call
+        persists nothing and has no measured partial cost, so its reservation is
+        released (li_release_usage) and it is not charged. The open-quota check
+        stays in front of the reservation so an inactive entitlement is refused first.
         """
         self._require_open_quota(user_id)
         units = adhoc_unit_cost(operation)
         reservation_id = self._reserve_usage(user_id, operation, units)
         try:
             out = work()
-        except Exception:
+        except BaseException:
             self._release_quietly(reservation_id)
             raise
-        self._finalize_usage(
+        self._settle_work(
             reservation_id,
             run_id=run_id,
             actual_units=units,
@@ -313,7 +363,36 @@ class PublicService:
             "unknowns": [to_dict(u) for u in gap_unknowns(plan, c, PLANS[plan_id].rate)],
         }
 
-    def _run(self, user_id: str, objective: str, a: dict[str, Any]) -> dict[str, Any]:
+    def _charge_partial_run(self, reservation_id: str, provider: Any, ledger: CostLedger) -> None:
+        """A run that raised: charge the work and cost incurred so far, or release if there was none."""
+        try:
+            calls = int(((getattr(provider, "usage", None) or {}).get("calls")) or 0)
+            units = float(ledger.total_units)
+            spent = any(float(e.usd) > 0 for e in ledger.entries)
+            if units <= 0 and calls <= 0 and not spent:
+                self._release_quietly(reservation_id)
+                return
+            try:
+                info = provider.describe()
+            except Exception:
+                info = {"name": "unknown", "usage": dict(getattr(provider, "usage", {}) or {})}
+            cost = actual_run_cost(info, ledger)
+            self._settle_work(
+                reservation_id,
+                run_id=None,  # nothing was persisted, so the charge names no run
+                actual_units=units,
+                known_cost_usd=cost.known_cost_usd,
+                unpriced_components=sorted(set(cost.unpriced_components) | {"partial_run"}),
+            )
+        except Exception:
+            _LOG.error("could not account for the partial run on reservation %s", reservation_id)
+
+    def _run(
+        self,
+        user_id: str,
+        objective: str,
+        a: dict[str, Any],
+    ) -> dict[str, Any]:
         a = validate_remote_args(a)
         c = compile_intent(
             objective,
@@ -324,41 +403,64 @@ class PublicService:
         reservation_id = self._reserve_usage(
             user_id, "investigate", float(plan.estimated_work_units)
         )
-
-        # Public safety ceiling independent of user-supplied max_spend.
-        public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
         execution_plan = os.environ.get("LI_RUNTIME_PLAN", "payg")
-        est = estimate_run(plan, execution_plan)
-        if est.total_usd > public_cap:
-            raise QuotaExceeded("run exceeds the public per-run cost ceiling")
+        try:
+            # Public safety ceiling independent of user-supplied max_spend.
+            public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
+            est = estimate_run(plan, execution_plan)
+            if est.total_usd > public_cap:
+                raise QuotaExceeded("run exceeds the public per-run cost ceiling")
+        except BaseException:
+            # Refused before any work: return the held allowance now.
+            self._release_quietly(reservation_id)
+            raise
 
-        result = run_investigation(
-            c,
-            self._registry(a),
-            default_provider(),
-            execution_plan,
-            approved=False,  # public V1 never executes external actions
-        )
-        snap = durable_snapshot(result)
-        cost = actual_run_cost(result.provider_info, result.ledger)
-        self.store.save_run(
-            {
-                "run_id": snap["run_id"],
-                "user_id": user_id,
-                "objective": objective,
-                "status": "complete" if result.completed else "stopped",
-                "summary": summary(snap),
-                "snapshot": snap,
-                "receipt": snap["receipt"],
-                "knowledge_state": snap["knowledge_map2"],
-                "report": snap["report"],
-                "usage_units": snap["usage_units"],
-                "known_cost_usd": cost.known_cost_usd,
-                "unpriced_components": list(cost.unpriced_components),
-                "created_at": utcnow(),
-            }
-        )
-        self._finalize_usage(
+        provider = default_provider()
+        ledger = CostLedger(PLANS[execution_plan].rate)
+        try:
+            result = run_investigation(
+                c,
+                self._registry(a),
+                provider,
+                execution_plan,
+                approved=False,  # public V1 never executes external actions
+                ledger=ledger,
+            )
+            snap = durable_snapshot(result)
+            cost = actual_run_cost(result.provider_info, result.ledger)
+        except BaseException:
+            self._charge_partial_run(reservation_id, provider, ledger)
+            raise
+        try:
+            self.store.save_run(
+                {
+                    "run_id": snap["run_id"],
+                    "user_id": user_id,
+                    "objective": objective,
+                    "status": "complete" if result.completed else "stopped",
+                    "summary": summary(snap),
+                    "snapshot": snap,
+                    "receipt": snap["receipt"],
+                    "knowledge_state": snap["knowledge_map2"],
+                    "report": snap["report"],
+                    "usage_units": snap["usage_units"],
+                    "known_cost_usd": cost.known_cost_usd,
+                    "unpriced_components": list(cost.unpriced_components),
+                    "created_at": utcnow(),
+                }
+            )
+        except BaseException:
+            # The run did its work but its result was not persisted: charge the work
+            # (with no run id, since no run row exists) and report the failure.
+            self._settle_work(
+                reservation_id,
+                run_id=None,
+                actual_units=snap["usage_units"],
+                known_cost_usd=cost.known_cost_usd,
+                unpriced_components=list(cost.unpriced_components),
+            )
+            raise
+        self._settle_work(
             reservation_id,
             run_id=snap["run_id"],
             actual_units=snap["usage_units"],
@@ -451,38 +553,55 @@ class PublicService:
         run_id = str(a["run_id"])
         reserve = float(os.environ.get("LI_PUBLIC_MAX_DISCOVERY_UNITS", "100"))
         reservation_id = self._reserve_usage(user_id, "discover", reserve)
-
-        ctx = self._discovery_context(user_id, run_id)
-        result = run_discovery(
-            ctx,
-            str(a["objective"]),
-            design=a.get("design"),
-            prior_art=a.get("prior_art"),
-        )
-        snap = durable_discovery_snapshot(result)
+        result = None
+        try:
+            ctx = self._discovery_context(user_id, run_id)
+            result = run_discovery(
+                ctx,
+                str(a["objective"]),
+                design=a.get("design"),
+                prior_art=a.get("prior_art"),
+            )
+            snap = durable_discovery_snapshot(result)
+        except BaseException:
+            ledger = getattr(result, "ledger", None)
+            units = float(ledger.total_units) if ledger is not None else 0.0
+            if units > 0:
+                # Discovery ran but its snapshot failed: charge the measured work.
+                self._settle_work(reservation_id, run_id=run_id, actual_units=units,
+                                  unpriced_components=["discovery_compute"])
+            else:
+                # Refused or crashed before any measured work: nothing to charge.
+                self._release_quietly(reservation_id)
+            raise
+        charge = {
+            "run_id": run_id,
+            "actual_units": snap["usage_units"],
+            "known_cost_usd": 0.0,
+            "unpriced_components": ["discovery_compute"],
+        }
         if snap["usage_units"] > reserve:
+            # The work already ran: charge what it used, then refuse to keep the result.
+            self._settle_work(reservation_id, **charge)
             raise QuotaExceeded("discovery exceeded the public bounded-work ceiling")
-
-        self.store.save_discovery({
-            "user_id": user_id,
-            "discovery_id": snap["discovery_id"],
-            "research_id": run_id,
-            "objective": str(a["objective"]),
-            "outcome": snap["summary"]["outcome"],
-            "summary": snap["summary"],
-            "snapshot": snap,
-            "receipt": snap["receipt"],
-            "handoff": snap["handoff"],
-            "usage_units": snap["usage_units"],
-            "created_at": utcnow(),
-        })
-        self._finalize_usage(
-            reservation_id,
-            run_id=run_id,
-            actual_units=snap["usage_units"],
-            known_cost_usd=0.0,
-            unpriced_components=["discovery_compute"],
-        )
+        try:
+            self.store.save_discovery({
+                "user_id": user_id,
+                "discovery_id": snap["discovery_id"],
+                "research_id": run_id,
+                "objective": str(a["objective"]),
+                "outcome": snap["summary"]["outcome"],
+                "summary": snap["summary"],
+                "snapshot": snap,
+                "receipt": snap["receipt"],
+                "handoff": snap["handoff"],
+                "usage_units": snap["usage_units"],
+                "created_at": utcnow(),
+            })
+        except BaseException:
+            self._settle_work(reservation_id, **charge)
+            raise
+        self._settle_work(reservation_id, **charge)
         return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
 
     def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
@@ -663,26 +782,27 @@ class PublicService:
                 context=context,
                 kind=str(a.get("kind") or "structured_bundle"),
             )
-        except Exception:
+        except BaseException:
             # Nothing was built: return the held allowance instead of letting it sit until expiry.
             self._release_quietly(reservation_id)
             raise
-        self.store.save_artifact({
-            "user_id": user_id,
-            "artifact_id": result.artifact_id,
-            "discovery_id": discovery_id,
-            "kind": result.artifact["kind"],
-            "artifact": result.artifact,
-            "receipt": result.receipt,
-            "v4_handoff": result.v4_handoff,
-            "created_at": utcnow(),
-        })
-        self._finalize_usage(
-            reservation_id,
-            run_id=row["research_id"],
-            actual_units=10.0,
-            unpriced_components=["artifact_compute"],
-        )
+        charge = {"run_id": row["research_id"], "actual_units": 10.0, "unpriced_components": ["artifact_compute"]}
+        try:
+            self.store.save_artifact({
+                "user_id": user_id,
+                "artifact_id": result.artifact_id,
+                "discovery_id": discovery_id,
+                "kind": result.artifact["kind"],
+                "artifact": result.artifact,
+                "receipt": result.receipt,
+                "v4_handoff": result.v4_handoff,
+                "created_at": utcnow(),
+            })
+        except BaseException:
+            # The artifact was built (the work ran) but not stored: charge it, then fail.
+            self._settle_work(reservation_id, **charge)
+            raise
+        self._settle_work(reservation_id, **charge)
         return {
             "kind": "artifact",
             "artifact_id": result.artifact_id,
@@ -854,35 +974,40 @@ class PublicService:
 
     def measure_outcome(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         reservation_id = self._reserve_usage(user_id, "measure_outcome", 5.0)
-        action = self.store.get_action(user_id, str(a["action_id"]))
-        if not action or action.get("status") != "executed" or not action.get("v5_handoff"):
-            raise PublicServiceError("a committed verified action is required before measurement")
-        measurements = [
-            Measurement(
-                str(m["metric"]), float(m["value"]), str(m["unit"]),
-                str(m["observed_at"]), str(m["source"]), m.get("observation_id"),
+        try:
+            action = self.store.get_action(user_id, str(a["action_id"]))
+            if not action or action.get("status") != "executed" or not action.get("v5_handoff"):
+                raise PublicServiceError("a committed verified action is required before measurement")
+            measurements = [
+                Measurement(
+                    str(m["metric"]), float(m["value"]), str(m["unit"]),
+                    str(m["observed_at"]), str(m["source"]), m.get("observation_id"),
+                )
+                for m in list(a.get("measurements") or [])
+            ]
+            result = evaluate_outcome(
+                action["v5_handoff"], measurements,
+                causal_design=a.get("causal_design"),
             )
-            for m in list(a.get("measurements") or [])
-        ]
-        result = evaluate_outcome(
-            action["v5_handoff"], measurements,
-            causal_design=a.get("causal_design"),
-        )
-        outcome_id = str(result.receipt["receipt_hash"])
-        self.store.save_outcome({
-            "user_id": user_id,
-            "outcome_id": outcome_id,
-            "action_id": action["action_id"],
-            "receipt": result.receipt,
-            "v6_handoff": result.v6_handoff,
-            "created_at": utcnow(),
-        })
-        self._finalize_usage(
-            reservation_id,
-            run_id=None,
-            actual_units=5.0,
-            unpriced_components=["outcome_compute"],
-        )
+            outcome_id = str(result.receipt["receipt_hash"])
+        except BaseException:
+            # Refused, or the evaluation failed with nothing to show: not charged.
+            self._release_quietly(reservation_id)
+            raise
+        charge = {"run_id": None, "actual_units": 5.0, "unpriced_components": ["outcome_compute"]}
+        try:
+            self.store.save_outcome({
+                "user_id": user_id,
+                "outcome_id": outcome_id,
+                "action_id": action["action_id"],
+                "receipt": result.receipt,
+                "v6_handoff": result.v6_handoff,
+                "created_at": utcnow(),
+            })
+        except BaseException:
+            self._settle_work(reservation_id, **charge)
+            raise
+        self._settle_work(reservation_id, **charge)
         return {
             "kind": "outcome",
             "outcome_id": outcome_id,
@@ -904,53 +1029,58 @@ class PublicService:
 
     def evaluate_improvement(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         reservation_id = self._reserve_usage(user_id, "evaluate_improvement", 5.0)
-        outcome = self.store.get_outcome(user_id, str(a["outcome_id"]))
-        if not outcome:
-            raise PublicServiceError("unknown outcome_id")
-        p = dict(a["proposal"])
-        ds = dict(p["evaluation_dataset"])
-        metric = dict(p["primary_metric"])
-        constraints = tuple(
-            SafetyConstraint(
-                str(x["metric"]), float(x["baseline"]), float(x["candidate"]),
-                float(x["max_regression"]),
+        try:
+            outcome = self.store.get_outcome(user_id, str(a["outcome_id"]))
+            if not outcome:
+                raise PublicServiceError("unknown outcome_id")
+            p = dict(a["proposal"])
+            ds = dict(p["evaluation_dataset"])
+            metric = dict(p["primary_metric"])
+            constraints = tuple(
+                SafetyConstraint(
+                    str(x["metric"]), float(x["baseline"]), float(x["candidate"]),
+                    float(x["max_regression"]),
+                )
+                for x in list(p.get("safety_constraints") or [])
             )
-            for x in list(p.get("safety_constraints") or [])
-        )
-        proposal = ImprovementProposal(
-            str(p["proposal_id"]), str(p["baseline_id"]), str(p["candidate_id"]),
-            str(p["change_summary"]),
-            EvaluationDataset(
-                str(ds["dataset_id"]), str(ds["content_hash"]), int(ds["sample_count"]),
-                bool(ds.get("held_out", True)),
-            ),
-            MetricObservation(
-                str(metric["metric"]), float(metric["baseline"]), float(metric["candidate"]),
-                str(metric.get("direction") or "higher_is_better"),
-            ),
-            float(p["min_gain"]),
-            constraints,
-            True,
-        )
-        result = evaluate_improvement(
-            outcome["v6_handoff"], proposal,
-            minimum_samples=int(os.environ.get("LI_PUBLIC_MIN_IMPROVEMENT_SAMPLES", "30")),
-        )
-        improvement_id = str(result.receipt["receipt_hash"])
-        self.store.save_improvement({
-            "user_id": user_id,
-            "improvement_id": improvement_id,
-            "outcome_id": outcome["outcome_id"],
-            "receipt": result.receipt,
-            "next_cycle": result.next_cycle,
-            "created_at": utcnow(),
-        })
-        self._finalize_usage(
-            reservation_id,
-            run_id=None,
-            actual_units=5.0,
-            unpriced_components=["improvement_compute"],
-        )
+            proposal = ImprovementProposal(
+                str(p["proposal_id"]), str(p["baseline_id"]), str(p["candidate_id"]),
+                str(p["change_summary"]),
+                EvaluationDataset(
+                    str(ds["dataset_id"]), str(ds["content_hash"]), int(ds["sample_count"]),
+                    bool(ds.get("held_out", True)),
+                ),
+                MetricObservation(
+                    str(metric["metric"]), float(metric["baseline"]), float(metric["candidate"]),
+                    str(metric.get("direction") or "higher_is_better"),
+                ),
+                float(p["min_gain"]),
+                constraints,
+                True,
+            )
+            result = evaluate_improvement(
+                outcome["v6_handoff"], proposal,
+                minimum_samples=int(os.environ.get("LI_PUBLIC_MIN_IMPROVEMENT_SAMPLES", "30")),
+            )
+            improvement_id = str(result.receipt["receipt_hash"])
+        except BaseException:
+            # Refused, or the evaluation failed with nothing to show: not charged.
+            self._release_quietly(reservation_id)
+            raise
+        charge = {"run_id": None, "actual_units": 5.0, "unpriced_components": ["improvement_compute"]}
+        try:
+            self.store.save_improvement({
+                "user_id": user_id,
+                "improvement_id": improvement_id,
+                "outcome_id": outcome["outcome_id"],
+                "receipt": result.receipt,
+                "next_cycle": result.next_cycle,
+                "created_at": utcnow(),
+            })
+        except BaseException:
+            self._settle_work(reservation_id, **charge)
+            raise
+        self._settle_work(reservation_id, **charge)
         return {
             "kind": "improvement",
             "improvement_id": improvement_id,

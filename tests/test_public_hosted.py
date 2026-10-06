@@ -138,8 +138,7 @@ class FakeStore:
         quota = float(self.entitlement.get("quota_units_per_week") or 0)
         active = bool(self.entitlement.get("active"))
         used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == user_id)
-        reserved = sum(float(x["units"]) for x in self.reservations.values()
-                       if x["user_id"] == user_id and x["status"] == "reserved")
+        reserved = sum(self._held(x) for x in self.reservations.values() if x["user_id"] == user_id)
         if not active or used + reserved + float(units) > quota + 1e-9:
             return False
         self.reservations[reservation_id] = {
@@ -153,8 +152,8 @@ class FakeStore:
             return False
         quota = float(self.entitlement.get("quota_units_per_week") or 0)
         used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == row["user_id"])
-        other = sum(float(x["units"]) for rid, x in self.reservations.items()
-                    if rid != reservation_id and x["user_id"] == row["user_id"] and x["status"] == "reserved")
+        other = sum(self._held(x) for rid, x in self.reservations.items()
+                    if rid != reservation_id and x["user_id"] == row["user_id"])
         if used + other + float(actual_units) > quota + 1e-9:
             return False
         self.usage.append({
@@ -175,6 +174,53 @@ class FakeStore:
             return False
         row["status"] = "released"
         return True
+
+    @staticmethod
+    def _held(row):
+        if row["status"] == "reserved":
+            return float(row["units"])
+        if row["status"] == "unsettled":
+            return float(row.get("pending_units", row["units"]))
+        return 0.0
+
+    # In-memory model of li_mark_usage_unsettled / li_settle_usage (usage_settlement migration).
+    def mark_usage_unsettled(self, reservation_id, run_id, actual_units, known_cost_usd, unpriced_components):
+        row = self.reservations.get(reservation_id)
+        if not row or row["status"] not in ("reserved", "expired", "released", "unsettled"):
+            return False
+        if float(actual_units) < 0 or float(known_cost_usd) < 0:
+            return False
+        row.update({
+            "status": "unsettled", "run_id": run_id, "pending_units": float(actual_units),
+            "pending_known_cost_usd": float(known_cost_usd),
+            "pending_unpriced_components": list(unpriced_components),
+        })
+        return True
+
+    def settle_usage(self, reservation_id):
+        row = self.reservations.get(reservation_id)
+        if not row:
+            return "missing"
+        if row["status"] == "settled":
+            return "already_settled"
+        if row["status"] != "unsettled":
+            return "not_unsettled"
+        if not any(e.get("id") == reservation_id for e in self.usage):
+            self.usage.append({
+                "id": reservation_id,
+                "user_id": row["user_id"],
+                "run_id": row.get("run_id"),
+                "operation": row["operation"],
+                "units": float(row["pending_units"]),
+                "known_cost_usd": float(row.get("pending_known_cost_usd") or 0.0),
+                "unpriced_components": list(row.get("pending_unpriced_components") or []),
+            })
+        row["status"] = "settled"
+        return "settled"
+
+    def list_unsettled_usage(self, limit=100):
+        return [{"id": rid, **row} for rid, row in self.reservations.items()
+                if row["status"] == "unsettled"][:limit]
 
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True
