@@ -608,8 +608,17 @@ class MCPCaseFlowTests(CaseTestBase):
         from lofgren_intelligence.hosted.mcp_sdk import build_mcp
         token = AccessToken(token="t", client_id="c", scopes=["mcp"], resource=f"{BASE}/mcp", subject="u1")
 
+        # The MCP surface builds its own PublicService; give it the test clock so approval
+        # expiry is judged against the same time the approval was recorded at (otherwise the
+        # fixed 2026-10-06 12:00 approval expires against wall-clock time).
+        clock = self.clock
+
         async def run():
-            with patch("lofgren_intelligence.hosted.mcp_sdk.get_access_token", return_value=token),                     patch("lofgren_intelligence.hosted.mcp_sdk.SupabaseStore", return_value=self.store),                     patch.dict(os.environ, {"LI_MCP_REQUESTS_PER_MINUTE": "1000"}):
+            with patch("lofgren_intelligence.hosted.mcp_sdk.get_access_token", return_value=token), \
+                    patch("lofgren_intelligence.hosted.mcp_sdk.SupabaseStore", return_value=self.store), \
+                    patch("lofgren_intelligence.hosted.mcp_sdk.PublicService",
+                          side_effect=lambda store: PublicService(store, clock=clock)), \
+                    patch.dict(os.environ, {"LI_MCP_REQUESTS_PER_MINUTE": "1000"}):
                 async with Client(build_mcp(BASE)) as client:
                     return await client.call_tool(name, args)
 
