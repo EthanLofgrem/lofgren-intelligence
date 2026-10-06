@@ -113,10 +113,13 @@ def v1_boundary() -> tuple[bool, str]:
 
 
 def get(url: str) -> dict:
-    req = urllib.request.Request(
-        url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "lofgren-v2-gate"},
-    )
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "lofgren-v2-gate"}
+    # The workflow passes the job's read-only token (as the V3-V6 gates use through
+    # release.ci); unauthenticated calls share the runner IP's 60/hour API limit.
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)
 
