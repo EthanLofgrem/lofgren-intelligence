@@ -154,7 +154,7 @@ args = ["mcp"]
 
 Tools return structured data, not narrative. The hosted service (`/mcp`) registers exactly these tools; the list is generated in [docs/CAPABILITIES.json](docs/CAPABILITIES.json) and a test keeps it equal to the server's registry:
 
-- **Research (V1):** `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
+- **Research (V1):** `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
 - **Discovery (V2):** `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
 - **Production (V3):** `build_artifact`, `get_artifact`.
 - **Execution (V4):** `action_status`, `execute_action`, `propose_action`. Execution remains server-authorized and browser-reviewed; the model cannot self-authorize.

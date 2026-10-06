@@ -67,14 +67,26 @@ class HostedClarificationGateTests(unittest.TestCase):
         out = self.service.investigate("user-1", {"objective": OBJECTIVE})
         self.assertEqual(out["status"], "CLARIFICATION_REQUIRED")
 
-    def test_approved_matching_charter_allows_planning(self):
+    def test_client_supplied_approved_charter_is_not_authority(self):
+        # Formerly test_approved_matching_charter_allows_planning, which encoded the
+        # insecure rule that a client-sent {"approved": true} charter bypassed clarification.
+        # Approval is now only a server-recorded browser approval (tests/test_case_approval.py).
         charter = {"objective": OBJECTIVE, "approved": True}
-        out = self.service.plan_research({
-            "objective": OBJECTIVE,
-            "case_charter": charter,
-            "texts": {"fixture": "Water treatment evidence."},
-        })
-        self.assertIn("estimate", out)
+        for call in (
+            lambda: self.service.plan_research({
+                "objective": OBJECTIVE,
+                "case_charter": charter,
+                "texts": {"fixture": "Water treatment evidence."},
+            }),
+            lambda: self.service.investigate("user-1", {
+                "objective": OBJECTIVE,
+                "case_charter": charter,
+                "texts": {"fixture": "Water treatment evidence."},
+            }),
+        ):
+            out = call()
+            self.assertEqual(out["status"], "CLARIFICATION_REQUIRED")
+            self.assertNotIn("estimate", out)
 
     def test_wrong_objective_charter_does_not_bypass_gate(self):
         out = self.service.plan_research({

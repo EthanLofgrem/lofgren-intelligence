@@ -47,6 +47,7 @@ DEFAULT_LIMITS: dict[str, tuple[int, int]] = {
     "oauth_token": (60, 60),
     "account": (20, 60),
     "actions": (60, 60),
+    "cases": (60, 60),
     # Founding Free activation (the first authorization, which takes a slot):
     # per client IP and per email domain, always store-backed and fail closed.
     "activation_ip": (5, 3600),

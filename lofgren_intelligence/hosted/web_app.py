@@ -446,6 +446,113 @@ sb.auth.getSession().then(async x=>{{session=x.data.session;if(session){{status.
     return HTMLResponse(page, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
 
 
+# ---- Intelligence Case charter approval (separate from V4 action approval) ----------------
+#
+# The owner signs in with the same account session as /account and /actions, reviews the
+# exact latest charter version and approves it. The approval binds the signed-in user, the
+# case, the charter version and content hash shown on the page, the scope and the budget,
+# and expires. It is never an MCP call, and it does not approve any V4 action.
+
+def _case_error(exc: Exception) -> JSONResponse:
+    if isinstance(exc, PublicServiceError):
+        status = 409 if exc.code in {"CASE_VERSION_CONFLICT", "CASE_NOT_READY"} else 404 if exc.code == "CASE_NOT_FOUND" else 400
+        return _error(status, exc.code.lower(), str(exc))
+    return _error(401, "unauthorized", "a signed-in account session is required")
+
+
+async def case_details(request: Request) -> Response:
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).case_charter_details(
+            str(user["id"]), str(request.path_params["case_id"]),
+            os.environ.get("LI_PUBLIC_BASE_URL", "").rstrip("/"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _case_error(exc)
+
+
+async def case_approve(request: Request) -> Response:
+    try:
+        body = await _json_body(request, 10_000)
+    except (ValueError, UnicodeDecodeError):
+        return _error(400, "invalid_request", "a JSON body with charter_version and content_hash is required")
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).approve_case_charter(
+            str(user["id"]), str(request.path_params["case_id"]),
+            body.get("charter_version"), body.get("content_hash"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _case_error(exc)
+
+
+async def case_page(request: Request) -> Response:
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    public_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+    if not supabase_url or not public_key:
+        return _error(503, "case_approval_not_configured")
+    nonce = secrets.token_urlsafe(18)
+    safe_url = json.dumps(supabase_url).replace("<", "\\u003c")
+    safe_key = json.dumps(public_key).replace("<", "\\u003c")
+    safe_case = json.dumps(str(request.path_params["case_id"])).replace("<", "\\u003c")
+    origin = urllib.parse.urlunsplit((
+        urllib.parse.urlsplit(supabase_url).scheme,
+        urllib.parse.urlsplit(supabase_url).netloc,
+        "", "", "",
+    ))
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Approve Case Charter · Lofgren Intelligence</title>
+<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style nonce="{nonce}">
+body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh;padding:24px}}
+main{{width:min(94vw,760px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
+input,button{{width:100%;box-sizing:border-box;padding:12px;margin:7px 0;border-radius:9px}}
+input{{background:#0e1218;color:white;border:1px solid #344054}}button{{background:#2563eb;color:white;border:0;font-weight:700;cursor:pointer}}
+button[disabled]{{opacity:.45;cursor:not-allowed}}pre{{white-space:pre-wrap;word-break:break-word;background:#0d131c;border:1px solid #344054;padding:14px;border-radius:10px}}
+.warn{{border-left:3px solid #e6b450;padding:12px 14px;background:#1a160d;color:#dac99b}}#status{{min-height:24px;color:#e6b450}}
+</style></head><body><main>
+<h1>Approve a research Case Charter</h1>
+<p class="warn">Research on this case starts only after you sign in and approve the exact charter version shown below:
+its objective, scope, explicit unknowns, sources and budget. The approval can start research once, expires,
+and is void as soon as the charter is edited. It does not approve any external action.</p>
+<label for="email">Email</label><input id="email" type="email" autocomplete="email">
+<label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
+<button id="signin">Sign in to review</button>
+<h2>Charter</h2><pre id="details">Sign in to load the exact charter.</pre>
+<button id="approve" disabled>Approve this exact charter version</button>
+<div id="status" role="status" aria-live="polite"></div>
+<script nonce="{nonce}">
+const sb=supabase.createClient({safe_url},{safe_key});
+const caseId={safe_case};
+let session=null, shown=null;
+const status=document.querySelector('#status'), details=document.querySelector('#details'), approve=document.querySelector('#approve');
+async function load(){{
+  if(!session)return;
+  const r=await fetch('/cases/'+encodeURIComponent(caseId)+'/charter',{{headers:{{authorization:'Bearer '+session.access_token}}}});
+  const d=await r.json(); if(!r.ok)throw new Error(d.error_description||d.error||'Could not load the case');
+  shown={{charter_version:d.charter_version,content_hash:d.content_hash}};
+  details.textContent=JSON.stringify({{case_id:d.case_id,charter_version:d.charter_version,content_hash:d.content_hash,status:d.status,objective:d.objective,budget:d.budget,accepted_answers:d.accepted_answers,critical_unknowns:d.critical_unknowns,open_questions:d.questions,charter:d.case_charter,approval:d.approval}},null,2);
+  approve.disabled=d.status!=='READY_FOR_SCOPE_APPROVAL'||(d.approval&&d.approval.state==='live');
+}}
+document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Signing in…';const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;session=x.data.session;status.textContent='Review the exact charter before approving.';await load()}}catch(e){{status.textContent=e.message}}}};
+approve.onclick=async()=>{{try{{approve.disabled=true;status.textContent='Recording approval…';const r=await fetch('/cases/'+encodeURIComponent(caseId)+'/approve',{{method:'POST',headers:{{'content-type':'application/json',authorization:'Bearer '+session.access_token}},body:JSON.stringify(shown)}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'Approval failed');status.textContent='Approved version '+d.charter_version+'. Return to your AI client and call investigate with this case before '+d.expires_at;await load()}}catch(e){{status.textContent=e.message;approve.disabled=false}}}};
+sb.auth.getSession().then(async x=>{{session=x.data.session;if(session){{status.textContent='Review the exact charter before approving.';await load()}}}}).catch(e=>status.textContent=e.message);
+</script></main></body></html>"""
+    csp = (
+        "default-src 'none'; "
+        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"style-src 'nonce-{nonce}'; "
+        f"connect-src 'self' {origin}; "
+        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return HTMLResponse(page, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
+
+
 async def stripe_webhook(request: Request) -> Response:
     raw = await request.body()
     if len(raw) > 2_000_000:
@@ -585,6 +692,9 @@ def build_app():
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
         Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
         Route("/actions/{action_id:str}/approve", rate_limited("actions", action_approve), methods=["POST"]),
+        Route("/cases/{case_id:str}", case_page, methods=["GET"]),
+        Route("/cases/{case_id:str}/charter", rate_limited("cases", case_details), methods=["GET"]),
+        Route("/cases/{case_id:str}/approve", rate_limited("cases", case_approve), methods=["POST"]),
         Route("/account", account_page, methods=["GET"]),
         Route("/account/export", rate_limited("account", account_export), methods=["GET"]),
         Route("/account/delete", rate_limited("account", account_delete), methods=["POST"]),

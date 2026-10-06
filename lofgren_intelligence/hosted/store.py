@@ -297,6 +297,108 @@ class SupabaseStore:
             cap=max(0, int(limit)),
         )
 
+    # ---- Intelligence Cases (li_cases, li_case_charters, li_case_approvals, li_case_events) ----
+
+    @staticmethod
+    def _rpc_int(result: Any) -> int:
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if isinstance(result, bool) or not isinstance(result, (int, float)):
+            raise StoreError("case store returned an invalid answer")
+        return int(result)
+
+    def create_case(
+        self, case_id: str, user_id: str, objective: str, status: str,
+        content_hash: str, charter: dict[str, Any], answers: dict[str, Any],
+    ) -> int:
+        return self._rpc_int(self.rpc("li_create_case", {
+            "p_case_id": case_id, "p_user_id": user_id, "p_objective": objective,
+            "p_status": status, "p_content_hash": content_hash, "p_charter": charter,
+            "p_answers": answers,
+        }))
+
+    def revise_case(
+        self, case_id: str, user_id: str, expected_version: int, status: str,
+        content_hash: str, charter: dict[str, Any], answers: dict[str, Any],
+    ) -> int:
+        """New charter version, or -1 on a version conflict, or 0 when the case is not the caller's."""
+        return self._rpc_int(self.rpc("li_revise_case", {
+            "p_case_id": case_id, "p_user_id": user_id, "p_expected_version": int(expected_version),
+            "p_status": status, "p_content_hash": content_hash, "p_charter": charter,
+            "p_answers": answers,
+        }))
+
+    def get_case(self, user_id: str, case_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_cases",
+            query={"select": "*", "id": f"eq.{case_id}", "user_id": f"eq.{user_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def list_cases(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
+            "li_cases",
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,id.asc"},
+            cap=limit,
+        )
+
+    def get_case_charter(self, user_id: str, case_id: str, version: int | None = None) -> dict[str, Any] | None:
+        """The given charter version, or the latest when version is None."""
+        query: dict[str, Any] = {
+            "select": "*", "case_id": f"eq.{case_id}", "user_id": f"eq.{user_id}",
+            "order": "version.desc", "limit": "1",
+        }
+        if version is not None:
+            query["version"] = f"eq.{int(version)}"
+        rows = self._table("li_case_charters", query=query)
+        return rows[0] if rows else None
+
+    def approve_case_charter(self, row: dict[str, Any]) -> bool:
+        return self._rpc_bool(self.rpc("li_approve_case_charter", {
+            "p_id": row["id"], "p_case_id": row["case_id"], "p_user_id": row["user_id"],
+            "p_charter_version": int(row["charter_version"]), "p_content_hash": row["content_hash"],
+            "p_scope": row["scope"], "p_budget_usd": float(row["budget_usd"]),
+            "p_budget_units": float(row["budget_units"]), "p_expires_at": row["expires_at"],
+            "p_token_hash": row["token_hash"],
+        }))
+
+    def latest_case_approval(self, user_id: str, case_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_case_approvals",
+            query={"select": "*", "case_id": f"eq.{case_id}", "user_id": f"eq.{user_id}",
+                   "order": "approved_at.desc,id.desc", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def consume_case_approval(
+        self, approval_id: str, user_id: str, token_hash: str, idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        result = self.rpc("li_consume_case_approval", {
+            "p_id": approval_id, "p_user_id": user_id, "p_token_hash": token_hash,
+            "p_idempotency_key": idempotency_key,
+        })
+        if isinstance(result, list):
+            result = result[0] if result else None
+        if isinstance(result, dict) and len(result) == 1 and "li_consume_case_approval" in result:
+            result = result["li_consume_case_approval"]
+        return result if isinstance(result, dict) else None
+
+    def record_case_run(self, approval_id: str, user_id: str, run_id: str | None, run_status: str) -> bool:
+        return self._rpc_bool(self.rpc("li_record_case_run", {
+            "p_id": approval_id, "p_user_id": user_id, "p_run_id": run_id, "p_run_status": run_status,
+        }))
+
+    def add_case_event(self, row: dict[str, Any]) -> None:
+        self._table("li_case_events", "POST", body=row, prefer="return=minimal")
+
+    def list_case_events(self, user_id: str, case_id: str) -> list[dict[str, Any]]:
+        return self._select_all(
+            "li_case_events",
+            {"select": "*", "case_id": f"eq.{case_id}", "user_id": f"eq.{user_id}", "order": "created_at.asc,id.asc"},
+        )
+
     def take_rate_limit(self, user_id: str, bucket: str = "mcp", limit: int = 60, window_seconds: int = 60) -> bool:
         result = self.rpc("li_take_rate_limit", {
             "p_user_id": user_id,

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -38,6 +40,7 @@ from ..improvement import (
     EvaluationDataset, ImprovementProposal, MetricObservation, SafetyConstraint,
     evaluate_improvement, verify_improvement_receipt,
 )
+from . import cases as case_model
 from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
 from .economics import certify_paid_plan
@@ -113,6 +116,54 @@ class RunStateInvalid(PublicServiceError):
     code = "RUN_STATE_INVALID"
 
 
+class CaseNotFound(PublicServiceError):
+    """No such case for this account (another account's case is reported the same way)."""
+
+    code = "CASE_NOT_FOUND"
+
+
+class CaseInvalid(PublicServiceError):
+    """The case request is malformed, or the stored charter failed its integrity check."""
+
+    code = "CASE_INVALID"
+
+
+class CaseVersionConflict(PublicServiceError):
+    """The charter version the caller expected is not the latest version."""
+
+    code = "CASE_VERSION_CONFLICT"
+
+
+class CaseNotReady(PublicServiceError):
+    """The charter still has open clarification questions and cannot be approved."""
+
+    code = "CASE_NOT_READY"
+
+
+class CaseApprovalRequired(PublicServiceError):
+    """No valid browser approval exists for the latest charter version."""
+
+    code = "CASE_APPROVAL_REQUIRED"
+
+
+class CaseApprovalConsumed(PublicServiceError):
+    """The approval was already used to start research (under another idempotency key)."""
+
+    code = "CASE_APPROVAL_CONSUMED"
+
+
+class CaseBudgetExceeded(PublicServiceError):
+    """The planned research needs more than the approved charter budget."""
+
+    code = "CASE_BUDGET_EXCEEDED"
+
+
+class CaseRunFailed(PublicServiceError):
+    """The research started from this approval failed; a fresh approval is needed to retry."""
+
+    code = "CASE_RUN_FAILED"
+
+
 _LOG = logging.getLogger("lofgren_intelligence.public")
 
 
@@ -131,8 +182,14 @@ REQUIRED_DISCOVERY_KEYS = (
 
 
 class PublicService:
-    def __init__(self, store: SupabaseStore | None = None) -> None:
+    def __init__(
+        self,
+        store: SupabaseStore | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.store = store or SupabaseStore()
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     # ---- usage: reserve -> work -> settle --------------------------------------------------
     #
@@ -297,39 +354,290 @@ class PublicService:
             "plan_id": decision.entitlement.get("plan_id"),
         }
 
-    @staticmethod
-    def _approved_case_charter(a: dict[str, Any]) -> dict[str, Any] | None:
-        charter = a.get("case_charter")
-        if not isinstance(charter, dict):
-            return None
-        if charter.get("approved") is not True:
-            return None
-        if str(charter.get("objective") or "").strip() != str(a.get("objective") or "").strip():
-            return None
-        return charter
+    # ---- Intelligence Cases: clarification, versioned charters, browser approval ----------
+    #
+    # A serious objective (requires_clarification) is researched only through a case:
+    # clarify_objective opens it and records each answer set as a new charter version;
+    # the account owner approves one exact version + content hash on the /cases/{id}
+    # browser page (never through MCP); investigate consumes that approval once and runs
+    # with the approved charter's objective, sources and budget -- not the client's.
 
-    def clarify_objective(self, a: dict[str, Any]) -> dict[str, Any]:
+    class _ReplayStart(Exception):
+        """The approval was already consumed under the caller's idempotency key."""
+
+        def __init__(self, approval: dict[str, Any]) -> None:
+            super().__init__("replay")
+            self.approval = approval
+
+    @staticmethod
+    def _approval_url(base_url: str, case_id: str) -> str:
+        return (base_url or "").rstrip("/") + "/cases/" + str(case_id)
+
+    def _expired(self, approval: dict[str, Any]) -> bool:
+        raw = str(approval.get("expires_at") or "")
+        try:
+            expires = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return True  # an unreadable expiry is not a valid approval
+        if expires.tzinfo is None:
+            return True
+        return expires <= self._clock()
+
+    def _case(self, user_id: str, case_id: Any) -> dict[str, Any]:
+        cid = str(case_id or "").strip()
+        try:
+            cid = str(uuid.UUID(cid))
+        except ValueError:
+            raise CaseNotFound("unknown case_id") from None
+        row = self.store.get_case(user_id, cid)
+        if not row or str(row.get("user_id")) != str(user_id) or str(row.get("id")) != cid:
+            raise CaseNotFound("unknown case_id")
+        return row
+
+    def _latest_charter(self, user_id: str, case_id: str) -> dict[str, Any]:
+        row = self.store.get_case_charter(user_id, case_id)
+        if (not row or str(row.get("user_id")) != str(user_id) or str(row.get("case_id")) != str(case_id)
+                or not isinstance(row.get("charter"), dict)):
+            raise CaseInvalid("the stored case charter is missing; open a new case")
+        if case_model.content_hash(case_id, row["charter"], row.get("answers") or {}) != row.get("content_hash"):
+            raise CaseInvalid("the stored case charter failed its integrity check; open a new case")
+        return row
+
+    def _case_view(self, case: dict[str, Any], row: dict[str, Any], base_url: str) -> dict[str, Any]:
+        ready = row["charter"].get("status") == "READY_FOR_SCOPE_APPROVAL"
+        view = case_model.client_view(case, row, self._approval_url(base_url, case["id"]) if ready else None)
+        if ready:
+            view["message"] = (
+                "The Case Charter is ready. The account owner must sign in at approval_url and approve "
+                "this exact charter version; then call investigate with this case_id. Approval is not "
+                "an MCP call, and any edit to the charter needs a fresh approval."
+            )
+        else:
+            view["message"] = (
+                "Answer the open questions (an answer, 'unknown', 'skip', 'ask me later' or "
+                "'use a reasonable default' are all valid) by calling clarify_objective again with this "
+                "case_id and expected_version."
+            )
+        return view
+
+    def clarify_objective(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
+        """Open an Intelligence Case, or record a revised answer set as a new charter version."""
         a = validate_remote_args(a)
-        result = clarify_case_objective(
-            str(a["objective"]),
-            a.get("answers") if isinstance(a.get("answers"), dict) else None,
+        answers_in = a.get("answers")
+        if answers_in is not None and not isinstance(answers_in, dict):
+            raise CaseInvalid("answers must be an object of question key -> answer")
+        budget_in = a.get("budget")
+        if budget_in is not None and not isinstance(budget_in, dict):
+            raise CaseInvalid("budget must be an object with max_spend_usd and/or max_units")
+        try:
+            if a.get("case_id") in (None, ""):
+                return self._open_case(user_id, a, answers_in, budget_in, base_url)
+            return self._revise_case(user_id, a, answers_in, budget_in, base_url)
+        except case_model.CaseInputError as exc:
+            raise CaseInvalid(str(exc)) from None
+
+    def _open_case(self, user_id: str, a: dict[str, Any], answers_in: dict[str, Any] | None,
+                   budget_in: dict[str, Any] | None, base_url: str) -> dict[str, Any]:
+        objective = str(a.get("objective") or "").strip()
+        if not objective:
+            raise CaseInvalid("objective is required")
+        answers = case_model.merge_answers(None, answers_in)
+        budget = case_model.normalize_budget(budget_in)
+        sources = case_model.normalize_sources(a)
+        charter = case_model.build_charter(objective, answers, budget, sources)
+        case_id = str(uuid.uuid4())
+        digest = case_model.content_hash(case_id, charter, answers)
+        status = case_model.STATUS_FOR_CLARIFICATION[charter["status"]]
+        self.store.create_case(case_id, user_id, charter["objective"], status, digest, charter, answers)
+        return self._case_view(
+            {"id": case_id, "user_id": user_id, "status": status},
+            {"version": 1, "content_hash": digest, "charter": charter},
+            base_url,
         )
-        return clarification_to_dict(result)
+
+    def _revise_case(self, user_id: str, a: dict[str, Any], answers_in: dict[str, Any] | None,
+                     budget_in: dict[str, Any] | None, base_url: str) -> dict[str, Any]:
+        case = self._case(user_id, a["case_id"])
+        latest = self._latest_charter(user_id, case["id"])
+        if a.get("expected_version") is None:
+            raise CaseVersionConflict(
+                f"expected_version is required to revise a case (the latest version is {latest['version']})"
+            )
+        try:
+            expected = int(a["expected_version"])
+        except (TypeError, ValueError):
+            raise CaseInvalid("expected_version must be an integer") from None
+        if expected != int(latest["version"]):
+            raise CaseVersionConflict(
+                f"charter version {expected} is not the latest (version {latest['version']}); "
+                "read the case again and resubmit"
+            )
+        previous = latest["charter"]
+        objective = str(a.get("objective") or "").strip()
+        if objective and objective != previous["objective"]:
+            raise CaseInvalid("a case's objective cannot change; open a new case for a different objective")
+        answers = case_model.merge_answers(latest.get("answers") or {}, answers_in)
+        budget = case_model.normalize_budget(budget_in, previous.get("budget"))
+        sources = case_model.normalize_sources(a, previous.get("sources"))
+        charter = case_model.build_charter(previous["objective"], answers, budget, sources)
+        digest = case_model.content_hash(case["id"], charter, answers)
+        if digest == latest["content_hash"]:
+            view = self._case_view(case, latest, base_url)
+            view["unchanged"] = True
+            return view
+        status = case_model.STATUS_FOR_CLARIFICATION[charter["status"]]
+        version = self.store.revise_case(case["id"], user_id, expected, status, digest, charter, answers)
+        if version == -1:
+            raise CaseVersionConflict("another revision of this case was saved first; read it again and resubmit")
+        if version <= 0:
+            raise CaseNotFound("unknown case_id")
+        return self._case_view(
+            {**case, "status": status},
+            {"version": version, "content_hash": digest, "charter": charter},
+            base_url,
+        )
+
+    def _approval_state(self, user_id: str, case: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+        approval = self.store.latest_case_approval(user_id, case["id"])
+        if not approval or str(approval.get("user_id")) != str(user_id):
+            return {"state": "none"}
+        if approval.get("consumed_at"):
+            state = "consumed"
+        elif approval.get("revoked_at"):
+            state = "revoked"
+        elif (int(approval.get("charter_version") or 0) != int(row["version"])
+              or approval.get("content_hash") != row["content_hash"]):
+            state = "stale"
+        elif self._expired(approval):
+            state = "expired"
+        else:
+            state = "live"
+        return {
+            "state": state,
+            "approval_id": str(approval.get("id")),
+            "charter_version": approval.get("charter_version"),
+            "expires_at": approval.get("expires_at"),
+            "run_id": approval.get("run_id"),
+            "run_status": approval.get("run_status"),
+        }
+
+    def case_status(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
+        case = self._case(user_id, a.get("case_id"))
+        row = self._latest_charter(user_id, case["id"])
+        view = self._case_view(case, row, base_url)
+        view["approval"] = self._approval_state(user_id, case, row)
+        return view
+
+    def case_charter_details(self, user_id: str, case_id: str, base_url: str = "") -> dict[str, Any]:
+        """Everything the browser approval page shows: the exact charter the owner approves."""
+        case = self._case(user_id, case_id)
+        row = self._latest_charter(user_id, case["id"])
+        view = self._case_view(case, row, base_url)
+        view["approval"] = self._approval_state(user_id, case, row)
+        view["charter"] = row["charter"]
+        view["approval_ttl_minutes"] = case_model.approval_ttl_seconds() // 60
+        return view
+
+    def approve_case_charter(
+        self, user_id: str, case_id: str, charter_version: Any, content_hash: Any,
+    ) -> dict[str, Any]:
+        """Record the signed-in owner's approval of one exact charter version (browser only)."""
+        case = self._case(user_id, case_id)
+        row = self._latest_charter(user_id, case["id"])
+        try:
+            version = int(charter_version)
+        except (TypeError, ValueError):
+            raise CaseInvalid("charter_version must be an integer") from None
+        if version != int(row["version"]) or str(content_hash or "") != row["content_hash"]:
+            raise CaseVersionConflict("the charter changed since this page loaded; review the latest version")
+        charter = row["charter"]
+        if charter.get("status") != "READY_FOR_SCOPE_APPROVAL":
+            raise CaseNotReady("the charter still has open questions; answer them before approving")
+        now = self._clock()
+        expires = now + timedelta(seconds=case_model.approval_ttl_seconds())
+        token = secrets.token_urlsafe(32)  # one-time consumption key; only its hash is stored
+        budget = case_model.normalize_budget(charter.get("budget"))
+        approval = {
+            "id": str(uuid.uuid4()),
+            "case_id": str(case["id"]),
+            "user_id": user_id,
+            "charter_version": version,
+            "content_hash": row["content_hash"],
+            "scope": case_model.approval_scope(charter),
+            "budget_usd": budget["max_spend_usd"],
+            "budget_units": budget["max_units"],
+            "expires_at": expires.isoformat(),
+            "token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        }
+        if not self.store.approve_case_charter(approval):
+            raise CaseVersionConflict("approval refused: the charter changed or the approval window closed")
+        return {
+            "kind": "case_approval",
+            "case_id": approval["case_id"],
+            "approval_id": approval["id"],
+            "charter_version": version,
+            "content_hash": approval["content_hash"],
+            "budget": budget,
+            "expires_at": approval["expires_at"],
+            "status": "approved",
+        }
+
+    def _authorized_case(
+        self, user_id: str, a: dict[str, Any], base_url: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """The case, its latest charter and the approval that authorizes research on it."""
+        case = self._case(user_id, a.get("case_id"))
+        row = self._latest_charter(user_id, case["id"])
+        charter = row["charter"]
+        objective = str(a.get("objective") or "").strip()
+        if objective and objective != charter["objective"]:
+            raise CaseInvalid("objective does not match the case charter")
+        url = self._approval_url(base_url, case["id"])
+        if charter.get("status") != "READY_FOR_SCOPE_APPROVAL":
+            raise CaseNotReady("the case still has open questions; answer them with clarify_objective first")
+        approval = self.store.latest_case_approval(user_id, case["id"])
+        if (not approval or str(approval.get("user_id")) != str(user_id)
+                or str(approval.get("case_id")) != str(case["id"])):
+            raise CaseApprovalRequired(f"approve charter version {row['version']} in the browser: {url}")
+        if (approval.get("revoked_at") or int(approval.get("charter_version") or 0) != int(row["version"])
+                or approval.get("content_hash") != row["content_hash"]):
+            raise CaseApprovalRequired(
+                f"the charter changed after it was approved; approve version {row['version']} in the browser: {url}"
+            )
+        budget = case_model.normalize_budget(charter.get("budget"))
+        if (abs(float(approval.get("budget_usd", -1)) - budget["max_spend_usd"]) > 1e-9
+                or abs(float(approval.get("budget_units", -1)) - budget["max_units"]) > 1e-9):
+            raise CaseApprovalRequired(f"the approved budget does not match the charter; approve again: {url}")
+        if not approval.get("consumed_at") and self._expired(approval):
+            raise CaseApprovalRequired(f"the approval expired; approve the charter again: {url}")
+        return case, row, approval
+
+    @staticmethod
+    def _charter_inputs(charter: dict[str, Any]) -> dict[str, Any]:
+        """Execution inputs come from the approved charter only, never from the client call."""
+        budget = case_model.normalize_budget(charter.get("budget"))
+        inputs: dict[str, Any] = dict(charter.get("sources") or {})
+        inputs["objective"] = charter["objective"]
+        inputs["max_spend_usd"] = budget["max_spend_usd"]
+        return validate_remote_args(inputs)
 
     def _clarification_gate(self, a: dict[str, Any]) -> dict[str, Any] | None:
         objective = str(a.get("objective") or "").strip()
         if not objective or not requires_clarification(objective):
             return None
-        if self._approved_case_charter(a) is not None:
-            return None
+        # Nothing the client sends is authority. A `case_charter` argument (once honoured
+        # when it said approved: true) is ignored; only a browser-recorded approval of the
+        # latest charter version, used through case_id, lets serious research start.
         result = clarify_case_objective(
             objective,
             a.get("answers") if isinstance(a.get("answers"), dict) else None,
         )
         out = clarification_to_dict(result)
+        out["approval_required"] = True
         out["message"] = (
-            "This objective is consequential or underspecified. Clarify the highest-impact "
-            "unknowns and approve the Case Charter before substantial research begins."
+            "This objective is consequential or underspecified. Open an Intelligence Case with "
+            "clarify_objective, answer (or mark unknown) the highest-impact questions, have the account "
+            "owner approve the Case Charter in the browser, then call again with the case_id."
         )
         return out
 
@@ -342,11 +650,28 @@ class PublicService:
         )
         return to_dict(c)
 
-    def plan_research(self, a: dict[str, Any]) -> dict[str, Any]:
+    def plan_research(
+        self, a: dict[str, Any], user_id: str | None = None, base_url: str = "",
+    ) -> dict[str, Any]:
         a = validate_remote_args(a)
+        if a.get("case_id") not in (None, ""):
+            if not user_id:
+                raise CaseApprovalRequired("case research requires an authenticated account")
+            case, row, approval = self._authorized_case(user_id, a, base_url)
+            out = self._plan(self._charter_inputs(row["charter"]))
+            out.update({
+                "case_id": str(case["id"]),
+                "charter_version": int(row["version"]),
+                "execution_inputs": "approved_charter",
+                "approved_budget": case_model.normalize_budget(row["charter"].get("budget")),
+            })
+            return out
         clarification = self._clarification_gate(a)
         if clarification is not None:
             return clarification
+        return self._plan(a)
+
+    def _plan(self, a: dict[str, Any]) -> dict[str, Any]:
         c = compile_intent(
             a["objective"],
             max_spend_usd=float(a.get("max_spend_usd", 5.0)),
@@ -392,6 +717,9 @@ class PublicService:
         user_id: str,
         objective: str,
         a: dict[str, Any],
+        *,
+        budget_units: float | None = None,
+        before_work: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         a = validate_remote_args(a)
         c = compile_intent(
@@ -400,6 +728,11 @@ class PublicService:
             location=self._location(a),
         )
         plan = plan_research(c, self._registry(a))
+        if budget_units is not None and float(plan.estimated_work_units) > float(budget_units) + 1e-9:
+            raise CaseBudgetExceeded(
+                f"the research plan needs {plan.estimated_work_units:g} units but the approved charter allows "
+                f"{float(budget_units):g}; revise the budget and approve the charter again"
+            )
         reservation_id = self._reserve_usage(
             user_id, "investigate", float(plan.estimated_work_units)
         )
@@ -410,6 +743,8 @@ class PublicService:
             est = estimate_run(plan, execution_plan)
             if est.total_usd > public_cap:
                 raise QuotaExceeded("run exceeds the public per-run cost ceiling")
+            if before_work is not None:
+                before_work()
         except BaseException:
             # Refused before any work: return the held allowance now.
             self._release_quietly(reservation_id)
@@ -473,12 +808,101 @@ class PublicService:
         out["unpriced_cost_components"] = list(cost.unpriced_components)
         return out
 
-    def investigate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+    def investigate(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
         a = validate_remote_args(a)
+        if a.get("case_id") not in (None, ""):
+            return self._start_case_research(user_id, a, base_url)
         clarification = self._clarification_gate(a)
         if clarification is not None:
             return clarification
         return self._run(user_id, a["objective"], a)
+
+    def _start_case_research(self, user_id: str, a: dict[str, Any], base_url: str) -> dict[str, Any]:
+        case, row, approval = self._authorized_case(user_id, a, base_url)
+        key = str(a.get("idempotency_key") or "").strip() or f"approval:{approval['id']}"
+        if len(key) > 200:
+            raise CaseInvalid("idempotency_key is too long")
+        if approval.get("consumed_at"):
+            return self._case_replay(user_id, case, row, approval, key)
+        inputs = self._charter_inputs(row["charter"])
+        approval_id = str(approval["id"])
+        consumed: dict[str, bool] = {}
+
+        def consume() -> None:
+            got = self.store.consume_case_approval(approval_id, user_id, str(approval["token_hash"]), key)
+            if got is None:
+                current = self.store.latest_case_approval(user_id, case["id"]) or {}
+                if str(current.get("id")) == approval_id and current.get("consumed_at"):
+                    if current.get("idempotency_key") == key:
+                        raise PublicService._ReplayStart(current)
+                    raise CaseApprovalConsumed(
+                        "this approval already started research; approve the charter again to run it again"
+                    )
+                raise CaseApprovalRequired(
+                    "the approval is no longer valid; approve the latest charter in the browser: "
+                    + self._approval_url(base_url, case["id"])
+                )
+            if not got.get("consumed_now"):
+                raise PublicService._ReplayStart(got)
+            consumed["yes"] = True
+
+        try:
+            out = self._run(
+                user_id, inputs["objective"], inputs,
+                budget_units=float(approval["budget_units"]),
+                before_work=consume,
+            )
+        except PublicService._ReplayStart as replay:
+            return self._case_replay(user_id, case, row, replay.approval, key)
+        except BaseException:
+            if consumed:
+                try:
+                    self.store.record_case_run(approval_id, user_id, None, "failed")
+                except Exception:
+                    _LOG.error("could not record the failed case run for approval %s", approval_id)
+            raise
+        try:
+            self.store.record_case_run(approval_id, user_id, out["run_id"], "complete")
+        except Exception:
+            _LOG.error("could not bind run %s to case approval %s", out.get("run_id"), approval_id)
+        out.update(self._case_run_fields(case, row, approval_id, key))
+        return out
+
+    @staticmethod
+    def _case_run_fields(case: dict[str, Any], row: dict[str, Any], approval_id: str, key: str) -> dict[str, Any]:
+        return {
+            "case_id": str(case["id"]),
+            "charter_version": int(row["version"]),
+            "approval_id": approval_id,
+            "idempotency_key": key,
+            "execution_inputs": "approved_charter",
+            "approved_budget": case_model.normalize_budget(row["charter"].get("budget")),
+        }
+
+    def _case_replay(
+        self, user_id: str, case: dict[str, Any], row: dict[str, Any], approval: dict[str, Any], key: str,
+    ) -> dict[str, Any]:
+        """A start retried with the same idempotency key: the same run, never a second execution."""
+        if approval.get("idempotency_key") != key:
+            raise CaseApprovalConsumed(
+                "this approval already started research; approve the charter again to run it again"
+            )
+        fields = self._case_run_fields(case, row, str(approval["id"]), key)
+        status = approval.get("run_status")
+        if status == "failed":
+            raise CaseRunFailed("the research started from this approval failed; approve the charter again to retry")
+        if status == "complete" and approval.get("run_id"):
+            stored = self.store.get_run(user_id, str(approval["run_id"]))
+            if stored and isinstance(stored.get("snapshot"), dict):
+                out = summary(stored["snapshot"])
+                unpriced = list(stored.get("unpriced_components") or [])
+                out["known_cost_usd"] = float(stored.get("known_cost_usd") or 0.0)
+                out["cost_fully_priced"] = not unpriced
+                out["unpriced_cost_components"] = unpriced
+                out.update(fields)
+                out["replayed"] = True
+                return out
+        return {"kind": "intelligence_case_run", "status": "RUN_IN_PROGRESS", "replayed": True, **fields}
 
     def verify_claim(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         return self._run(user_id, f"Verify the claim: {a['claim']}", a)
@@ -1202,6 +1626,7 @@ class PublicService:
             "outcomes": self.store.list_outcomes(user_id),
             "improvements": self.store.list_improvements(user_id),
             "usage_events": self.store.list_usage(user_id),
+            "cases": self.store.list_cases(user_id),
         }
 
     def delete_account(self, user_id: str, confirmation: str) -> dict[str, Any]:

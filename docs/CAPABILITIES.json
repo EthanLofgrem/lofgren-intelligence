@@ -7,6 +7,7 @@
       "title": "Evidence intelligence (research and verification)",
       "public": true,
       "tools": [
+        "case_status",
         "clarify_objective",
         "compile_objective",
         "export_knowledge_map2",
@@ -132,6 +133,15 @@
       "gated_by": null,
       "metering": {
         "kind": "reserved"
+      }
+    },
+    {
+      "name": "case_status",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
       }
     },
     {

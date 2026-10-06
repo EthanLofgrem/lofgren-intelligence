@@ -42,6 +42,10 @@ class FakeStore:
         self.usage = []
         self.reservations = {}
         self.billing_events = {}
+        self.cases = {}
+        self.case_charters = {}
+        self.case_approvals = {}
+        self.case_events = []
         self.verified_user = {"id": "u1", "email": "u@example.com"}
 
     def verify_supabase_user(self, token):
@@ -221,6 +225,140 @@ class FakeStore:
     def list_unsettled_usage(self, limit=100):
         return [{"id": rid, **row} for rid, row in self.reservations.items()
                 if row["status"] == "unsettled"][:limit]
+
+    # In-memory model of the li_cases / li_case_charters / li_case_approvals RPCs
+    # (intelligence_cases migration). Rows go through JSON as a database would.
+    case_clock = None
+
+    def _case_now(self):
+        from datetime import datetime, timezone
+        return (self.case_clock or (lambda: datetime.now(timezone.utc)))()
+
+    @staticmethod
+    def _json(value):
+        return json.loads(json.dumps(value))
+
+    def _event(self, case_id, user_id, kind, version=None, **detail):
+        self.case_events.append({"case_id": case_id, "user_id": user_id, "kind": kind,
+                                 "charter_version": version, "detail": self._json(detail)})
+
+    def _latest_version(self, case_id):
+        versions = [v for (cid, v) in self.case_charters if cid == case_id]
+        return max(versions) if versions else None
+
+    def create_case(self, case_id, user_id, objective, status, content_hash, charter, answers):
+        if case_id in self.cases:
+            raise RuntimeError("duplicate case id")
+        now = self._case_now().isoformat()
+        self.cases[case_id] = {"id": case_id, "user_id": user_id, "objective": objective, "status": status,
+                               "created_at": now, "updated_at": now}
+        self.case_charters[(case_id, 1)] = {
+            "case_id": case_id, "user_id": user_id, "version": 1, "content_hash": content_hash,
+            "charter": self._json(charter), "answers": self._json(answers), "created_at": now,
+        }
+        self._event(case_id, user_id, "case_created", 1, content_hash=content_hash)
+        return 1
+
+    def revise_case(self, case_id, user_id, expected_version, status, content_hash, charter, answers):
+        case = self.cases.get(case_id)
+        if not case or case["user_id"] != user_id:
+            return 0
+        latest = self._latest_version(case_id)
+        if latest is None or latest != int(expected_version):
+            self._event(case_id, user_id, "revision_conflict", latest, expected_version=expected_version)
+            return -1
+        version = latest + 1
+        if (case_id, version) in self.case_charters:  # unique (case_id, version)
+            return -1
+        self.case_charters[(case_id, version)] = {
+            "case_id": case_id, "user_id": user_id, "version": version, "content_hash": content_hash,
+            "charter": self._json(charter), "answers": self._json(answers),
+            "created_at": self._case_now().isoformat(),
+        }
+        for row in self.case_approvals.values():
+            if row["case_id"] == case_id and row["consumed_at"] is None and row["revoked_at"] is None:
+                row["revoked_at"] = self._case_now().isoformat()
+        case.update({"status": status, "updated_at": self._case_now().isoformat()})
+        self._event(case_id, user_id, "charter_revised", version, content_hash=content_hash)
+        return version
+
+    def get_case(self, user_id, case_id):
+        row = self.cases.get(case_id)
+        return dict(row) if row and row["user_id"] == user_id else None
+
+    def list_cases(self, user_id, limit=1000):
+        return [dict(r) for r in self.cases.values() if r["user_id"] == user_id][:limit]
+
+    def get_case_charter(self, user_id, case_id, version=None):
+        if version is None:
+            version = self._latest_version(case_id)
+        row = self.case_charters.get((case_id, version))
+        return self._json(row) if row and row["user_id"] == user_id else None
+
+    def approve_case_charter(self, row):
+        from datetime import datetime
+        case = self.cases.get(row["case_id"])
+        if not case or case["user_id"] != row["user_id"]:
+            return False
+        latest = self._latest_version(row["case_id"])
+        current = self.case_charters.get((row["case_id"], latest)) if latest else None
+        if (current is None or latest != int(row["charter_version"])
+                or current["content_hash"] != row["content_hash"]
+                or datetime.fromisoformat(row["expires_at"]) <= self._case_now()):
+            return False
+        for other in self.case_approvals.values():
+            if other["case_id"] == row["case_id"] and other["consumed_at"] is None and other["revoked_at"] is None:
+                other["revoked_at"] = self._case_now().isoformat()
+        stored = self._json(row)
+        stored.update({"approved_at": self._case_now().isoformat(), "consumed_at": None, "revoked_at": None,
+                       "idempotency_key": None, "run_id": None, "run_status": None})
+        self.case_approvals[row["id"]] = stored
+        case["status"] = "approved"
+        self._event(row["case_id"], row["user_id"], "charter_approved", row["charter_version"],
+                    approval_id=row["id"])
+        return True
+
+    def latest_case_approval(self, user_id, case_id):
+        rows = [r for r in self.case_approvals.values() if r["case_id"] == case_id and r["user_id"] == user_id]
+        return dict(rows[-1]) if rows else None
+
+    def consume_case_approval(self, approval_id, user_id, token_hash, idempotency_key):
+        from datetime import datetime
+        row = self.case_approvals.get(approval_id)
+        if (not row or row["user_id"] != user_id or row["token_hash"] != token_hash
+                or not idempotency_key or len(idempotency_key) > 200):
+            return None
+        if row["consumed_at"] is not None:
+            if row["idempotency_key"] == idempotency_key:
+                return {**row, "consumed_now": False}
+            return None
+        if (row["revoked_at"] is not None
+                or datetime.fromisoformat(row["expires_at"]) <= self._case_now()
+                or self._latest_version(row["case_id"]) != row["charter_version"]):
+            return None
+        row.update({"consumed_at": self._case_now().isoformat(), "idempotency_key": idempotency_key,
+                    "run_status": "started"})
+        self.cases[row["case_id"]]["status"] = "research_started"
+        self._event(row["case_id"], user_id, "approval_consumed", row["charter_version"],
+                    approval_id=approval_id, idempotency_key=idempotency_key)
+        return {**row, "consumed_now": True}
+
+    def record_case_run(self, approval_id, user_id, run_id, run_status):
+        row = self.case_approvals.get(approval_id)
+        if (run_status not in ("complete", "failed") or not row or row["user_id"] != user_id
+                or row["consumed_at"] is None or row["run_status"] != "started"):
+            return False
+        row.update({"run_id": run_id, "run_status": run_status})
+        self.cases[row["case_id"]]["status"] = (
+            "research_complete" if run_status == "complete" else "research_failed")
+        self._event(row["case_id"], user_id, "research_" + run_status, approval_id=approval_id, run_id=run_id)
+        return True
+
+    def add_case_event(self, row):
+        self.case_events.append(dict(row))
+
+    def list_case_events(self, user_id, case_id):
+        return [e for e in self.case_events if e["case_id"] == case_id and e["user_id"] == user_id]
 
     def take_rate_limit(self, user_id, bucket="mcp", limit=60, window_seconds=60):
         return True

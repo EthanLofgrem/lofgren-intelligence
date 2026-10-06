@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-UNKNOWN_VALUES = {"unknown", "i don't know", "i dont know", "skip", "ask me later"}
+UNKNOWN_VALUES = {"unknown", "i don't know", "i dont know", "skip", "later", "ask me later"}
 DEFAULT_VALUES = {"use a reasonable default", "reasonable default", "default"}
 
 _DESIGN_WORDS = {

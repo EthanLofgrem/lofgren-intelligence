@@ -146,20 +146,48 @@ def build_mcp(base_url: str) -> MCPServer:
 
     @tool()
     def clarify_objective(
-        objective: str,
+        objective: str | None = None,
         answers: dict[str, str] | None = None,
+        case_id: str | None = None,
+        expected_version: int | None = None,
+        max_spend_usd: float | None = None,
+        max_units: float | None = None,
+        texts: dict[str, str] | None = None,
+        urls: list[str] | None = None,
+        search: str | None = None,
+        lat: float | None = None,
+        lon: float | None = None,
     ) -> dict[str, Any]:
-        """Clarify a large or ambiguous objective before research begins.
+        """Open or revise an Intelligence Case before serious research begins.
 
-        Returns 3–7 high-information questions, accepts explicit unknown/skip/default
-        answers, and produces a Case Charter when the objective is scoped enough for
-        user approval.
+        Without case_id: opens a case for the objective and returns 3-7 high-information
+        questions (or a ready Case Charter). With case_id and expected_version: records the
+        answers (an answer, 'unknown', 'skip', 'ask me later' or 'use a reasonable default')
+        as a new charter version; a stale expected_version is refused. When the charter is
+        ready, approval_url is where the account owner approves it in the browser -- approval
+        is never an MCP call, and investigate runs only with that approval.
         """
-        _, service = _caller()
-        return service.clarify_objective({
-            "objective": objective,
-            "answers": answers or {},
-        })
+        user_id, service = _caller()
+        args: dict[str, Any] = {"answers": answers or {}}
+        if objective is not None:
+            args["objective"] = objective
+        if case_id is not None:
+            args["case_id"] = case_id
+        if expected_version is not None:
+            args["expected_version"] = expected_version
+        budget = {k: v for k, v in (("max_spend_usd", max_spend_usd), ("max_units", max_units)) if v is not None}
+        if budget:
+            args["budget"] = budget
+        for key, value in (("texts", texts), ("urls", urls), ("search", search), ("lat", lat), ("lon", lon)):
+            if value is not None:
+                args[key] = value
+        return service.clarify_objective(user_id, args, base)
+
+    @tool()
+    def case_status(case_id: str) -> dict[str, Any]:
+        """Read an Intelligence Case: latest charter version, open questions and approval state."""
+        user_id, service = _caller()
+        return service.case_status(user_id, {"case_id": case_id}, base)
 
     @tool()
     def compile_objective(
@@ -178,7 +206,7 @@ def build_mcp(base_url: str) -> MCPServer:
     def plan_research(
         objective: str,
         answers: dict[str, str] | None = None,
-        case_charter: dict[str, Any] | None = None,
+        case_id: str | None = None,
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
@@ -188,22 +216,26 @@ def build_mcp(base_url: str) -> MCPServer:
         imagery: bool = False,
         max_spend_usd: float = 5.0,
     ) -> dict[str, Any]:
-        """Plan research, evidence gaps and estimated work without running it."""
-        _, service = _caller()
-        return service.plan_research(_source_args(
+        """Plan research, evidence gaps and estimated work without running it.
+
+        A serious objective returns clarification questions until it is planned through an
+        approved Intelligence Case (case_id); the approved charter then supplies the inputs.
+        """
+        user_id, service = _caller()
+        args = _source_args(
             texts=texts, urls=urls, search=search, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
-        ) | {
-            "objective": objective,
-            "answers": answers or {},
-            "case_charter": case_charter,
-        })
+        ) | {"objective": objective, "answers": answers or {}}
+        if case_id is not None:
+            args["case_id"] = case_id
+        return service.plan_research(args, user_id, base)
 
     @tool()
     def investigate(
         objective: str,
         answers: dict[str, str] | None = None,
-        case_charter: dict[str, Any] | None = None,
+        case_id: str | None = None,
+        idempotency_key: str | None = None,
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
@@ -213,16 +245,23 @@ def build_mcp(base_url: str) -> MCPServer:
         imagery: bool = False,
         max_spend_usd: float = 5.0,
     ) -> dict[str, Any]:
-        """Run certified V1 research/verification and persist a durable run."""
+        """Run certified V1 research/verification and persist a durable run.
+
+        A serious objective runs only through an Intelligence Case whose latest charter the
+        account owner approved in the browser: pass case_id. That approval is used once; a
+        retry with the same idempotency_key returns the same run. The approved charter's
+        objective, sources and budget drive the run; client-supplied values are ignored.
+        """
         user_id, service = _caller()
-        return service.investigate(user_id, _source_args(
+        args = _source_args(
             texts=texts, urls=urls, search=search, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
-        ) | {
-            "objective": objective,
-            "answers": answers or {},
-            "case_charter": case_charter,
-        })
+        ) | {"objective": objective, "answers": answers or {}}
+        if case_id is not None:
+            args["case_id"] = case_id
+        if idempotency_key is not None:
+            args["idempotency_key"] = idempotency_key
+        return service.investigate(user_id, args, base)
 
     @tool()
     def verify_claim(

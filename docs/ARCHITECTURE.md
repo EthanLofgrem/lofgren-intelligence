@@ -38,13 +38,19 @@ this document, `README.md` and `docs/PUBLIC_MCP.md` disagree.
 
 | Level | Hosted tools |
 | --- | --- |
-| V1 | 14: `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim` |
+| V1 | 15: `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim` |
 | V2 | 13: `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery` |
 | V3 | 2: `build_artifact`, `get_artifact` |
 | V4 | 3: `action_status`, `execute_action`, `propose_action` |
 | V5 | 2: `get_outcome`, `measure_outcome` |
 | V6 | 2: `evaluate_improvement`, `get_improvement` |
 | account | 5: `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status` |
+
+Serious V1 research runs through an Intelligence Case: `clarify_objective`
+records versioned Case Charters, the account owner approves one exact
+version in the browser (`/cases/{id}`, separate from V4 action approval),
+and `investigate` consumes that approval once and runs with the approved
+charter's objective, sources and budget. See docs/PUBLIC_MCP.md.
 
 "Hosted" means registered on the authenticated endpoint for activated
 accounts. It does not mean deployed or launched. Not proven by this

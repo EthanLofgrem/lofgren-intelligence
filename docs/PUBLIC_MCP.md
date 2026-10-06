@@ -21,7 +21,7 @@ The exact hosted tool list is generated, not hand-maintained:
 registry `build_mcp` serves and assigns each tool its level. A test keeps the
 registry, the manifest and this list equal.
 
-- **V1** (Evidence intelligence (research and verification)): `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
+- **V1** (Evidence intelligence (research and verification)): `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
 - **V2** (Discovery intelligence): `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
 - **V3** (Production (verified artifacts)): `build_artifact`, `get_artifact`.
 - **V4** (Authorized execution (browser-approved actions)): `action_status`, `execute_action`, `propose_action`.
@@ -36,6 +36,49 @@ Not proven by this repository: deployment, real clients (no real third-party
 MCP client session is verified), backup/restore, the Supabase owner settings
 (email confirmation, CAPTCHA), and PublicMCPReady (the public release gate has
 not passed).
+
+## Intelligence Cases (clarification and charter approval)
+
+A consequential or underspecified objective (for example "design a low-cost
+water purification system") is not researched straight away. `investigate`
+and `plan_research` return 3-7 high-information clarification questions
+instead, and the work happens through an Intelligence Case:
+
+1. `clarify_objective` opens a case (`case_id`, charter version 1, content
+   hash). Each later call with `case_id` and `expected_version` records the
+   answers as a new charter version; an `expected_version` that is not the
+   latest is refused (`CASE_VERSION_CONFLICT`). An answer may be a value,
+   `unknown`, `skip`, `later`/`ask me later` or `use a reasonable default`;
+   unknowns are kept across versions and are not asked again. A simple
+   research question is not forced through the interview.
+2. When no question is open the charter is ready and `clarify_objective`
+   returns an `approval_url` (`/cases/{case_id}`). Approval is **not** an MCP
+   call: the account owner signs in on that page (the same account session as
+   `/account` and `/actions`, but a separate approval from V4 actions),
+   reviews the exact charter version and approves it. The approval row
+   (`li_case_approvals`) binds the user, the case, the charter version, the
+   content hash, the scope, the budget (`max_spend_usd`, `max_units`) and an
+   expiry (`LI_CASE_APPROVAL_TTL_MINUTES`, default 60).
+3. `investigate` with the `case_id` starts research only with a valid,
+   unexpired, unconsumed approval of the latest charter version owned by the
+   caller, and consumes it once (`li_consume_case_approval`). A retry with
+   the same `idempotency_key` (default: the approval id) returns the same run
+   and never executes twice; another key is refused
+   (`CASE_APPROVAL_CONSUMED`). The run uses the approved charter's objective,
+   sources and budget, never the values in the call; a plan larger than the
+   approved `max_units` is refused (`CASE_BUDGET_EXCEEDED`).
+4. Any charter edit, including a budget increase, creates a new version and
+   revokes the old approval, so it needs a fresh approval.
+
+A client-sent `case_charter` (formerly honoured when it said
+`approved: true`) is ignored: nothing a client sends is authority. Refusals
+are typed: `CASE_NOT_FOUND` (also for another account's case),
+`CASE_INVALID`, `CASE_NOT_READY`, `CASE_APPROVAL_REQUIRED`,
+`CASE_APPROVAL_CONSUMED`, `CASE_BUDGET_EXCEEDED`, `CASE_RUN_FAILED`. Cases,
+charter versions, approvals and an audit trail (`li_case_events`) are stored
+by migration `20261006060000_intelligence_cases.sql` (RLS enabled, no
+anon/authenticated grants). `case_status` reads a case and its approval
+state.
 
 ## Identity and OAuth
 
@@ -211,7 +254,8 @@ Rate limits: `/mcp` is limited per user in the database
 `/oauth/register` (10/min), `/oauth/authorize` (60/min),
 `/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
 `/account/export` and `/account/delete` (20/min together),
-`/actions/{id}/details` and `/actions/{id}/approve` (60/min together) — are
+`/actions/{id}/details` and `/actions/{id}/approve` (60/min together),
+`/cases/{id}/charter` and `/cases/{id}/approve` (60/min together) — are
 limited per client IP and answer `429` with `Retry-After`.
 
 When the store is configured (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`)
