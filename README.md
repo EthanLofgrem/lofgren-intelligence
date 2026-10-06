@@ -152,15 +152,19 @@ command = "lofgren"
 args = ["mcp"]
 ```
 
-Tools return structured data, not narrative (contract `lofgren.mcp/3`):
+Tools return structured data, not narrative. The hosted service (`/mcp`) registers exactly these tools; the list is generated in [docs/CAPABILITIES.json](docs/CAPABILITIES.json) and a test keeps it equal to the server's registry:
 
-- **Research (V1):** `compile_objective`, `plan_research`, `investigate`, `verify_claim`, `get_finding`, `find_contradictions`, `find_gaps`, `trace_claim`, `get_receipt`, `export_state`, `export_knowledge_map`, `render_report`, `satellite_passes`, `pricing`.
-- **Discovery (V2):** `discover`, `find_prior_art`, `find_discovery_gaps`, `find_connections`, `generate_hypotheses`, `generate_candidates`, `simulate_candidate`, `analyze_sensitivity`, `optimize_solution`, `verify_discovery`, `get_discovery_receipt`, `create_v3_handoff`, `render_discovery_report`.
+- **Research (V1):** `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
+- **Discovery (V2):** `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
 - **Production (V3):** `build_artifact`, `get_artifact`.
-- **Execution (V4):** `propose_action`, `action_status`, `execute_action` — execution remains server-authorized and browser-reviewed; the model cannot self-authorize.
-- **Outcome (V5):** `measure_outcome`, `get_outcome`.
+- **Execution (V4):** `action_status`, `execute_action`, `propose_action`. Execution remains server-authorized and browser-reviewed; the model cannot self-authorize.
+- **Outcome (V5):** `get_outcome`, `measure_outcome`.
 - **Improvement (V6):** `evaluate_improvement`, `get_improvement`.
-- **Account / billing:** `account_status`, `usage_status`, `create_checkout`, `billing_portal`.
+- **Account / billing:** `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status`. `create_checkout` refuses until billing is enabled and economically certified.
+
+The local stdio server (`lofgren mcp`, contract `lofgren.mcp/3`) covers V1–V3 for developer use: it has `export_knowledge_map` instead of `export_knowledge_map2`, adds `create_v4_handoff`, `verify_artifact`, `get_artifact_file` and `get_production_receipt`, and has no V4–V6, account or billing tools.
+
+Not proven by this repository: deployment, real clients, backup/restore, the Supabase owner settings, and PublicMCPReady.
 
 Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server is intended for developer use. The hosted service uses durable tenant-scoped storage for research runs, discoveries, artifacts, actions, outcomes and improvement records and is being certified separately before public release.
 

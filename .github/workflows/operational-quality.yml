@@ -4,14 +4,10 @@ on:
   push:
     branches:
       - "ops/**"
-      - "build/v2-discovery"
+      - "build/**"
       - "release/**"
-      - "build/public-hardening"
+  # Every pull request, whatever its base branch.
   pull_request:
-    branches:
-      - "build/v2-discovery"
-      - "release/**"
-      - "main"
 
 permissions:
   contents: read

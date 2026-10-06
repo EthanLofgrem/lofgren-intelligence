@@ -80,3 +80,35 @@ registration),
 docs, one workflow and tests. They can be fast-forwarded or cherry-picked onto
 PR #15 in order; none rewrites a release-line commit. Nothing was merged,
 deployed or sent to an external service.
+
+## 5. Round 2: operations hardening (`build/public-ops-hardening`)
+
+Branch `build/public-ops-hardening`, cut from `build/public-hardening-rebased`
+@ `1b5ba88` (draft PR #17 into `release/public-v1-v6`, PR #15). Each item is
+one commit with regression tests in `tests/test_public_ops_hardening.py`
+(46 tests). Every new test was run against the code before its commit and
+failed (missing behaviour, missing type or wrong answer), then passed. No test
+calls Stripe, Supabase or the network; stores are the in-memory `FakeStore`.
+
+| # | Item | Commit | Tests |
+|---|---|---|---|
+| R2-1 | Corrupt stored discovery state. Restoring `context_objects` raised bare `ValueError`/`TypeError`/`KeyError` with object ids and digests; through the MCP SDK that was an unexpected crash with a server traceback, and the `build_artifact` reservation stayed held. Now any restore failure, and any snapshot missing a durable key, is `DiscoveryStateInvalid` (code `DISCOVERY_STATE_INVALID`) with a fixed message and no chained cause; no artifact is built and the reservation is released. `PublicServiceError` carries a stable `code`, and the hosted MCP tools re-raise it as `ToolError("<CODE>: message")`. The V3 upstream binding is unchanged (a tampered handoff specification is still refused). | `268c481` | `CorruptDiscoveryStateServiceTests` (5), `CorruptDiscoveryStateMCPTests` (2); `test_tampered_or_incomplete_stored_discovery_is_refused` now expects the typed error |
+| R2-2 | Ad hoc tools charged (resolves H2). `find_prior_art`, `simulate_candidate`, `analyze_sensitivity`, `optimize_solution` and `satellite_passes` run through `_metered`: open-quota check, `li_reserve_usage`, the work, `li_finalize_usage`; a failure releases through `li_release_usage`. Flat documented costs (2/5/5/5/1 units, `ADHOC_UNIT_COSTS`, override `LI_UNITS_<TOOL>`). | `8b5ba7b` | `AdHocChargingTests` (9), including five concurrent callers against a 2-unit quota |
+| R2-3 | Global rate limiting (resolves O4 rest). `li_rate_events` is keyed by `auth.users(id)`, so a new migration `20261005191819_keyed_rate_limits.sql` adds `li_rate_limit_events` (RLS on, no anon/authenticated grants) and the atomic, advisory-locked `li_take_keyed_rate_limit`. The limiter is store-backed when `SUPABASE_URL` and the service role key are configured, sends SHA-256 digests only, and falls back to memory otherwise. On a store error `/oauth/register` and `/oauth/authorize/complete` fail closed (503 + `Retry-After`); other endpoints fall back to the per-instance limiter. Applied migrations are hash-pinned by a test. | `bb5d30d` | `GlobalRateLimitTests` (7), `KeyedRateLimitStoreTests` (2), `RateLimitMigrationTests` (2) |
+| R2-4 | Founding Free anti-abuse (addresses O5 in code). A new activation needs `email_confirmed_at` on the Supabase user (`LI_REQUIRE_CONFIRMED_EMAIL`, default on) and passes per-IP (5/h) and per-email-domain (30/h) global limits, failing closed. Existing accounts are not re-checked; `li_activate_account` stays idempotent, so retries and concurrent duplicates take one slot. | `a78a039` | `FoundingFreeActivationTests` (9) |
+| R2-5 | One capability truth. `hosted/capabilities.py` builds the manifest from the registry `build_mcp` serves; `docs/CAPABILITIES.json` is generated from it; README, ARCHITECTURE and PUBLIC_MCP list exactly its tools per level and state what is not proven. | `a4932d7` | `CapabilityManifestTests` (7) |
+| R2-6 | CI triggers. `operational-quality.yml` runs on `ops/**`, `build/**`, `release/**` pushes and every PR; the V3-V6 exact-SHA gate jobs in `tests.yml` also run for `build/public-ops-hardening` and `build/public-hardening-rebased` pushes. No other condition changed. | `610e536` | `CITriggerTests` (3) |
+
+Local results (CPython 3.14, Windows, `mcp` 2.3.0): `unittest discover` 705
+run, 0 failures, 0 errors, 0 skipped, in both normal and `PYTHONUTF8=1` mode;
+`certify`, `certify --v2` .. `--v6` and `certify-boundary` all TRUE.
+
+### Still open after round 2
+
+| # | Item |
+|---|---|
+| O5 (owner) | Supabase "Confirm email" and CAPTCHA (Auth bot protection) are owner settings in the Supabase dashboard. The server check on `email_confirmed_at` only bites while "Confirm email" is on. Not verified here. |
+| R2-ops | The keyed rate-limit migration must be applied before sign-ups open; until it is, activation and client registration fail closed (503). Not applied or verified against a real database here. |
+| O6 | `@supabase/supabase-js@2` from jsDelivr without SRI (unchanged). |
+| H5 (observation) | The V3 upstream binding checks a handoff's `specifications`, `expected_outcomes`, `constraints` and `acceptance_criteria` against the discovery; its free-text `objective` and the informational `assumptions` list are not bound. Not changed here (no check was weakened or added to V3). |
+| Not proven | Deployment, real MCP clients, backup/restore, Stripe sandbox journey and PublicMCPReady (`scripts/public_mcp_gate.py` needs deployment evidence). |

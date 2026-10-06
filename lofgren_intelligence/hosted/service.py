@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .. import build_registry
 from ..billing.pricing import PLANS, cheapest_plan, estimate, monthly_bill
@@ -43,21 +44,84 @@ from .store import SupabaseStore, utcnow
 from .stripe import cancel_subscription, create_billing_portal, create_checkout
 
 
+# Intelligence units charged per call of an ad hoc tool. These tools do bounded
+# compute against an existing run (or, for satellite_passes, against supplied or
+# fetched element sets) and persist nothing, so they are charged a flat,
+# documented amount per successful call through the same atomic
+# li_reserve_usage -> li_finalize_usage path as investigate/discover. A call that
+# fails releases its reservation and is not charged. Operators may override a
+# cost with LI_UNITS_<TOOL> (for example LI_UNITS_SIMULATE_CANDIDATE=8); a
+# value that is not a finite number >= 0 is ignored. See docs/PUBLIC_MCP.md.
+ADHOC_UNIT_COSTS: dict[str, float] = {
+    "find_prior_art": 2.0,
+    "simulate_candidate": 5.0,
+    "analyze_sensitivity": 5.0,
+    "optimize_solution": 5.0,
+    "satellite_passes": 1.0,
+}
+
+
+def adhoc_unit_cost(operation: str) -> float:
+    units = ADHOC_UNIT_COSTS[operation]
+    raw = os.environ.get("LI_UNITS_" + operation.upper(), "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return units
+        if math.isfinite(value) and value >= 0:
+            return value
+    return units
+
+
 MAX_PASS_HOURS = 168.0
 MAX_PASS_TLES = 20
 MAX_TLE_TEXT_CHARS = 20_000
 
 
 class PublicServiceError(RuntimeError):
-    pass
+    """A refusal the public caller may read.
+
+    The message is user-facing and must never carry stored data, schema names,
+    object ids from a failed integrity check or a traceback. `code` is a stable
+    machine-readable reason that the MCP surface puts in front of the message.
+    """
+
+    code = "REQUEST_REFUSED"
 
 
 class PaymentRequired(PublicServiceError):
-    pass
+    code = "PAYMENT_REQUIRED"
 
 
 class QuotaExceeded(PublicServiceError):
-    pass
+    code = "QUOTA_EXCEEDED"
+
+
+class DiscoveryStateInvalid(PublicServiceError):
+    """Stored V2 discovery state failed to restore or failed its integrity checks."""
+
+    code = "DISCOVERY_STATE_INVALID"
+
+
+class RunStateInvalid(PublicServiceError):
+    """A stored V1 research run could not be reloaded as a discovery context."""
+
+    code = "RUN_STATE_INVALID"
+
+
+DISCOVERY_STATE_INVALID_MESSAGE = (
+    "the stored discovery state is invalid or incomplete and cannot be used; "
+    "run discover again to create a new discovery"
+)
+
+# Keys every durable discovery snapshot carries (see snapshots.durable_discovery_snapshot).
+# A snapshot missing any of them is truncated or tampered and is refused as a whole.
+REQUIRED_DISCOVERY_KEYS = (
+    "discovery_id", "summary", "gaps", "connections", "hypotheses", "requirements",
+    "candidates", "decision", "receipt", "context_objects", "receipt_intact",
+    "receipt_object_problems", "verifier_issues", "handoff", "handoff_problems", "report",
+)
 
 
 class PublicService:
@@ -94,6 +158,17 @@ class PublicService:
             self.store.release_usage(reservation_id)
             raise QuotaExceeded("actual work exceeded the reserved usage allowance")
 
+    def _release_quietly(self, reservation_id: str) -> None:
+        """Release a reservation on a failed call without masking the original error.
+
+        If the release itself cannot reach the store, the database expires the
+        reservation after one hour (li_reserve_usage), so capacity is never lost.
+        """
+        try:
+            self.store.release_usage(reservation_id)
+        except Exception:
+            pass
+
     def _require_open_quota(self, user_id: str) -> None:
         """Refuse unreserved compute when entitlement is inactive or weekly quota is exhausted."""
         decision = access_for_run(self.store, user_id, 0.0)
@@ -103,6 +178,30 @@ class PublicService:
             raise QuotaExceeded(decision.reason)
         if decision.used_units >= decision.quota_units:
             raise QuotaExceeded("weekly intelligence-unit quota reached")
+
+    def _metered(self, user_id: str, operation: str, run_id: str | None, work: Callable[[], Any]) -> Any:
+        """Run one ad hoc call under an atomic usage reservation.
+
+        reserve (li_reserve_usage) -> work -> settle (li_finalize_usage). Any
+        failure in the work releases the reservation (li_release_usage), so a
+        refused or crashed call is never charged. The open-quota check stays in
+        front of the reservation so an inactive entitlement is refused first.
+        """
+        self._require_open_quota(user_id)
+        units = adhoc_unit_cost(operation)
+        reservation_id = self._reserve_usage(user_id, operation, units)
+        try:
+            out = work()
+        except Exception:
+            self._release_quietly(reservation_id)
+            raise
+        self._finalize_usage(
+            reservation_id,
+            run_id=run_id,
+            actual_units=units,
+            unpriced_components=[f"{operation}_compute"],
+        )
+        return out
 
     @staticmethod
     def _location(a: dict[str, Any]) -> dict[str, Any] | None:
@@ -287,15 +386,21 @@ class PublicService:
 
     def _discovery_context(self, user_id: str, run_id: str) -> DiscoveryContext:
         snap = self._snapshot(user_id, run_id)
-        return DiscoveryContext(snap["knowledge_map2"], snap["receipt"])
+        try:
+            return DiscoveryContext(snap["knowledge_map2"], snap["receipt"])
+        except Exception:
+            # Never echo the reason: it names stored objects and schema details.
+            raise RunStateInvalid(
+                "the stored research run cannot be reloaded; run investigate again"
+            ) from None
 
     def _discovery_snapshot(self, user_id: str, discovery_id: str) -> dict[str, Any]:
         row = self.store.get_discovery(user_id, discovery_id)
         if not row:
             raise PublicServiceError("unknown discovery_id")
         snap = row.get("snapshot")
-        if not isinstance(snap, dict):
-            raise PublicServiceError("stored discovery snapshot is invalid")
+        if not isinstance(snap, dict) or any(k not in snap for k in REQUIRED_DISCOVERY_KEYS):
+            raise DiscoveryStateInvalid(DISCOVERY_STATE_INVALID_MESSAGE)
         return snap
 
     def discover(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
@@ -337,7 +442,10 @@ class PublicService:
         return {"kind": "discovery", "contract": "lofgren.mcp/2", **snap["summary"]}
 
     def find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        self._require_open_quota(user_id)
+        run_id = str(a["run_id"])
+        return self._metered(user_id, "find_prior_art", run_id, lambda: self._find_prior_art(user_id, a))
+
+    def _find_prior_art(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         provider, _ = _prior_art_provider({
             k: a[k] for k in ("records", "coverage") if k in a
@@ -390,7 +498,6 @@ class PublicService:
         }
 
     def _adhoc_discovery(self, user_id: str, a: dict[str, Any]):
-        self._require_open_quota(user_id)
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         framed = frame_problem(ctx, ctx.ensure(DiscoveryObjective("Ad hoc analysis", ctx.research_id)))
         if framed.frame is None:
@@ -408,6 +515,10 @@ class PublicService:
         return evaluate_candidates(ctx, framed, space)
 
     def simulate_candidate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        return self._metered(user_id, "simulate_candidate", str(a["run_id"]),
+                             lambda: self._simulate_candidate(user_id, a))
+
+    def _simulate_candidate(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         result = self._adhoc_discovery(user_id, a)
         if not result.simulations:
             raise PublicServiceError("the parameters do not give every model input a value")
@@ -418,6 +529,10 @@ class PublicService:
         }
 
     def analyze_sensitivity(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        return self._metered(user_id, "analyze_sensitivity", str(a["run_id"]),
+                             lambda: self._analyze_sensitivity(user_id, a))
+
+    def _analyze_sensitivity(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         result = self._adhoc_discovery(user_id, a)
         if not result.sensitivities:
             raise PublicServiceError("the parameters do not give every model input a value")
@@ -430,7 +545,10 @@ class PublicService:
         }
 
     def optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        self._require_open_quota(user_id)
+        return self._metered(user_id, "optimize_solution", str(a["run_id"]),
+                             lambda: self._optimize_solution(user_id, a))
+
+    def _optimize_solution(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         ctx = self._discovery_context(user_id, str(a["run_id"]))
         problem = ctx.ensure(problem_from_json(a["problem"]))
         result = optimize(ctx, problem)
@@ -481,22 +599,30 @@ class PublicService:
     def build_artifact(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         discovery_id = str(a["discovery_id"])
         reservation_id = self._reserve_usage(user_id, "build_artifact", 10.0)
-        row = self.store.get_discovery(user_id, discovery_id)
-        if not row:
-            raise PublicServiceError("unknown discovery_id")
-        snap = row.get("snapshot")
-        if not isinstance(snap, dict) or not snap.get("handoff"):
-            raise PublicServiceError("discovery has no validated V3 handoff")
-        context = restore_discovery_context(
-            self._discovery_context(user_id, str(row["research_id"])),
-            snap,
-        )
-        result = produce_artifact(
-            snap["handoff"],
-            discovery_receipt=snap["receipt"],
-            context=context,
-            kind=str(a.get("kind") or "structured_bundle"),
-        )
+        try:
+            row = self.store.get_discovery(user_id, discovery_id)
+            if not row:
+                raise PublicServiceError("unknown discovery_id")
+            snap = self._discovery_snapshot(user_id, discovery_id)
+            if not snap.get("handoff"):
+                raise PublicServiceError("discovery has no validated V3 handoff")
+            base = self._discovery_context(user_id, str(row["research_id"]))
+            try:
+                context = restore_discovery_context(base, snap)
+            except Exception:
+                # Restore fails closed on tampered, truncated or missing typed objects. The
+                # internal reason (object ids, digests, receipt mismatches) stays on the server.
+                raise DiscoveryStateInvalid(DISCOVERY_STATE_INVALID_MESSAGE) from None
+            result = produce_artifact(
+                snap["handoff"],
+                discovery_receipt=snap["receipt"],
+                context=context,
+                kind=str(a.get("kind") or "structured_bundle"),
+            )
+        except Exception:
+            # Nothing was built: return the held allowance instead of letting it sit until expiry.
+            self._release_quietly(reservation_id)
+            raise
         self.store.save_artifact({
             "user_id": user_id,
             "artifact_id": result.artifact_id,
@@ -801,7 +927,9 @@ class PublicService:
         }
 
     def satellite_passes(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
-        self._require_open_quota(user_id)
+        return self._metered(user_id, "satellite_passes", None, lambda: self._satellite_passes(a))
+
+    def _satellite_passes(self, a: dict[str, Any]) -> dict[str, Any]:
         lat, lon = float(a["lat"]), float(a["lon"])
         hours = float(a.get("hours", 24))
         min_el = float(a.get("min_elevation_deg", 30))

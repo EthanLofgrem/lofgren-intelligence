@@ -7,9 +7,10 @@ structured output and bearer-resource semantics are not hand-rolled.
 
 from __future__ import annotations
 
+import functools
 import os
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import AnyHttpUrl
 
@@ -17,9 +18,10 @@ from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .auth import token_hash
-from .service import PublicService
+from .service import PublicService, PublicServiceError
 from .store import SupabaseStore
 
 
@@ -104,6 +106,25 @@ def _source_args(
     return out
 
 
+def _public_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Report a PublicServiceError to the client as an anticipated tool error.
+
+    The SDK treats any other exception as a crash: the client sees only
+    "Error executing tool <name>" and the server logs a traceback. A
+    PublicServiceError is a deliberate, user-facing refusal, so it is re-raised
+    as ToolError carrying its stable code and message and nothing else.
+    """
+
+    @functools.wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except PublicServiceError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
+
+    return wrapped
+
+
 def build_mcp(base_url: str) -> MCPServer:
     base = base_url.rstrip("/")
     resource = base + "/mcp"
@@ -119,7 +140,11 @@ def build_mcp(base_url: str) -> MCPServer:
         ),
     )
 
-    @mcp.tool()
+    def tool() -> Callable[[Callable[..., Any]], Any]:
+        """Register a hosted tool whose PublicServiceError reaches the client as a typed refusal."""
+        return lambda fn: mcp.tool()(_public_errors(fn))
+
+    @tool()
     def compile_objective(
         objective: str,
         max_spend_usd: float = 5.0,
@@ -132,7 +157,7 @@ def build_mcp(base_url: str) -> MCPServer:
             max_spend_usd=max_spend_usd, lat=lat, lon=lon, **{"texts": None}
         ) | {"objective": objective})
 
-    @mcp.tool()
+    @tool()
     def plan_research(
         objective: str,
         texts: dict[str, str] | None = None,
@@ -151,7 +176,7 @@ def build_mcp(base_url: str) -> MCPServer:
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
         ) | {"objective": objective})
 
-    @mcp.tool()
+    @tool()
     def investigate(
         objective: str,
         texts: dict[str, str] | None = None,
@@ -170,7 +195,7 @@ def build_mcp(base_url: str) -> MCPServer:
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
         ) | {"objective": objective})
 
-    @mcp.tool()
+    @tool()
     def verify_claim(
         claim: str,
         texts: dict[str, str] | None = None,
@@ -184,7 +209,7 @@ def build_mcp(base_url: str) -> MCPServer:
             texts=texts, urls=urls, search=search, max_spend_usd=max_spend_usd,
         ) | {"claim": claim})
 
-    @mcp.tool()
+    @tool()
     def get_finding(
         run_id: str,
         finding_id: str | None = None,
@@ -196,49 +221,49 @@ def build_mcp(base_url: str) -> MCPServer:
             "run_id": run_id, "finding_id": finding_id, "question_index": question_index,
         })
 
-    @mcp.tool()
+    @tool()
     def find_contradictions(run_id: str) -> dict[str, Any]:
         """Read the contradiction graph for a durable run."""
         user_id, service = _caller()
         return service.find_contradictions(user_id, {"run_id": run_id})
 
-    @mcp.tool()
+    @tool()
     def find_gaps(run_id: str) -> dict[str, Any]:
         """Read unresolved evidence gaps and acquisition plans."""
         user_id, service = _caller()
         return service.find_gaps(user_id, {"run_id": run_id})
 
-    @mcp.tool()
+    @tool()
     def trace_claim(run_id: str, claim_id: str) -> dict[str, Any]:
         """Trace claim -> evidence -> source provenance."""
         user_id, service = _caller()
         return service.trace_claim(user_id, {"run_id": run_id, "claim_id": claim_id})
 
-    @mcp.tool()
+    @tool()
     def get_receipt(run_id: str) -> dict[str, Any]:
         """Read the research receipt and its integrity result."""
         user_id, service = _caller()
         return service.get_receipt(user_id, {"run_id": run_id})
 
-    @mcp.tool()
+    @tool()
     def export_state(run_id: str) -> dict[str, Any]:
         """Export knowledge-map/1-compatible state for a durable run."""
         user_id, service = _caller()
         return service.export_state(user_id, {"run_id": run_id})
 
-    @mcp.tool()
+    @tool()
     def export_knowledge_map2(run_id: str) -> dict[str, Any]:
         """Export receipt-bound knowledge-map/2 state."""
         user_id, service = _caller()
         return service.export_knowledge_map2(user_id, {"run_id": run_id})
 
-    @mcp.tool()
+    @tool()
     def render_report(run_id: str) -> dict[str, Any]:
         """Render the human-readable report view of validated run state."""
         user_id, service = _caller()
         return service.render_report(user_id, {"run_id": run_id})
 
-    @mcp.tool()
+    @tool()
     def satellite_passes(
         lat: float,
         lon: float,
@@ -255,7 +280,7 @@ def build_mcp(base_url: str) -> MCPServer:
             "tle_text": tle_text, "fetch": fetch,
         })
 
-    @mcp.tool()
+    @tool()
     def discover(
         run_id: str,
         objective: str,
@@ -271,7 +296,7 @@ def build_mcp(base_url: str) -> MCPServer:
             "prior_art": prior_art,
         })
 
-    @mcp.tool()
+    @tool()
     def find_prior_art(
         run_id: str,
         subject: str,
@@ -293,31 +318,31 @@ def build_mcp(base_url: str) -> MCPServer:
             "time_range": time_range or [None, None],
         })
 
-    @mcp.tool()
+    @tool()
     def find_discovery_gaps(discovery_id: str) -> dict[str, Any]:
         """Read durable typed discovery gaps."""
         user_id, service = _caller()
         return service.find_discovery_gaps(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def find_connections(discovery_id: str) -> dict[str, Any]:
         """Read durable observed, derived and speculative discovery connections."""
         user_id, service = _caller()
         return service.find_connections(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def generate_hypotheses(discovery_id: str) -> dict[str, Any]:
         """Read durable hypotheses, counter-hypotheses and evidence requirements."""
         user_id, service = _caller()
         return service.generate_hypotheses(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def generate_candidates(discovery_id: str) -> dict[str, Any]:
         """Read durable candidate evaluations and the explicit decision."""
         user_id, service = _caller()
         return service.generate_candidates(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def simulate_candidate(
         run_id: str,
         model: dict[str, Any],
@@ -339,7 +364,7 @@ def build_mcp(base_url: str) -> MCPServer:
             args["iterations"] = iterations
         return service.simulate_candidate(user_id, args)
 
-    @mcp.tool()
+    @tool()
     def analyze_sensitivity(
         run_id: str,
         model: dict[str, Any],
@@ -355,49 +380,49 @@ def build_mcp(base_url: str) -> MCPServer:
             "success": success,
         })
 
-    @mcp.tool()
+    @tool()
     def optimize_solution(run_id: str, problem: dict[str, Any]) -> dict[str, Any]:
         """Solve and independently re-check a structured V2 optimization problem."""
         user_id, service = _caller()
         return service.optimize_solution(user_id, {"run_id": run_id, "problem": problem})
 
-    @mcp.tool()
+    @tool()
     def verify_discovery(discovery_id: str) -> dict[str, Any]:
         """Verify durable discovery receipt/object/handoff integrity."""
         user_id, service = _caller()
         return service.verify_discovery(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def get_discovery_receipt(discovery_id: str) -> dict[str, Any]:
         """Read a durable V2 discovery receipt."""
         user_id, service = _caller()
         return service.get_discovery_receipt(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def create_v3_handoff(discovery_id: str) -> dict[str, Any]:
         """Read the validated V3 handoff when V2 selected a candidate."""
         user_id, service = _caller()
         return service.create_v3_handoff(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def render_discovery_report(discovery_id: str) -> dict[str, Any]:
         """Render the durable human-readable V2 discovery report."""
         user_id, service = _caller()
         return service.render_discovery_report(user_id, {"discovery_id": discovery_id})
 
-    @mcp.tool()
+    @tool()
     def build_artifact(discovery_id: str, kind: str = "structured_bundle") -> dict[str, Any]:
         """Build and independently verify a V3 artifact from a durable V2 discovery."""
         user_id, service = _caller()
         return service.build_artifact(user_id, {"discovery_id": discovery_id, "kind": kind})
 
-    @mcp.tool()
+    @tool()
     def get_artifact(artifact_id: str) -> dict[str, Any]:
         """Read a durable V3 artifact, production receipt and verification state."""
         user_id, service = _caller()
         return service.get_artifact(user_id, {"artifact_id": artifact_id})
 
-    @mcp.tool()
+    @tool()
     def propose_action(
         artifact_id: str,
         target: str,
@@ -414,19 +439,19 @@ def build_mcp(base_url: str) -> MCPServer:
             "cost_usd": cost_usd,
         }, base)
 
-    @mcp.tool()
+    @tool()
     def action_status(action_id: str) -> dict[str, Any]:
         """Read approval/execution state for a durable V4 action proposal."""
         user_id, service = _caller()
         return service.action_status(user_id, {"action_id": action_id})
 
-    @mcp.tool()
+    @tool()
     def execute_action(action_id: str) -> dict[str, Any]:
         """Execute an already browser-approved V4 action and return its action receipt."""
         user_id, service = _caller()
         return service.execute_action(user_id, {"action_id": action_id})
 
-    @mcp.tool()
+    @tool()
     def measure_outcome(
         action_id: str,
         measurements: list[dict[str, Any]],
@@ -440,13 +465,13 @@ def build_mcp(base_url: str) -> MCPServer:
             "causal_design": causal_design,
         })
 
-    @mcp.tool()
+    @tool()
     def get_outcome(outcome_id: str) -> dict[str, Any]:
         """Read a durable V5 outcome receipt and V6 handoff."""
         user_id, service = _caller()
         return service.get_outcome(user_id, {"outcome_id": outcome_id})
 
-    @mcp.tool()
+    @tool()
     def evaluate_improvement(outcome_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
         """Evaluate a V6 candidate on held-out data; never applies the change automatically."""
         user_id, service = _caller()
@@ -455,37 +480,37 @@ def build_mcp(base_url: str) -> MCPServer:
             "proposal": proposal,
         })
 
-    @mcp.tool()
+    @tool()
     def get_improvement(improvement_id: str) -> dict[str, Any]:
         """Read a durable V6 improvement receipt and review-only next-cycle handoff."""
         user_id, service = _caller()
         return service.get_improvement(user_id, {"improvement_id": improvement_id})
 
-    @mcp.tool()
+    @tool()
     def pricing(standard_units: float | None = None, heavy_jobs: int = 0) -> dict[str, Any]:
         """Inspect provisional price formulas; not proof of economic certification."""
         _, service = _caller()
         return service.pricing({"standard_units": standard_units, "heavy_jobs": heavy_jobs})
 
-    @mcp.tool()
+    @tool()
     def account_status() -> dict[str, Any]:
         """Show Founding Free or paid entitlement status."""
         user_id, service = _caller()
         return service.account_status(user_id)
 
-    @mcp.tool()
+    @tool()
     def usage_status() -> dict[str, Any]:
         """Show rolling seven-day intelligence-unit usage and quota."""
         user_id, service = _caller()
         return service.usage_status(user_id)
 
-    @mcp.tool()
+    @tool()
     def create_checkout() -> dict[str, Any]:
         """Create Stripe-hosted Checkout for an account that requires payment."""
         user_id, service = _caller()
         return service.checkout(user_id, base)
 
-    @mcp.tool()
+    @tool()
     def billing_portal() -> dict[str, Any]:
         """Open Stripe-hosted subscription management for a paid account."""
         user_id, service = _caller()

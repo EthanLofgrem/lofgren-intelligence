@@ -15,6 +15,28 @@ own gate (`certify`, `certify --v2` ... `certify --v6`, `certify-boundary`).
 Certified versions are not the same as public readiness: the public release
 gate (`scripts/public_mcp_gate.py`) still needs deployment evidence.
 
+The exact hosted tool list is generated, not hand-maintained:
+[`docs/CAPABILITIES.json`](CAPABILITIES.json) comes from
+`python -m lofgren_intelligence.hosted.capabilities`, which reads the
+registry `build_mcp` serves and assigns each tool its level. A test keeps the
+registry, the manifest and this list equal.
+
+- **V1** (Evidence intelligence (research and verification)): `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `trace_claim`, `verify_claim`.
+- **V2** (Discovery intelligence): `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
+- **V3** (Production (verified artifacts)): `build_artifact`, `get_artifact`.
+- **V4** (Authorized execution (browser-approved actions)): `action_status`, `execute_action`, `propose_action`.
+- **V5** (Outcome measurement): `get_outcome`, `measure_outcome`.
+- **V6** (Reviewed improvement evaluation): `evaluate_improvement`, `get_improvement`.
+- **account** (Account, usage and billing): `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status`.
+
+`create_checkout` is registered but refuses until `LI_BILLING_ENABLED` is set
+and the paid plan passes the P95 economic gate.
+
+Not proven by this repository: deployment, real clients (no real third-party
+MCP client session is verified), backup/restore, the Supabase owner settings
+(email confirmation, CAPTCHA), and PublicMCPReady (the public release gate has
+not passed).
+
 ## Identity and OAuth
 
 Remote MCP uses OAuth 2.1-style Authorization Code + PKCE (S256). MCP clients
@@ -53,6 +75,30 @@ Activation is atomic in the database.
 The current migration seeds 500 intelligence units per rolling 7-day period
 for Founding Free. This is an operational safety limit and can be deliberately
 changed after measured COGS review.
+
+Anti-abuse in front of activation. Activation happens on the first
+authorization of a new account (`/oauth/authorize/complete`), and only that
+first authorization is checked; re-authorizing an existing account takes
+nothing. `li_activate_account` is idempotent per user, so a retry or a
+concurrent duplicate never consumes a second slot.
+
+- **Confirmed email.** The Supabase user fetched from `/auth/v1/user` must
+  have an email and a non-empty `email_confirmed_at`, otherwise the server
+  answers `403 email_not_confirmed` and no slot is taken. The check is on by
+  default; only `LI_REQUIRE_CONFIRMED_EMAIL=false` (or `0`/`no`/`off`)
+  disables it.
+- **Rate limits.** New activations are limited per client IP (5 per hour,
+  `LI_IP_RATE_LIMIT_ACTIVATION_IP`) and per email domain (30 per hour,
+  `LI_IP_RATE_LIMIT_ACTIVATION_DOMAIN`) through the global store-backed
+  limiter (`429` with `Retry-After`). If the limiter cannot answer, the
+  activation is refused with `503` (fail closed). The keyed rate-limit
+  migration must therefore be applied before sign-ups are opened.
+- **Owner settings, not code.** Supabase "Confirm email" and CAPTCHA (Supabase
+  Auth bot protection with hCaptcha or Cloudflare Turnstile) are configured by
+  the owner in the Supabase dashboard; each is an owner setting this
+  repository cannot turn on or verify. The server-side confirmed-email check
+  is only meaningful while "Confirm email" is on: with it off, Supabase
+  auto-confirms every sign-up. Neither setting is proven by any test here.
 
 ## Billing
 
@@ -118,9 +164,30 @@ Metered work (`investigate`, `verify_claim`, `discover`, `build_artifact`,
 explicit stored weekly quota of 0 blocks; only a missing quota falls back to
 the plan default. `satellite_passes` is bounded to 168 hours, 20 element sets
 and 20,000 characters of TLE text per call, with valid coordinates and
-elevation; it and the ad hoc `simulate_candidate`, `analyze_sensitivity`,
-`optimize_solution` and `find_prior_art` tools require an active entitlement
-with weekly quota remaining (they are gated, not metered).
+elevation.
+
+The ad hoc tools are metered too. Each call requires an active entitlement
+with weekly quota remaining, reserves a flat number of intelligence units
+through `li_reserve_usage`, and settles that amount through
+`li_finalize_usage` only when the call succeeds; a call that fails (bad
+arguments, unknown run, corrupt state, a crash) releases its reservation
+through `li_release_usage` and is not charged. Unit costs per call:
+
+| Tool | Units per call |
+| --- | --- |
+| `find_prior_art` | 2 |
+| `simulate_candidate` | 5 |
+| `analyze_sensitivity` | 5 |
+| `optimize_solution` | 5 |
+| `satellite_passes` | 1 |
+
+The operator may override a cost with `LI_UNITS_<TOOL>` (for example
+`LI_UNITS_SIMULATE_CANDIDATE=8`); a value that is not a finite number >= 0 is
+ignored. The values live in `ADHOC_UNIT_COSTS` in
+`lofgren_intelligence/hosted/service.py` and a test keeps this table equal to
+it. Settled ad hoc usage records `<tool>_compute` as an unpriced component,
+so it counts against quota but keeps the paid-plan economic gate closed until
+its cost is measured.
 
 Weekly usage sums and privacy exports read every row page by page, so they are
 not truncated at the PostgREST max-rows setting. Database failures reach
@@ -133,11 +200,21 @@ Rate limits: `/mcp` is limited per user in the database
 `/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
 `/account/export` and `/account/delete` (20/min together),
 `/actions/{id}/details` and `/actions/{id}/approve` (60/min together) — are
-limited per client IP and answer `429` with `Retry-After`. These limits are
-held in process memory and are therefore **per instance**: with N concurrent
-serverless instances the effective limit is up to N times higher and a cold
-start resets it. A global limit needs the hosting edge (firewall/WAF) or a
-database-backed bucket. Limits can be changed with
+limited per client IP and answer `429` with `Retry-After`.
+
+When the store is configured (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`)
+these limits are **global**: every request takes a slot through the atomic
+SQL function `li_take_keyed_rate_limit` (migration
+`20261005191819_keyed_rate_limits.sql`, table `li_rate_limit_events`, RLS
+enabled, no anon/authenticated grants), so they hold across serverless
+instances and cold starts. Keys are sent as SHA-256 digests of
+`<bucket>:<ip>`; raw IPs are not stored, and rows are pruned once outside
+their window. Without a configured store (local development) or with
+`LI_RATE_LIMIT_BACKEND=memory`, the limiter falls back to process memory,
+which is **per instance**. If the store errors, sign-up and activation
+endpoints (`/oauth/register`, `/oauth/authorize/complete`) **fail closed**
+with `503` and `Retry-After`; the other endpoints fall back to the
+per-instance limiter rather than to no limit. Limits can be changed with
 `LI_IP_RATE_LIMIT_<BUCKET>` (for example `LI_IP_RATE_LIMIT_OAUTH_REGISTER`).
 The client IP is the socket peer unless the operator sets
 `LI_CLIENT_IP_HEADER` to a header the platform overwrites (for example

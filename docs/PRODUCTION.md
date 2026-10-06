@@ -56,7 +56,7 @@ session.
 | --- | --- |
 | A handoff whose discovery receipt does not verify | refused |
 | A handoff V2's validator rejects (hidden numbers, a hypothesis as evidence, an unselected candidate, ...) | refused |
-| A handoff whose numbers or criteria differ from the discovery objects they cite (an edited rent, outcome, constraint or success criterion) | refused, value by value |
+| A handoff whose numbers, criteria or descriptive record differ from the discovery (an edited rent, outcome, constraint, success criterion, objective, assumption, candidate, alternative, verified fact or hypothesis, or a dropped assumption) | refused, field by field |
 | A specification that does not compile (duplicate or invalid name, non-finite value, bad unit, a criterion over an undefined variable or with inconsistent units, no criteria) | refused, every problem listed |
 | Any check that does not hold for the selected values | refused |
 | An unsupported artifact kind | refused |
