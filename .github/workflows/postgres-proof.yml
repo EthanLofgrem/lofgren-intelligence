@@ -1,0 +1,93 @@
+name: postgres-proof
+
+# Applies supabase/migrations to a REAL PostgreSQL 16 server (an ephemeral
+# service container) on top of scripts/pg/bootstrap_supabase_stub.sql and runs
+# tests/pg/test_migrations_pg.py against it. Any failure, error or skipped test
+# fails the job: a skip here would mean nothing was proven.
+#
+# Scope: SQL/RPC behaviour, locking, concurrency and grants on real Postgres.
+# Not covered: Supabase hosted auth, the RLS platform behind PostgREST and
+# PostgREST's role switch (see the bootstrap stub's header).
+
+on:
+  push:
+    branches:
+      - "build/**"
+      - "release/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Throwaway credentials for a container that lives only for this job.
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LI_PG_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+      # Inside CI the skip guard is off: a missing DSN or psycopg is an error.
+      LI_PG_REQUIRED: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install psycopg and the package
+        run: python -m pip install "psycopg[binary]>=3.1,<4" .
+      - name: Check the PostgreSQL server
+        run: |
+          python - <<'EOF'
+          import os, time
+          import psycopg
+          for attempt in range(30):
+              try:
+                  with psycopg.connect(os.environ["LI_PG_DSN"], connect_timeout=5) as conn:
+                      print(conn.execute("select version()").fetchone()[0])
+                      print("server_version_num", conn.execute("show server_version_num").fetchone()[0])
+                      break
+              except psycopg.OperationalError as exc:
+                  print("waiting for postgres:", exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit("PostgreSQL never became reachable")
+          EOF
+      - name: Run the real-PostgreSQL proof
+        run: |
+          set -o pipefail
+          python -m unittest -v tests.pg.test_migrations_pg 2>&1 | tee pg-proof.log
+      - name: Refuse skipped tests
+        run: |
+          if grep -nE "skipped|expected failure|unexpected success" pg-proof.log; then
+            echo "::error::postgres-proof skipped or mis-ran a test; a skip proves nothing"
+            exit 1
+          fi
+          grep -E "^Ran [0-9]+ tests? in" pg-proof.log
+          grep -qxE "OK" pg-proof.log
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-proof-log
+          path: pg-proof.log
+          if-no-files-found: error
