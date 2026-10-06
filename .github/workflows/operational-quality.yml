@@ -6,7 +6,7 @@ on:
       - "ops/**"
       - "build/**"
       - "release/**"
-      - "task/li-integration/**"
+      - "task/li-integration*"
   # Every pull request, whatever its base branch.
   pull_request:
 
