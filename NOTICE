@@ -6,3 +6,8 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 Orbital element data, when fetched, comes from CelesTrak (celestrak.org).
 Satellite imagery metadata, when searched, comes from Element 84 Earth Search;
 Copernicus Sentinel data and USGS Landsat data are subject to their own terms.
+
+The hosted web pages include an unmodified copy of @supabase/supabase-js 2.117.2
+(MIT License, Copyright (c) 2020 Supabase) in
+lofgren_intelligence/hosted/static/vendor/; see the README.md there for its
+source, hashes and full license text.

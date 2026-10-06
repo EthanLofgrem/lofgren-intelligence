@@ -896,6 +896,12 @@ class CapabilityManifestTests(unittest.TestCase):
         self.assertTrue(any("PublicMCPReady" in x for x in self.manifest["not_proven"]))
 
 
+# The release candidate, the verified branches integrated into it, and the integrated release
+# candidate itself, in workflow order. Each runs the exact-SHA V2-V6 gate jobs on push.
+RC_GATE_BRANCHES = ("build/release-candidate", "build/rc-durable-jobs", "build/rc-supabase-pin",
+                    "build/rc-integrated")
+
+
 class CITriggerTests(unittest.TestCase):
     """Item 6: operational gate on build/** and release/** pushes and every PR; V3-V6 exact-SHA gates on
     the public hardening branches. No other job condition is loosened."""
@@ -940,19 +946,21 @@ class CITriggerTests(unittest.TestCase):
                 self.assertNotIn("startsWith", cond)
                 self.assertNotIn("pull_request", cond)
                 for branch in branches + ("build/public-ops-hardening", "build/public-hardening-rebased",
-                                          "build/release-candidate", "build/rc-durable-jobs"):
+                                          *RC_GATE_BRANCHES):
                     self.assertIn(f"github.ref_name == '{branch}'", cond)
-                self.assertEqual(cond.count("github.ref_name =="), len(branches) + 4)
-                self.assertIn("needs: test", text[text.index(f"\n  {job}:\n"):][:500])
+                self.assertEqual(cond.count("github.ref_name =="), len(branches) + 2 + len(RC_GATE_BRANCHES))
+                start = text.index(f"\n  {job}:\n")
+                # The job header (condition, needs, runner) up to its steps.
+                self.assertIn("\n    needs: test\n", text[start:text.index("\n    steps:", start)])
 
     def test_v2_gate_job_is_unchanged(self):
         cond = self._job_condition(self._workflow("tests.yml"), "v2-ready-for-v3")
-        # Exactly the original two branches plus the release candidate and the durable-jobs
-        # branch built on it; still push-only.
+        # Exactly the original two branches plus the release candidate, its verified source
+        # branches and the integrated release candidate; still push-only.
         self.assertEqual(cond.strip(), "if: ${{ github.event_name == 'push' && (github.ref_name == "
                                        "'build/v2-complete' || github.ref_name == 'build/public-v2-integration' "
-                                       "|| github.ref_name == 'build/release-candidate' "
-                                       "|| github.ref_name == 'build/rc-durable-jobs') }}")
+                                       + "".join(f"|| github.ref_name == '{b}' " for b in RC_GATE_BRANCHES).rstrip()
+                                       + ") }}")
 
 
 if __name__ == "__main__":

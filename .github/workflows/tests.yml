@@ -54,7 +54,7 @@ jobs:
           "$RUNNER_TEMP/wheel-env/bin/python" -m pip install "mcp>=2,<3" "$RUNNER_TEMP"/dist/*.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-env/bin/python" -c "import lofgren_intelligence, lofgren_intelligence.discovery.context, lofgren_intelligence.discovery.schemas; print(lofgren_intelligence.__file__)"
-          "$RUNNER_TEMP/wheel-env/bin/python" -c "import importlib.resources as r; d = r.files('lofgren_intelligence.hosted').joinpath('static'); assert all(d.joinpath(n).is_file() for n in ('site.css', 'site.js', 'mark.svg')), 'static site assets missing from wheel'; print('static-assets-ok')"
+          "$RUNNER_TEMP/wheel-env/bin/python" -c "import importlib.resources as r; d = r.files('lofgren_intelligence.hosted').joinpath('static'); import hashlib, base64; assert all(d.joinpath(n).is_file() for n in ('site.css', 'site.js', 'mark.svg', 'vendor/supabase-js-2.117.2.umd.js', 'vendor/README.md')), 'static site assets missing from wheel'; assert base64.b64encode(hashlib.sha384(d.joinpath('vendor/supabase-js-2.117.2.umd.js').read_bytes()).digest()).decode() == 'Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok', 'vendored supabase-js integrity mismatch'; print('static-assets-ok')"
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify --v2
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify --v3
@@ -69,7 +69,7 @@ jobs:
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify-boundary
 
   v2-ready-for-v3:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v2-complete' || github.ref_name == 'build/public-v2-integration' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v2-complete' || github.ref_name == 'build/public-v2-integration' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-integrated') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -92,7 +92,7 @@ jobs:
 
 
   v3-ready-for-v4:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-integrated') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -115,7 +115,7 @@ jobs:
 
 
   v4-ready-for-v5:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-integrated') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -138,7 +138,7 @@ jobs:
 
 
   v5-ready-for-v6:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-integrated') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -161,7 +161,7 @@ jobs:
 
 
   v6-complete:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-integrated') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
