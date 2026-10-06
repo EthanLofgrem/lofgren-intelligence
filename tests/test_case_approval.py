@@ -604,9 +604,11 @@ class MCPCaseFlowTests(CaseTestBase):
 
     def setUp(self):
         super().setUp()
-        # The MCP tools build their own PublicService on the real clock, so the
-        # approval must be issued on it too (a fixed clock expires it in real time).
+        # The MCP tools build their own PublicService on the real clock, so the approval
+        # recorded here must use real time too; a fixed date makes it expire once that
+        # date's TTL has passed in wall-clock time.
         self.clock.now = datetime.now(timezone.utc)
+        self.service = PublicService(self.store, clock=self.clock)
 
     def _call(self, name, args):
         from mcp import Client
