@@ -199,6 +199,12 @@ SYNC_MAX_NETWORK_TASKS = 2
 LOCAL_ADAPTERS = frozenset({"documents"})
 
 
+class AccountDeletionPending(PublicServiceError):
+    """Deletion must wait: research or usage of the account has not settled yet. Nothing was deleted."""
+
+    code = "ACCOUNT_DELETION_PENDING"
+
+
 class _ResearchAttempt:
     """One execution of the shared research core: its provider and ledger outlive a failure."""
 
@@ -2141,14 +2147,137 @@ class PublicService:
         }
 
     def delete_account(self, user_id: str, confirmation: str) -> dict[str, Any]:
-        expected = "DELETE MY LOFGREN INTELLIGENCE ACCOUNT"
-        if confirmation != expected:
-            raise PublicServiceError(f"confirmation must exactly equal: {expected}")
+        """Permanently delete an account, completely and fail-closed.
+
+        Order (docs/PUBLIC_PRIVACY.md, "User controls"):
+
+        1. Stop new work. Every OAuth access token is revoked, every refresh
+           token and unused authorization code is consumed, and the
+           entitlement is closed (active = false), so li_reserve_usage and
+           _reserve_usage refuse any new metered call from here on.
+        2. Research jobs, per the job model (li_request_cancel_research_job):
+           a queued job is cancelled at once and its reservation released (or
+           its recorded work marked for settlement); a running job is asked to
+           stop at its next stage.
+        3. Usage accounting: every 'unsettled' marker is settled exactly once
+           (li_settle_usage); an open reservation that can no longer belong to
+           live work is released, exactly as li_reserve_usage would expire it.
+        4. If any job has not settled yet, or any reservation may still belong
+           to live work, deletion stops here (AccountDeletionPending) before
+           anything is cancelled or deleted. A retry completes it; the account
+           stays closed meanwhile.
+        5. The Stripe subscription is cancelled. If that fails, deletion stops
+           before identity/data removal (cancel_subscription treats an already
+           ended or missing subscription as cancelled, so a retry is safe).
+        6. The Supabase Auth user is deleted; the database cascade removes the
+           account, entitlement, tokens, runs, discoveries, artifacts, actions,
+           outcomes, improvements, cases, jobs, reservations and usage events.
+           An already-deleted user counts as deleted (idempotent retry).
+        7. The deletion is verified: no account, entitlement or job may remain.
+        """
+        if confirmation != ACCOUNT_DELETION_PHRASE:
+            raise PublicServiceError(f"confirmation must exactly equal: {ACCOUNT_DELETION_PHRASE}")
+
+        # 1. Stop new work before looking at what is still open.
+        self.store.revoke_user_credentials(user_id)
+        ent = self.store.get_entitlement(user_id)
+        if ent and ent.get("active") is not False:
+            self.store.close_entitlement(user_id)
+
+        # 2. Research jobs.
+        cancel_requested = 0
+        for job in self.store.list_research_jobs(user_id):
+            if job.get("status") in ("queued", "running"):
+                if self.store.request_cancel_research_job(str(job["id"]), user_id) is not None:
+                    cancel_requested += 1
+        open_jobs = [job for job in self.store.list_research_jobs(user_id)
+                     if job.get("status") not in job_model.TERMINAL_STATUSES]
+        open_job_ids = {str(job.get("id")) for job in open_jobs}
+
+        # 3. Usage accounting.
+        settled = released = live = 0
+        now = self._clock()
+        for row in self.store.list_open_usage_reservations(user_id):
+            rid = str(row["id"])
+            status = row.get("status")
+            if status == "unsettled":
+                outcome = self.reconcile_usage(rid)
+                if outcome == "settled":
+                    settled += 1
+                elif outcome != "already_settled":
+                    live += 1
+            elif status == "reserved":
+                if _reservation_may_be_live(row, now, open_job_ids):
+                    live += 1
+                elif self.store.release_usage(rid):
+                    released += 1
+                else:
+                    # It changed under us (settled or marked by its own work): look again on retry.
+                    live += 1
+
+        # 4. Refuse until everything has settled.
+        if open_jobs or live:
+            raise AccountDeletionPending(
+                "account deletion is waiting for active research or usage to settle "
+                f"({len(open_jobs)} research job(s) stopping, {live} usage reservation(s) open); "
+                "nothing has been deleted and the account is closed to new work. Retry shortly."
+            )
+
+        # 5. Stripe first: no chargeable subscription may outlive the account.
+        subscription_cancelled = False
         ent = self.store.get_entitlement(user_id)
         if ent and ent.get("stripe_subscription_id"):
             cancel_subscription(str(ent["stripe_subscription_id"]))
-        # Deleting auth.users cascades the LI account, runs, tokens and usage
-        # through the database foreign keys. If subscription cancellation
-        # fails, execution stops before identity/data deletion.
+            subscription_cancelled = True
+
+        # 6. Identity and the database cascade.
         self.store.delete_auth_user(user_id)
-        return {"deleted": True}
+
+        # 7. Verify.
+        if (self.store.get_account(user_id) is not None
+                or self.store.get_entitlement(user_id) is not None
+                or self.store.list_research_jobs(user_id)):
+            raise PublicServiceError("account deletion did not complete; retry")
+        return {
+            "deleted": True,
+            "subscription_cancelled": subscription_cancelled,
+            "research_jobs_cancelled": cancel_requested,
+            "usage_settled": settled,
+            "usage_released": released,
+        }
+
+
+ACCOUNT_DELETION_PHRASE = "DELETE MY LOFGREN INTELLIGENCE ACCOUNT"
+
+# li_reserve_usage expires an open reservation older than this unless a live job holds it.
+RESERVATION_EXPIRY = timedelta(hours=1)
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _reservation_may_be_live(row: dict[str, Any], now: datetime, open_job_ids: set[str]) -> bool:
+    """Could an open ('reserved') reservation still be settled by the work that took it?
+
+    Yes while its job is open, while a job hold is live, or while it is younger than
+    li_reserve_usage's expiry (an inline call may still finalize it). An unreadable
+    timestamp is treated as live (unknown = false: never release what may be charged).
+    """
+    if row.get("job_id") is not None and str(row["job_id"]) in open_job_ids:
+        return True
+    held = row.get("held_until")
+    if held is not None:
+        held_dt = _as_datetime(held)
+        if held_dt is None or held_dt > now:
+            return True
+    created = _as_datetime(row.get("created_at"))
+    return created is None or created > now - RESERVATION_EXPIRY

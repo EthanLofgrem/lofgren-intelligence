@@ -24,7 +24,7 @@ from .mcp_sdk import build_mcp
 from . import console, site
 from .journey import checkout_return_html, consent_intro_html, landing_html
 from .ratelimit import client_ip, rate_limited
-from .service import PublicService, PublicServiceError
+from .service import AccountDeletionPending, PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, SupabaseStore
 from .stripe import StripeError, apply_webhook, verify_webhook
@@ -304,6 +304,8 @@ async def account_delete(request: Request) -> Response:
             str(body.get("confirmation") or ""),
         )
         return JSONResponse(result)
+    except AccountDeletionPending as exc:
+        return _error(409, "account_deletion_pending", str(exc))
     except (StoreError, PublicServiceError, StripeError, ValueError) as exc:
         return _error(400, "account_deletion_refused", str(exc))
 
@@ -341,7 +343,7 @@ input{{background:#0e1218;color:white;border:1px solid #344054}}button{{backgrou
 <input id="confirm" placeholder="Type DELETE MY LOFGREN INTELLIGENCE ACCOUNT">
 <button id="delete" class="danger" disabled>Permanently delete account</button>
 <div id="status"></div>
-<small>Deletion cancels an attached paid subscription before identity and LI data are removed. If cancellation fails, deletion stops.</small>
+<small>Deletion first closes the account to new work and stops running research; if research or usage is still settling, nothing is deleted yet and you are asked to retry shortly. It then cancels an attached paid subscription before identity and LI data are removed. If cancellation fails, deletion stops.</small>
 <script nonce="{nonce}">
 const sb=supabase.createClient({safe_url},{safe_key});
 const status=document.querySelector('#status');
@@ -349,11 +351,12 @@ const email=document.querySelector('#email');
 const password=document.querySelector('#password');
 const exp=document.querySelector('#export');
 const del=document.querySelector('#delete');
+const confirmInput=document.querySelector('#confirm');
 let session=null;
 function ready(s){{session=s;exp.disabled=!s;del.disabled=!s;status.textContent=s?'Signed in.':'';}}
 document.querySelector('#signin').onclick=async()=>{{try{{const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;ready(x.data.session)}}catch(e){{status.textContent=e.message}}}};
 exp.onclick=async()=>{{try{{const r=await fetch('/account/export',{{headers:{{authorization:'Bearer '+session.access_token}}}});if(!r.ok)throw new Error((await r.json()).error_description||'export failed');const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='lofgren-intelligence-data.json';a.click();URL.revokeObjectURL(a.href)}}catch(e){{status.textContent=e.message}}}};
-del.onclick=async()=>{{try{{if(confirm.value!=='DELETE MY LOFGREN INTELLIGENCE ACCOUNT')throw new Error('Confirmation phrase does not match.');const r=await fetch('/account/delete',{{method:'POST',headers:{{'content-type':'application/json',authorization:'Bearer '+session.access_token}},body:JSON.stringify({{confirmation:confirm.value}})}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'deletion failed');await sb.auth.signOut();ready(null);status.textContent='Account deleted.'}}catch(e){{status.textContent=e.message}}}};
+del.onclick=async()=>{{try{{if(confirmInput.value!=='DELETE MY LOFGREN INTELLIGENCE ACCOUNT')throw new Error('Confirmation phrase does not match.');const r=await fetch('/account/delete',{{method:'POST',headers:{{'content-type':'application/json',authorization:'Bearer '+session.access_token}},body:JSON.stringify({{confirmation:confirmInput.value}})}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'deletion failed');await sb.auth.signOut();ready(null);status.textContent='Account deleted.'}}catch(e){{status.textContent=e.message}}}};
 sb.auth.getSession().then(x=>ready(x.data.session));
 </script></main></body></html>"""
     csp = (
@@ -425,6 +428,7 @@ const sb=supabase.createClient({safe_url},{safe_key});
 const actionId={safe_action};
 let session=null;
 const status=document.querySelector('#status'), details=document.querySelector('#details'), approve=document.querySelector('#approve');
+const email=document.querySelector('#email'), password=document.querySelector('#password');
 async function load(){{
   if(!session)return;
   const r=await fetch('/actions/'+encodeURIComponent(actionId)+'/details',{{headers:{{authorization:'Bearer '+session.access_token}}}});
@@ -531,6 +535,7 @@ const sb=supabase.createClient({safe_url},{safe_key});
 const caseId={safe_case};
 let session=null, shown=null;
 const status=document.querySelector('#status'), details=document.querySelector('#details'), approve=document.querySelector('#approve');
+const email=document.querySelector('#email'), password=document.querySelector('#password');
 async function load(){{
   if(!session)return;
   const r=await fetch('/cases/'+encodeURIComponent(caseId)+'/charter',{{headers:{{authorization:'Bearer '+session.access_token}}}});

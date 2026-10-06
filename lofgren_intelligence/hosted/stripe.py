@@ -389,6 +389,18 @@ def apply_webhook(
         if current.get("active") and newer and newer != str(subscription_id):
             mutate = False
 
+    if mutate and user_id and store.get_entitlement(str(user_id)) is None:
+        # The LI account no longer exists (deleted) or never existed. An event that
+        # ends or lapses a subscription is receipted without touching anything: there
+        # is no entitlement left to revoke (writing one would also violate the
+        # auth.users foreign key and make Stripe retry forever). An event that would
+        # grant paid access to a missing account is refused and not receipted, so it
+        # stays visible and Stripe keeps retrying: whether such a subscription is
+        # cancelled or refunded is an operator/product decision LI does not make.
+        if active:
+            raise StripeError("active subscription event for an LI account that does not exist; not applied")
+        mutate = False
+
     plan_id = plan.id if plan is not None else "paid_required"
     applied = store.apply_stripe_entitlement_event(
         event_id=event_id,
