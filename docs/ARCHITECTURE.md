@@ -50,7 +50,11 @@ Serious V1 research runs through an Intelligence Case: `clarify_objective`
 records versioned Case Charters, the account owner approves one exact
 version in the browser (`/cases/{id}`, separate from V4 action approval),
 and `investigate` consumes that approval once and runs with the approved
-charter's objective, sources and budget. See docs/PUBLIC_MCP.md.
+charter's objective, sources and budget. Clarification is deterministic:
+the objective is classified by domain (medical, legal, financial, safety,
+engineering design, general), consequence and breadth, and a
+domain-appropriate bank of 3-7 questions is asked; medical and commercial
+charters carry a safety notice and exclusions. See docs/PUBLIC_MCP.md.
 
 "Hosted" means registered on the authenticated endpoint for activated
 accounts. It does not mean deployed or launched. Not proven by this
