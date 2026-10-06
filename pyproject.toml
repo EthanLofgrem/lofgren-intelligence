@@ -24,5 +24,6 @@ lofgren = "lofgren_intelligence.cli:main"
 include = ["lofgren_intelligence*"]
 
 [tool.setuptools.package-data]
-# Static CSS/JS/SVG for the public site and console shell (served from /static/).
-"lofgren_intelligence.hosted" = ["static/*.css", "static/*.js", "static/*.svg"]
+# Static CSS/JS/SVG for the public site and console shell (served from /static/), plus the
+# pinned third-party browser code and its license notice (served from /static/vendor/).
+"lofgren_intelligence.hosted" = ["static/*.css", "static/*.js", "static/*.svg", "static/vendor/*.js", "static/vendor/README.md"]

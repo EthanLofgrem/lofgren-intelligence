@@ -222,7 +222,7 @@ async def oauth_authorize(request: Request) -> Response:
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect Lofgren Intelligence</title>
-<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+{site.supabase_script_tag(nonce)}
 <style nonce="{nonce}">
 body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh}}
 main{{width:min(92vw,480px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
@@ -266,7 +266,7 @@ existing().catch(e=>status.textContent=e.message);
 </script></main></body></html>"""
     csp = (
         "default-src 'none'; "
-        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"script-src 'self' 'nonce-{nonce}'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src 'self' {supabase_origin}; "
         "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -324,7 +324,7 @@ async def account_page(request: Request) -> Response:
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lofgren Intelligence account</title>
-<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+{site.supabase_script_tag(nonce)}
 <style nonce="{nonce}">
 body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh}}
 main{{width:min(92vw,600px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
@@ -358,7 +358,7 @@ sb.auth.getSession().then(x=>ready(x.data.session));
 </script></main></body></html>"""
     csp = (
         "default-src 'none'; "
-        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"script-src 'self' 'nonce-{nonce}'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src 'self' {origin}; "
         "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -403,7 +403,7 @@ async def action_page(request: Request) -> Response:
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Approve action · Lofgren Intelligence</title>
-<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+{site.supabase_script_tag(nonce)}
 <style nonce="{nonce}">
 body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh;padding:24px}}
 main{{width:min(94vw,720px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
@@ -438,7 +438,7 @@ sb.auth.getSession().then(async x=>{{session=x.data.session;if(session){{status.
 </script></main></body></html>"""
     csp = (
         "default-src 'none'; "
-        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"script-src 'self' 'nonce-{nonce}'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src 'self' {origin}; "
         "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -507,7 +507,7 @@ async def case_page(request: Request) -> Response:
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Approve Case Charter · Lofgren Intelligence</title>
-<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+{site.supabase_script_tag(nonce)}
 <style nonce="{nonce}">
 body{{font-family:system-ui;background:#0b0d10;color:#eef2f7;margin:0;display:grid;place-items:center;min-height:100vh;padding:24px}}
 main{{width:min(94vw,760px);background:#151922;border:1px solid #2a3240;border-radius:16px;padding:28px}}
@@ -545,7 +545,7 @@ sb.auth.getSession().then(async x=>{{session=x.data.session;if(session){{status.
 </script></main></body></html>"""
     csp = (
         "default-src 'none'; "
-        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"script-src 'self' 'nonce-{nonce}'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src 'self' {origin}; "
         "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -597,6 +597,15 @@ async def static_asset(request: Request) -> Response:
         return PlainTextResponse("not found", status_code=404)
     return Response(data, media_type=site.STATIC_TYPES[name],
                     headers={"Cache-Control": "public, max-age=3600"})
+
+
+async def vendor_asset(request: Request) -> Response:
+    name = str(request.path_params["name"])
+    data = site.vendor_bytes(name)
+    if data is None:
+        return PlainTextResponse("not found", status_code=404)
+    return Response(data, media_type=site.VENDOR_TYPES[name],
+                    headers={"Cache-Control": site.VENDOR_CACHE_CONTROL})
 
 
 # Public site and research-console shell. The MCP transport owns /mcp, so the
@@ -701,6 +710,7 @@ def build_app():
         Route("/billing/success", billing_success, methods=["GET"]),
         Route("/billing/cancelled", billing_cancelled, methods=["GET"]),
         Route("/static/{name:str}", static_asset, methods=["GET"]),
+        Route("/static/vendor/{name:str}", vendor_asset, methods=["GET"]),
     ]
     routes.extend(
         Route(path, _site_page(render, needs_base), methods=["GET"]) for path, render, needs_base in SITE_ROUTES

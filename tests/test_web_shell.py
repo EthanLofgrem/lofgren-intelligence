@@ -579,7 +579,7 @@ class StaticAssetTests(WebShellTestCase):
             self.assertTrue(root.joinpath(name).is_file(), name)
         pyproject = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn("[tool.setuptools.package-data]", pyproject)
-        self.assertIn('"lofgren_intelligence.hosted" = ["static/*.css", "static/*.js", "static/*.svg"]', pyproject)
+        self.assertIn('"lofgren_intelligence.hosted" = ["static/*.css", "static/*.js", "static/*.svg", "static/vendor/*.js", "static/vendor/README.md"]', pyproject)
 
     def test_console_routes_are_static(self):
         self.assertEqual(set(console.PAGES), set(CONSOLE_PAGES))

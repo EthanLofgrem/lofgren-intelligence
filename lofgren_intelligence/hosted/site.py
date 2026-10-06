@@ -29,6 +29,22 @@ STATIC_TYPES = {
 }
 
 
+# Vendored third-party browser code (static/vendor/, see static/vendor/README.md). Each file is
+# pinned to one exact upstream version, named after it, served only from this allowlist and
+# loaded with Subresource Integrity, so no page depends on a CDN or a floating version.
+SUPABASE_JS_VERSION = "2.117.2"
+SUPABASE_JS_FILE = f"supabase-js-{SUPABASE_JS_VERSION}.umd.js"
+SUPABASE_JS_SRI = "sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok"
+SUPABASE_JS_PATH = f"/static/vendor/{SUPABASE_JS_FILE}"
+
+VENDOR_TYPES = {
+    SUPABASE_JS_FILE: "text/javascript; charset=utf-8",
+}
+
+# Vendored files never change under a given name, so browsers may cache them for a year.
+VENDOR_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
 def _static_version() -> str:
     digest = hashlib.sha256()
     for name in sorted(STATIC_TYPES):
@@ -96,6 +112,20 @@ def static_bytes(name: str) -> bytes | None:
     if name not in STATIC_TYPES:
         return None
     return resources.files(__package__).joinpath("static", name).read_bytes()
+
+
+def vendor_bytes(name: str) -> bytes | None:
+    if name not in VENDOR_TYPES:
+        return None
+    return resources.files(__package__).joinpath("static", "vendor", name).read_bytes()
+
+
+def supabase_script_tag(nonce: str) -> str:
+    """The pinned, integrity-checked supabase-js UMD build; it defines ``window.supabase``."""
+    return (
+        f'<script nonce="{e(nonce)}" src="{SUPABASE_JS_PATH}" '
+        f'integrity="{SUPABASE_JS_SRI}" crossorigin="anonymous"></script>'
+    )
 
 
 def _head(title: str, nonce: str, extra_style: str = "") -> str:
