@@ -94,15 +94,25 @@ jobs:
           from pathlib import Path
           log = Path("pg-proof.log")
           text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
-          lines = [m.group(0).strip() for m in re.finditer(r"^test_\S+ \(\S+\) \.\.\. .*$", text, re.M)]
+          lines = [f"{m.group(1)} ... {m.group(2).strip()}"
+                   for m in re.finditer(r"^test_\S+ \(\S+?\.(\w+\.test_\w+)\) \.\.\. (.*)$", text, re.M)]
           lines += [l for l in text.splitlines() if re.match(r"^(Ran \d+ tests? in|OK\b|FAILED\b)", l)]
           if not lines:
               lines = ["no per-test results were found in pg-proof.log"]
           body = "\n".join(lines)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write("### postgres-proof per-test results\n\n```\n" + body + "\n```\n")
-          esc = body.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          print("::notice title=postgres-proof per-test results::" + esc)
+          # An annotation message is cut at about 4 KB: publish numbered chunks.
+          chunks, cur = [], []
+          for line in lines:
+              if cur and len("\n".join(cur + [line])) > 3000:
+                  chunks.append(cur)
+                  cur = []
+              cur.append(line)
+          chunks.append(cur)
+          for i, chunk in enumerate(chunks, 1):
+              esc = "\n".join(chunk).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::notice title=postgres-proof per-test results {i}/{len(chunks)}::" + esc)
           EOF
       - name: Upload the test log
         if: always()
