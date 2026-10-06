@@ -309,9 +309,13 @@ class TruthfulnessTests(WebShellTestCase):
         free = re.search(r'<article class="plan" id="plan-founding-free".*?</article>', page, re.S).group(0)
         self.assertNotIn("Planned", free)
         self.assertIn("first 1,000", parse(free).visible_text())
-        for figure in ("$0", "1–1,000", "$0.0312", "per prompted research", "Heavy work: $12.48 each",
-                       "$49.99", "400 weekly entries", "$79.99", "20,000 monthly entries"):
+        for figure in ("$0", "1–1,000", "$0.0312", "per work unit", "Heavy work: $12.48 each",
+                       "$49.99", "$0.0156", "$79.99", "$0.0050",
+                       "500 intelligence units per rolling 7 days (UTC)", "Allowance: not yet decided."):
             self.assertIn(figure, text)
+        # Unenforced "entries" figures are no longer published as allowances.
+        for stale in ("400 weekly entries", "20,000 monthly entries", "per prompted research"):
+            self.assertNotIn(stale, text)
         # The home page summary carries the same labels.
         self.assertEqual(self.doc("/").visible_text().count(PLANNED), 3)
 

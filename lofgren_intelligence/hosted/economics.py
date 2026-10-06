@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from ..billing.catalog import AVAILABLE, CatalogPlan, effective_allowance_units
+
 
 @dataclass(frozen=True)
 class EconomicGate:
@@ -48,8 +50,34 @@ def _p95(values: list[float]) -> float:
     return ordered[idx]
 
 
-def certify_paid_plan(samples: list[dict[str, Any]]) -> EconomicGate:
-    """Fail closed unless real, fully-priced samples support the plan margin."""
+def _plan_reasons(plan: CatalogPlan, monthly_fee: float | None, weekly_units: float | None) -> list[str]:
+    """Extra refusals when certifying a specific catalog plan; they only ever add reasons.
+
+    The gate's economics must describe the plan actually being sold: an
+    unavailable plan, an undecided allowance, a non-monthly plan or gate inputs
+    that differ from the catalog price/allowance all fail closed.
+    """
+    out: list[str] = []
+    if plan.status != AVAILABLE:
+        out.append(f"plan_not_available:{plan.id}")
+    if plan.billing_interval != "month":
+        out.append(f"unsupported_billing_interval:{plan.id}")
+    allowance = effective_allowance_units(plan)
+    if allowance is None:
+        out.append(f"undecided_allowance:{plan.id}")
+    elif weekly_units is not None and abs(weekly_units - allowance) > 1e-9:
+        out.append("mismatch:LI_PAID_WEEKLY_UNITS")
+    if monthly_fee is not None and abs(monthly_fee - plan.price_usd) > 1e-9:
+        out.append("mismatch:LI_PAID_MONTHLY_USD")
+    return out
+
+
+def certify_paid_plan(samples: list[dict[str, Any]], plan: CatalogPlan | None = None) -> EconomicGate:
+    """Fail closed unless real, fully-priced samples support the plan margin.
+
+    With `plan`, the catalog plan being sold must also be available, decided
+    and identical to the gate's price and allowance inputs.
+    """
     reasons: list[str] = []
     min_samples = int(os.environ.get("LI_ECON_MIN_SAMPLES", "100"))
     target_margin = float(os.environ.get("LI_TARGET_GROSS_MARGIN", "0.65"))
@@ -57,6 +85,8 @@ def certify_paid_plan(samples: list[dict[str, Any]]) -> EconomicGate:
     weekly_units = _required_float("LI_PAID_WEEKLY_UNITS", reasons)
     fee_pct = _required_float("LI_PAYMENT_FEE_PERCENT", reasons)
     fee_fixed = _required_float("LI_PAYMENT_FEE_FIXED_USD", reasons)
+    if plan is not None:
+        reasons.extend(_plan_reasons(plan, monthly_fee, weekly_units))
 
     if not 0 < target_margin < 1:
         reasons.append("invalid:LI_TARGET_GROSS_MARGIN")

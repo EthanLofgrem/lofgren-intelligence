@@ -1,0 +1,241 @@
+{
+  "catalog_version": "2026-10-06.1",
+  "plans": [
+    {
+      "allowance": {
+        "operator_override_env": "LI_FOUNDER_WEEKLY_UNITS",
+        "source": "li_activate_account stores 500 on activation (migration 20261004201650_public_mcp.sql); the override applies only where an entitlement has no stored quota",
+        "unenforced_proposal": null,
+        "units": 500.0,
+        "window": {
+          "description": "rolling 7 days ending now (database now(), UTC); not a calendar week",
+          "kind": "rolling",
+          "seconds": 604800,
+          "time_zone": "UTC"
+        }
+      },
+      "audience": "Accounts 1–1,000",
+      "billable_unit": "intelligence_unit",
+      "billing_interval": "none",
+      "cancellation": {
+        "implemented": "no subscription; deleting the account ends access",
+        "refund_and_proration": "not applicable"
+      },
+      "checkout_mode": null,
+      "concurrency": {
+        "concurrent_jobs": "not limited per plan; atomic quota reservations bound total usage",
+        "requests_per_minute": 60,
+        "requests_per_minute_env": "LI_MCP_REQUESTS_PER_MINUTE"
+      },
+      "currency": "USD",
+      "eligibility": {
+        "activation_number_max": 1000,
+        "activation_number_min": 1,
+        "after_cohort": "paid_required"
+      },
+      "features": [
+        "Research and verification tools",
+        "Evidence and source links",
+        "Weekly usage limit shown by usage_status"
+      ],
+      "heavy_job_price_usd": null,
+      "heavy_work": {
+        "conversion_to_allowance": "1 work unit = 1 intelligence unit",
+        "heavy_job_work_units": 400,
+        "policy": "no separate heavy credits; all work is metered in intelligence units against the allowance"
+      },
+      "id": "founding_free",
+      "included_heavy_jobs": null,
+      "name": "Founding Free",
+      "overage": {
+        "detail": "work that would exceed the allowance is refused (QUOTA_EXCEEDED); nothing is billed",
+        "policy": "hard_cap"
+      },
+      "price_usd": 0.0,
+      "pricing_plan_id": null,
+      "rate_usd_per_work_unit": null,
+      "status": "available",
+      "stripe_price_env": null
+    },
+    {
+      "allowance": {
+        "operator_override_env": null,
+        "source": "owner decision required; an operator override never decides an undecided allowance",
+        "unenforced_proposal": {
+          "measure": "entries",
+          "period": "week",
+          "source": "billing.pricing.PLANS['payg'].entry_limit (never enforced)",
+          "value": 500
+        },
+        "units": "undecided",
+        "window": "undecided"
+      },
+      "audience": "Flexible, occasional use",
+      "billable_unit": "intelligence_unit",
+      "billing_interval": "usage",
+      "cancellation": {
+        "implemented": "Access follows Stripe: every lifecycle webhook re-reads the subscription and the entitlement is paid only while it is active or trialing; otherwise it becomes paid_required with quota 0. Account deletion cancels the subscription first.",
+        "refund_and_proration": "undecided"
+      },
+      "checkout_mode": "undecided",
+      "concurrency": {
+        "concurrent_jobs": "undecided",
+        "requests_per_minute": 60,
+        "requests_per_minute_env": "LI_MCP_REQUESTS_PER_MINUTE"
+      },
+      "currency": "USD",
+      "eligibility": null,
+      "features": [
+        "No subscription",
+        "Pay only for estimated, approved work",
+        "Same evidence and traceability"
+      ],
+      "heavy_job_price_usd": 12.48,
+      "heavy_work": {
+        "conversion_to_allowance": "undecided",
+        "extra_heavy_job_price_usd": 12.48,
+        "heavy_job_work_units": 400,
+        "included_heavy_jobs": 0
+      },
+      "id": "payg",
+      "included_heavy_jobs": 0,
+      "name": "Pay as you go",
+      "overage": {
+        "policy": "undecided"
+      },
+      "price_usd": 0.0,
+      "pricing_plan_id": "payg",
+      "rate_usd_per_work_unit": 0.0312,
+      "status": "planned",
+      "stripe_price_env": {
+        "live": "LI_STRIPE_PRICE_ID_PAYG_LIVE",
+        "test": "LI_STRIPE_PRICE_ID_PAYG_TEST"
+      }
+    },
+    {
+      "allowance": {
+        "operator_override_env": "LI_PAID_WEEKLY_UNITS",
+        "source": "owner decision required; an operator override never decides an undecided allowance",
+        "unenforced_proposal": {
+          "measure": "entries",
+          "period": "week",
+          "source": "billing.pricing.PLANS['researcher'].entry_limit (never enforced)",
+          "value": 400
+        },
+        "units": "undecided",
+        "window": "undecided"
+      },
+      "audience": "For regular researchers",
+      "billable_unit": "intelligence_unit",
+      "billing_interval": "month",
+      "cancellation": {
+        "implemented": "Access follows Stripe: every lifecycle webhook re-reads the subscription and the entitlement is paid only while it is active or trialing; otherwise it becomes paid_required with quota 0. Account deletion cancels the subscription first.",
+        "refund_and_proration": "undecided"
+      },
+      "checkout_mode": "subscription",
+      "concurrency": {
+        "concurrent_jobs": "undecided",
+        "requests_per_minute": 60,
+        "requests_per_minute_env": "LI_MCP_REQUESTS_PER_MINUTE"
+      },
+      "currency": "USD",
+      "eligibility": null,
+      "features": [
+        "Everything in Pay as you go",
+        "Lower per-work-unit rate",
+        "Included heavy credits"
+      ],
+      "heavy_job_price_usd": 9.36,
+      "heavy_work": {
+        "conversion_to_allowance": "undecided",
+        "extra_heavy_job_price_usd": 9.36,
+        "heavy_job_work_units": 400,
+        "included_heavy_jobs": 4
+      },
+      "id": "researcher",
+      "included_heavy_jobs": 4,
+      "name": "Researcher",
+      "overage": {
+        "policy": "undecided"
+      },
+      "price_usd": 49.99,
+      "pricing_plan_id": "researcher",
+      "rate_usd_per_work_unit": 0.0156,
+      "status": "planned",
+      "stripe_price_env": {
+        "live": "LI_STRIPE_PRICE_ID_RESEARCHER_LIVE",
+        "test": "LI_STRIPE_PRICE_ID_RESEARCHER_TEST"
+      }
+    },
+    {
+      "allowance": {
+        "operator_override_env": null,
+        "source": "owner decision required; an operator override never decides an undecided allowance",
+        "unenforced_proposal": {
+          "measure": "entries",
+          "period": "month",
+          "source": "billing.pricing.PLANS['good_idea'].entry_limit (never enforced)",
+          "value": 20000
+        },
+        "units": "undecided",
+        "window": "undecided"
+      },
+      "audience": "For power users and teams",
+      "billable_unit": "intelligence_unit",
+      "billing_interval": "month",
+      "cancellation": {
+        "implemented": "Access follows Stripe: every lifecycle webhook re-reads the subscription and the entitlement is paid only while it is active or trialing; otherwise it becomes paid_required with quota 0. Account deletion cancels the subscription first.",
+        "refund_and_proration": "undecided"
+      },
+      "checkout_mode": "subscription",
+      "concurrency": {
+        "concurrent_jobs": "undecided",
+        "requests_per_minute": 60,
+        "requests_per_minute_env": "LI_MCP_REQUESTS_PER_MINUTE"
+      },
+      "currency": "USD",
+      "eligibility": null,
+      "features": [
+        "Everything in Researcher",
+        "Lowest per-work-unit rate",
+        "Build, act and measure at scale"
+      ],
+      "heavy_job_price_usd": 6.24,
+      "heavy_work": {
+        "conversion_to_allowance": "undecided",
+        "extra_heavy_job_price_usd": 6.24,
+        "heavy_job_work_units": 400,
+        "included_heavy_jobs": 6
+      },
+      "id": "good_idea",
+      "included_heavy_jobs": 6,
+      "name": "Good Idea",
+      "overage": {
+        "policy": "undecided"
+      },
+      "price_usd": 79.99,
+      "pricing_plan_id": "good_idea",
+      "rate_usd_per_work_unit": 0.005,
+      "status": "planned",
+      "stripe_price_env": {
+        "live": "LI_STRIPE_PRICE_ID_GOOD_IDEA_LIVE",
+        "test": "LI_STRIPE_PRICE_ID_GOOD_IDEA_TEST"
+      }
+    }
+  ],
+  "stripe_mode_env": "LI_STRIPE_MODE",
+  "undecided_marker": "undecided",
+  "units": {
+    "entry": {
+      "definition": "Plan.entry_limit in billing.pricing. Never counted, metered or enforced by any code path; the hosted quota does not read it.",
+      "id": "entry",
+      "units_per_entry": "undecided"
+    },
+    "intelligence_unit": {
+      "definition": "The single metered quantity of the hosted service (li_usage_events.units). investigate and discover reserve and settle pricing work units (1 WU = 1 unit, ResearchPlan.estimated_work_units / CostLedger.total_units); ad hoc tools charge ADHOC_UNIT_COSTS per call; build_artifact charges 10, measure_outcome and evaluate_improvement 5 per call.",
+      "id": "intelligence_unit",
+      "name": "intelligence unit",
+      "work_unit_ratio": 1.0
+    }
+  }
+}
