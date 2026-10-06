@@ -1,0 +1,28 @@
+{
+  "totalCount": 3,
+  "nextPageToken": "FixtureToken2",
+  "studies": [
+    {
+      "protocolSection": {
+        "identificationModule": {"nctId": "NCT90000001", "briefTitle": "Zelvapril in Adults With Hypertension", "officialTitle": "A Phase 3, Randomized, Placebo-Controlled Study of Zelvapril in Adults With Hypertension"},
+        "statusModule": {"overallStatus": "COMPLETED", "startDateStruct": {"date": "2021-03"}, "primaryCompletionDateStruct": {"date": "2022-09-30"}, "completionDateStruct": {"date": "2022-12"}},
+        "sponsorCollaboratorsModule": {"leadSponsor": {"name": "Fixture Pharma"}},
+        "descriptionModule": {"briefSummary": "This study will test whether zelvapril lowers blood pressure in adults with hypertension."},
+        "conditionsModule": {"conditions": ["Hypertension"]},
+        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 820, "type": "ACTUAL"}},
+        "armsInterventionsModule": {"interventions": [{"type": "DRUG", "name": "Zelvapril"}, {"type": "DRUG", "name": "Placebo"}]}
+      },
+      "hasResults": true
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {"nctId": "NCT90000002", "briefTitle": "Zelvapril in Older Adults With Hypertension"},
+        "statusModule": {"overallStatus": "RECRUITING", "startDateStruct": {"date": "2025-01-15"}, "completionDateStruct": {"date": "2027-06"}},
+        "conditionsModule": {"conditions": ["Hypertension", "Aging"]},
+        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE2"], "enrollmentInfo": {"count": 120, "type": "ESTIMATED"}},
+        "armsInterventionsModule": {"interventions": [{"type": "DRUG", "name": "Zelvapril"}]}
+      },
+      "hasResults": false
+    }
+  ]
+}

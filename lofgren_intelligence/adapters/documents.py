@@ -53,9 +53,18 @@ class _PassageAdapter(Adapter):
     def _documents(self) -> list[tuple[Source, str]]:
         raise NotImplementedError
 
+    def _labels(self, source: Source) -> tuple[dict, list[str]]:
+        """Extra evidence data and transformation notes for passages of `source` (none by default)."""
+        return {}, []
+
+    def _retrieval_notes(self) -> list[str]:
+        """Notes on sources that could not be read (none by default)."""
+        return []
+
     def gather(self, question: "Question", contract: "OutcomeContract") -> GatherResult:
         result = GatherResult()
         docs = self._documents()
+        result.notes.extend(self._retrieval_notes())
         if not docs:
             result.notes.append(f"{self.id}: no documents supplied")
             return result
@@ -68,13 +77,14 @@ class _PassageAdapter(Adapter):
                     scored.append((score, source, passage))
         scored.sort(key=lambda t: -t[0])
         for score, source, passage in scored[: self.top_k]:
+            extra_data, extra_steps = self._labels(source)
             ev = Evidence(
                 source_id=source.id,
                 kind=EvidenceKind.DOCUMENT,
                 content=passage,
-                data={"relevance": score},
+                data={"relevance": score, **extra_data},
                 observed_at=source.published_at,
-                transformations=[f"passage selected by {self.id} (overlap={score})"],
+                transformations=[*extra_steps, f"passage selected by {self.id} (overlap={score})"],
             )
             result.items.append((source, ev))
         if not result.items:

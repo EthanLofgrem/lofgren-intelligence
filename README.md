@@ -113,6 +113,12 @@ lofgren investigate "..." --files notes/ --receipt receipt.json --state knowledg
 lofgren investigate "..." --files notes/ --state2 knowledge-map-2.json
 lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
 
+# Free public sources (no keys): Europe PMC literature, ClinicalTrials.gov registrations, operator-selected URLs.
+# Abstracts are labelled abstract_only and retracted papers are excluded; a registered trial is labelled
+# as not being evidence of efficacy; manifest pages are labelled operator_selected with retrieval time and sha256.
+lofgren investigate "Does metformin reduce cardiovascular events?" --europepmc "metformin cardiovascular outcomes" \
+  --trials "metformin cardiovascular" --max-records 20 --sources-manifest sources.json  # lofgren.sources-manifest/1
+
 # Web discovery (Brave Search API key) and model choice
 BRAVE_API_KEY=... lofgren investigate "..." --search brave
 LOFGREN_PROVIDER=openai-compatible LOFGREN_BASE_URL=http://localhost:11434/v1 LOFGREN_MODEL=llama3.1 lofgren investigate "..."

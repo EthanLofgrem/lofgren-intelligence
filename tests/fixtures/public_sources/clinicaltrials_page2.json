@@ -1,0 +1,18 @@
+{
+  "studies": [
+    {
+      "protocolSection": {
+        "identificationModule": {"nctId": "NCT90000003", "briefTitle": "Zelvapril Observational Registry in Hypertension"},
+        "statusModule": {"overallStatus": "UNKNOWN"},
+        "conditionsModule": {"conditions": ["Hypertension"]},
+        "designModule": {"studyType": "OBSERVATIONAL"}
+      },
+      "hasResults": "true"
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {"nctId": "not-an-nct-id", "briefTitle": "Malformed record"}
+      }
+    }
+  ]
+}
