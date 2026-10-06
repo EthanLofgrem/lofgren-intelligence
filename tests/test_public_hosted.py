@@ -1157,6 +1157,53 @@ class EconomicGateTests(unittest.TestCase):
         self.assertFalse(gate.passed)
         self.assertIn("p95_cost_exceeds_margin_ceiling", gate.reasons)
 
+    _CHEAP_ENV = {
+        "LI_PAID_MONTHLY_USD": "49.99",
+        "LI_PAID_WEEKLY_UNITS": "2000",
+        "LI_PAYMENT_FEE_PERCENT": "0.029",
+        "LI_PAYMENT_FEE_FIXED_USD": "0.30",
+        "LI_TARGET_GROSS_MARGIN": "0.65",
+    }
+
+    @staticmethod
+    def _cheap_samples(n):
+        return [{"units": 1, "known_cost_usd": 0.001, "unpriced_components": []} for _ in range(n)]
+
+    def test_lower_min_samples_env_cannot_lower_the_100_sample_floor(self):
+        # Q20: the env may only raise the floor. Ten cheap samples would pass a floor of 5.
+        for low in ("0", "1", "5", "99", "-50"):
+            with self.subTest(env=low), patch.dict(os.environ, {**self._CHEAP_ENV, "LI_ECON_MIN_SAMPLES": low},
+                                                   clear=False):
+                gate = certify_paid_plan(self._cheap_samples(10))
+                self.assertFalse(gate.passed)
+                self.assertIn("insufficient_samples:10/100", gate.reasons)
+                gate99 = certify_paid_plan(self._cheap_samples(99))
+                self.assertFalse(gate99.passed)
+                self.assertIn("insufficient_samples:99/100", gate99.reasons)
+
+    def test_floor_of_100_still_passes_with_enough_samples_and_env_can_raise_it(self):
+        with patch.dict(os.environ, {**self._CHEAP_ENV, "LI_ECON_MIN_SAMPLES": "5"}, clear=False):
+            self.assertTrue(certify_paid_plan(self._cheap_samples(100)).passed)
+        with patch.dict(os.environ, {**self._CHEAP_ENV, "LI_ECON_MIN_SAMPLES": "250"}, clear=False):
+            gate = certify_paid_plan(self._cheap_samples(100))
+            self.assertFalse(gate.passed)
+            self.assertIn("insufficient_samples:100/250", gate.reasons)
+            self.assertTrue(certify_paid_plan(self._cheap_samples(250)).passed)
+
+    def test_unset_or_invalid_min_samples_uses_the_floor_and_invalid_fails_closed(self):
+        from lofgren_intelligence.hosted.economics import MIN_SAMPLES_FLOOR, min_samples_required
+        self.assertEqual(MIN_SAMPLES_FLOOR, 100)
+        env = {k: v for k, v in os.environ.items() if k != "LI_ECON_MIN_SAMPLES"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(min_samples_required(), 100)
+        with patch.dict(os.environ, {**self._CHEAP_ENV, "LI_ECON_MIN_SAMPLES": "ten"}, clear=False):
+            reasons: list[str] = []
+            self.assertEqual(min_samples_required(reasons), 100)
+            self.assertEqual(reasons, ["invalid:LI_ECON_MIN_SAMPLES"])
+            gate = certify_paid_plan(self._cheap_samples(150))
+            self.assertFalse(gate.passed)
+            self.assertIn("invalid:LI_ECON_MIN_SAMPLES", gate.reasons)
+
 
 class MigrationContractTests(unittest.TestCase):
     def test_first_1000_rule_and_rls_are_present(self):

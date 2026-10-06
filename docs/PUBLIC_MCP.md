@@ -186,7 +186,8 @@ deletion, any other Stripe failure stops it before data is removed.
 
 The economic gate that unlocks checkout also needs `LI_PAID_MONTHLY_USD`,
 `LI_PAYMENT_FEE_PERCENT`, `LI_PAYMENT_FEE_FIXED_USD` (optional
-`LI_ECON_MIN_SAMPLES`, default 100, and `LI_TARGET_GROSS_MARGIN`, default
+`LI_ECON_MIN_SAMPLES`, default and minimum 100: it can raise the sample floor
+but a lower value is ignored, and `LI_TARGET_GROSS_MARGIN`, default
 0.65). Any usage sample with an unpriced component fails the gate.
 
 The server expects:

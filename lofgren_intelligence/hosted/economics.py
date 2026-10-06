@@ -9,6 +9,10 @@ from typing import Any
 
 from ..billing.catalog import AVAILABLE, CatalogPlan, effective_allowance_units
 
+# The fewest real, fully-priced samples a paid plan can be certified on. The
+# operator may raise it with LI_ECON_MIN_SAMPLES but never lower it.
+MIN_SAMPLES_FLOOR = 100
+
 
 @dataclass(frozen=True)
 class EconomicGate:
@@ -42,6 +46,24 @@ def _required_float(name: str, reasons: list[str]) -> float | None:
         reasons.append(f"invalid:{name}")
         return None
     return value
+
+
+def min_samples_required(reasons: list[str] | None = None) -> int:
+    """Samples needed for paid-plan certification: never below MIN_SAMPLES_FLOOR.
+
+    LI_ECON_MIN_SAMPLES can only raise the floor; a lower value is ignored. A
+    non-integer value fails closed (recorded in `reasons`) and the floor applies.
+    """
+    raw = os.environ.get("LI_ECON_MIN_SAMPLES")
+    if raw in (None, ""):
+        return MIN_SAMPLES_FLOOR
+    try:
+        requested = int(str(raw).strip())
+    except ValueError:
+        if reasons is not None:
+            reasons.append("invalid:LI_ECON_MIN_SAMPLES")
+        return MIN_SAMPLES_FLOOR
+    return max(MIN_SAMPLES_FLOOR, requested)
 
 
 def _p95(values: list[float]) -> float:
@@ -79,7 +101,7 @@ def certify_paid_plan(samples: list[dict[str, Any]], plan: CatalogPlan | None = 
     and identical to the gate's price and allowance inputs.
     """
     reasons: list[str] = []
-    min_samples = int(os.environ.get("LI_ECON_MIN_SAMPLES", "100"))
+    min_samples = min_samples_required(reasons)
     target_margin = float(os.environ.get("LI_TARGET_GROSS_MARGIN", "0.65"))
     monthly_fee = _required_float("LI_PAID_MONTHLY_USD", reasons)
     weekly_units = _required_float("LI_PAID_WEEKLY_UNITS", reasons)
