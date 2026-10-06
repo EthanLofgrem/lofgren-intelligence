@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import secrets
+import urllib.error
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -41,10 +42,11 @@ from ..improvement import (
     evaluate_improvement, verify_improvement_receipt,
 )
 from . import cases as case_model
+from . import jobs as job_model
 from .costing import actual_run_cost
 from .entitlements import EntitlementError, access_for_run
 from .economics import certify_paid_plan
-from .security import validate_remote_args
+from .security import PublicInputError, validate_remote_args
 from .snapshots import durable_discovery_snapshot, durable_snapshot, restore_discovery_context, summary
 from .store import SupabaseStore, utcnow
 from .stripe import cancel_subscription, create_billing_portal, create_checkout
@@ -164,7 +166,48 @@ class CaseRunFailed(PublicServiceError):
     code = "CASE_RUN_FAILED"
 
 
+class JobNotFound(PublicServiceError):
+    """No such research job for this account (another account's job is reported the same way)."""
+
+    code = "JOB_NOT_FOUND"
+
+
+class JobInvalid(PublicServiceError):
+    """The research job request is malformed (for example an unusable idempotency key)."""
+
+    code = "JOB_INVALID"
+
+
+class AsyncRequired(PublicServiceError):
+    """The research is not bounded well under the request time limit; use start_research."""
+
+    code = "ASYNC_REQUIRED"
+
+
 _LOG = logging.getLogger("lofgren_intelligence.public")
+
+# The synchronous investigate path runs inside one HTTP request, and the hosting
+# function is capped at 60 seconds (vercel.json maxDuration). Only plans bounded
+# well under that run inline: at most LI_SYNC_MAX_NETWORK_TASKS source calls that
+# leave the process (each network fetch has a 15 s timeout) and at most
+# LI_SYNC_MAX_WORK_UNITS estimated work units. Anything larger is refused with
+# ASYNC_REQUIRED and goes through start_research (a durable job). See
+# docs/WORKER_RUNTIME.md.
+SYNC_MAX_WORK_UNITS = 40.0
+SYNC_MAX_NETWORK_TASKS = 2
+LOCAL_ADAPTERS = frozenset({"documents"})
+
+
+class _ResearchAttempt:
+    """One execution of the shared research core: its provider and ledger outlive a failure."""
+
+    def __init__(self, execution_plan: str) -> None:
+        self.execution_plan = execution_plan
+        self.provider = default_provider()
+        self.ledger = CostLedger(PLANS[execution_plan].rate)
+        self.result: Any = None
+        self.snap: dict[str, Any] | None = None
+        self.cost: Any = None
 
 
 DISCOVERY_STATE_INVALID_MESSAGE = (
@@ -688,39 +731,45 @@ class PublicService:
             "unknowns": [to_dict(u) for u in gap_unknowns(plan, c, PLANS[plan_id].rate)],
         }
 
+    @staticmethod
+    def _partial_usage(provider: Any, ledger: CostLedger) -> tuple[float, float, list[str]] | None:
+        """(units, known cost, unpriced components) of the work done so far, or None when none was done."""
+        calls = int(((getattr(provider, "usage", None) or {}).get("calls")) or 0)
+        units = float(ledger.total_units)
+        spent = any(float(e.usd) > 0 for e in ledger.entries)
+        if units <= 0 and calls <= 0 and not spent:
+            return None
+        try:
+            info = provider.describe()
+        except Exception:
+            info = {"name": "unknown", "usage": dict(getattr(provider, "usage", {}) or {})}
+        cost = actual_run_cost(info, ledger)
+        return units, cost.known_cost_usd, sorted(set(cost.unpriced_components) | {"partial_run"})
+
     def _charge_partial_run(self, reservation_id: str, provider: Any, ledger: CostLedger) -> None:
         """A run that raised: charge the work and cost incurred so far, or release if there was none."""
         try:
-            calls = int(((getattr(provider, "usage", None) or {}).get("calls")) or 0)
-            units = float(ledger.total_units)
-            spent = any(float(e.usd) > 0 for e in ledger.entries)
-            if units <= 0 and calls <= 0 and not spent:
+            partial = self._partial_usage(provider, ledger)
+            if partial is None:
                 self._release_quietly(reservation_id)
                 return
-            try:
-                info = provider.describe()
-            except Exception:
-                info = {"name": "unknown", "usage": dict(getattr(provider, "usage", {}) or {})}
-            cost = actual_run_cost(info, ledger)
+            units, known, unpriced = partial
             self._settle_work(
                 reservation_id,
                 run_id=None,  # nothing was persisted, so the charge names no run
                 actual_units=units,
-                known_cost_usd=cost.known_cost_usd,
-                unpriced_components=sorted(set(cost.unpriced_components) | {"partial_run"}),
+                known_cost_usd=known,
+                unpriced_components=unpriced,
             )
         except Exception:
             _LOG.error("could not account for the partial run on reservation %s", reservation_id)
 
-    def _run(
-        self,
-        user_id: str,
-        objective: str,
-        a: dict[str, Any],
-        *,
-        budget_units: float | None = None,
-        before_work: Callable[[], None] | None = None,
-    ) -> dict[str, Any]:
+    # ---- the research core shared by the synchronous path and the durable worker ----------
+
+    def _prepare_research(
+        self, objective: str, a: dict[str, Any], budget_units: float | None,
+    ) -> tuple[dict[str, Any], Any, Any]:
+        """Validate, compile and plan (no work, no reservation). Refuses a plan over the budget."""
         a = validate_remote_args(a)
         c = compile_intent(
             objective,
@@ -733,16 +782,103 @@ class PublicService:
                 f"the research plan needs {plan.estimated_work_units:g} units but the approved charter allows "
                 f"{float(budget_units):g}; revise the budget and approve the charter again"
             )
+        return a, c, plan
+
+    @staticmethod
+    def _check_cost_ceiling(plan: Any, execution_plan: str) -> None:
+        # Public safety ceiling independent of user-supplied max_spend.
+        public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
+        est = estimate_run(plan, execution_plan)
+        if est.total_usd > public_cap:
+            raise QuotaExceeded("run exceeds the public per-run cost ceiling")
+
+    @staticmethod
+    def _require_sync_bounded(plan: Any) -> None:
+        """Refuse inline research that is not bounded well under the 60 s request cap."""
+        try:
+            max_units = float(os.environ.get("LI_SYNC_MAX_WORK_UNITS", "") or SYNC_MAX_WORK_UNITS)
+        except ValueError:
+            max_units = SYNC_MAX_WORK_UNITS
+        try:
+            max_network = int(os.environ.get("LI_SYNC_MAX_NETWORK_TASKS", "") or SYNC_MAX_NETWORK_TASKS)
+        except ValueError:
+            max_network = SYNC_MAX_NETWORK_TASKS
+        network = sum(1 for t in plan.tasks if t.adapter_id not in LOCAL_ADAPTERS)
+        if float(plan.estimated_work_units) > max_units + 1e-9 or network > max_network:
+            raise AsyncRequired(
+                "this research is too large to run inside one request; call start_research and poll "
+                "get_job_status"
+            )
+
+    def _execute_research(
+        self, attempt: _ResearchAttempt, contract: Any, a: dict[str, Any],
+        stage_hook: Callable[[str], None] | None = None,
+    ) -> None:
+        """Run the investigation and snapshot it. On a raise, attempt.provider/ledger hold the work so far."""
+        kwargs: dict[str, Any] = {}
+        if stage_hook is not None:
+            kwargs["stage_hook"] = stage_hook
+        result = run_investigation(
+            contract,
+            self._registry(a),
+            attempt.provider,
+            attempt.execution_plan,
+            approved=False,  # public V1 never executes external actions
+            ledger=attempt.ledger,
+            **kwargs,
+        )
+        attempt.result = result
+        attempt.snap = durable_snapshot(result)
+        attempt.cost = actual_run_cost(result.provider_info, result.ledger)
+
+    def _persist_run(self, user_id: str, objective: str, attempt: _ResearchAttempt) -> None:
+        snap, cost = attempt.snap, attempt.cost
+        if snap is None or cost is None:
+            raise PublicServiceError("the research produced no result to save")
+        self.store.save_run(
+            {
+                "run_id": snap["run_id"],
+                "user_id": user_id,
+                "objective": objective,
+                "status": "complete" if attempt.result.completed else "stopped",
+                "summary": summary(snap),
+                "snapshot": snap,
+                "receipt": snap["receipt"],
+                "knowledge_state": snap["knowledge_map2"],
+                "report": snap["report"],
+                "usage_units": snap["usage_units"],
+                "known_cost_usd": cost.known_cost_usd,
+                "unpriced_components": list(cost.unpriced_components),
+                "created_at": utcnow(),
+            }
+        )
+
+    @staticmethod
+    def _run_output(snap: dict[str, Any], cost: Any) -> dict[str, Any]:
+        out = summary(snap)
+        out["known_cost_usd"] = cost.known_cost_usd
+        out["cost_fully_priced"] = cost.fully_priced
+        out["unpriced_cost_components"] = list(cost.unpriced_components)
+        return out
+
+    def _run(
+        self,
+        user_id: str,
+        objective: str,
+        a: dict[str, Any],
+        *,
+        budget_units: float | None = None,
+        before_work: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Synchronous research inside the request (bounded work only; see _require_sync_bounded)."""
+        a, c, plan = self._prepare_research(objective, a, budget_units)
+        self._require_sync_bounded(plan)
         reservation_id = self._reserve_usage(
             user_id, "investigate", float(plan.estimated_work_units)
         )
         execution_plan = os.environ.get("LI_RUNTIME_PLAN", "payg")
         try:
-            # Public safety ceiling independent of user-supplied max_spend.
-            public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
-            est = estimate_run(plan, execution_plan)
-            if est.total_usd > public_cap:
-                raise QuotaExceeded("run exceeds the public per-run cost ceiling")
+            self._check_cost_ceiling(plan, execution_plan)
             if before_work is not None:
                 before_work()
         except BaseException:
@@ -750,40 +886,16 @@ class PublicService:
             self._release_quietly(reservation_id)
             raise
 
-        provider = default_provider()
-        ledger = CostLedger(PLANS[execution_plan].rate)
+        attempt = _ResearchAttempt(execution_plan)
         try:
-            result = run_investigation(
-                c,
-                self._registry(a),
-                provider,
-                execution_plan,
-                approved=False,  # public V1 never executes external actions
-                ledger=ledger,
-            )
-            snap = durable_snapshot(result)
-            cost = actual_run_cost(result.provider_info, result.ledger)
+            self._execute_research(attempt, c, a)
         except BaseException:
-            self._charge_partial_run(reservation_id, provider, ledger)
+            self._charge_partial_run(reservation_id, attempt.provider, attempt.ledger)
             raise
+        snap, cost = attempt.snap, attempt.cost
+        assert snap is not None and cost is not None
         try:
-            self.store.save_run(
-                {
-                    "run_id": snap["run_id"],
-                    "user_id": user_id,
-                    "objective": objective,
-                    "status": "complete" if result.completed else "stopped",
-                    "summary": summary(snap),
-                    "snapshot": snap,
-                    "receipt": snap["receipt"],
-                    "knowledge_state": snap["knowledge_map2"],
-                    "report": snap["report"],
-                    "usage_units": snap["usage_units"],
-                    "known_cost_usd": cost.known_cost_usd,
-                    "unpriced_components": list(cost.unpriced_components),
-                    "created_at": utcnow(),
-                }
-            )
+            self._persist_run(user_id, objective, attempt)
         except BaseException:
             # The run did its work but its result was not persisted: charge the work
             # (with no run id, since no run row exists) and report the failure.
@@ -802,11 +914,7 @@ class PublicService:
             known_cost_usd=cost.known_cost_usd,
             unpriced_components=list(cost.unpriced_components),
         )
-        out = summary(snap)
-        out["known_cost_usd"] = cost.known_cost_usd
-        out["cost_fully_priced"] = cost.fully_priced
-        out["unpriced_cost_components"] = list(cost.unpriced_components)
-        return out
+        return self._run_output(snap, cost)
 
     def investigate(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
         a = validate_remote_args(a)
@@ -903,6 +1011,383 @@ class PublicService:
                 out["replayed"] = True
                 return out
         return {"kind": "intelligence_case_run", "status": "RUN_IN_PROGRESS", "replayed": True, **fields}
+
+    # ---- durable research jobs: enqueue in the request, execute in the worker --------------
+    #
+    # start_research validates, plans and reserves usage in the request and enqueues a job
+    # whose input is frozen (the approved charter's inputs for a case) and returns at once.
+    # The worker (hosted/worker.py) claims the job under a lease and calls run_research_job,
+    # which runs the same research core as the synchronous path. The reservation taken at
+    # enqueue is held for the job's whole life and settled once by the M1 rules.
+
+    def _job_settings(self) -> job_model.JobSettings:
+        return getattr(self, "job_settings", None) or job_model.JobSettings.from_env()
+
+    @staticmethod
+    def _job_key(a: dict[str, Any]) -> str | None:
+        raw = a.get("idempotency_key")
+        if raw in (None, ""):
+            return None
+        key = str(raw).strip()
+        if not job_model.IDEMPOTENCY_KEY_RE.match(key):
+            raise JobInvalid("idempotency_key must be 1-190 characters of letters, digits, '.', '_', ':' or '-'")
+        return key
+
+    @staticmethod
+    def _frozen_args(a: dict[str, Any]) -> dict[str, Any]:
+        return {k: a[k] for k in job_model.SOURCE_ARG_KEYS if k in a and a[k] is not None}
+
+    def start_research(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
+        """Enqueue research as a durable job and return its job_id without running it."""
+        a = validate_remote_args(a)
+        key = self._job_key(a)
+        if a.get("case_id") not in (None, ""):
+            return self._start_case_job(user_id, a, base_url, key)
+        clarification = self._clarification_gate(a)
+        if clarification is not None:
+            return clarification
+        objective = str(a.get("objective") or "").strip()
+        if not objective:
+            raise JobInvalid("objective is required")
+        key = key or f"job:{uuid.uuid4()}"
+        existing = self.store.get_research_job_by_key(user_id, key)
+        if existing:
+            return self._job_started_view(existing, created=False)
+        budget = a.get("max_units")
+        budget_units = None
+        if budget is not None:
+            try:
+                budget_units = float(budget)
+            except (TypeError, ValueError):
+                raise JobInvalid("max_units must be a number") from None
+            if not math.isfinite(budget_units) or budget_units <= 0:
+                raise JobInvalid("max_units must be a positive number")
+        args, _c, plan = self._prepare_research(objective, a, budget_units)
+        return self._enqueue_job(user_id, None, key, objective, args, plan, budget_units, None)
+
+    def _start_case_job(
+        self, user_id: str, a: dict[str, Any], base_url: str, key_in: str | None,
+    ) -> dict[str, Any]:
+        case, row, approval = self._authorized_case(user_id, a, base_url)
+        approval_id = str(approval["id"])
+        key = key_in or f"approval:{approval_id}"
+        existing = self.store.get_research_job_by_key(user_id, key)
+        if existing:
+            return self._job_started_view(existing, created=False)
+        # A job consumes the approval under "job:<key>", so the synchronous path and a job
+        # can never both start research from one approval.
+        consume_key = f"job:{key}"
+        if approval.get("consumed_at") and approval.get("idempotency_key") != consume_key:
+            raise CaseApprovalConsumed(
+                "this approval already started research; approve the charter again to run it again"
+            )
+        inputs = self._charter_inputs(row["charter"])
+        budget_units = float(approval["budget_units"])
+        args, _c, plan = self._prepare_research(inputs["objective"], inputs, budget_units)
+        case_ref = {
+            "case_id": str(case["id"]),
+            "approval_id": approval_id,
+            "charter_version": int(row["version"]),
+            "content_hash": row["content_hash"],
+            "approved_budget": case_model.normalize_budget(row["charter"].get("budget")),
+        }
+
+        def consume() -> None:
+            got = self.store.consume_case_approval(approval_id, user_id, str(approval["token_hash"]), consume_key)
+            if got is None:
+                current = self.store.latest_case_approval(user_id, case["id"]) or {}
+                if str(current.get("id")) == approval_id and current.get("consumed_at"):
+                    raise CaseApprovalConsumed(
+                        "this approval already started research; approve the charter again to run it again"
+                    )
+                raise CaseApprovalRequired(
+                    "the approval is no longer valid; approve the latest charter in the browser: "
+                    + self._approval_url(base_url, case["id"])
+                )
+
+        out = self._enqueue_job(user_id, str(case["id"]), key, inputs["objective"], args, plan,
+                                budget_units, case_ref, before_enqueue=consume)
+        out.update(self._case_run_fields(case, row, approval_id, key))
+        return out
+
+    def _enqueue_job(
+        self, user_id: str, case_id: str | None, key: str, objective: str, args: dict[str, Any], plan: Any,
+        budget_units: float | None, case_ref: dict[str, Any] | None,
+        *, before_enqueue: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        settings = self._job_settings()
+        execution_plan = os.environ.get("LI_RUNTIME_PLAN", "payg")
+        reservation_id = self._reserve_usage(user_id, "investigate", float(plan.estimated_work_units))
+        job_input = {
+            "schema": job_model.JOB_INPUT_SCHEMA,
+            "objective": objective,
+            "args": self._frozen_args(args),
+            "budget_units": budget_units,
+            "estimated_units": float(plan.estimated_work_units),
+            "execution_plan": execution_plan,
+            "execution_inputs": "approved_charter" if case_ref else "request",
+            "case": case_ref,
+        }
+        try:
+            self._check_cost_ceiling(plan, execution_plan)
+            if before_enqueue is not None:
+                before_enqueue()
+            job = self.store.enqueue_research_job(
+                str(uuid.uuid4()), user_id, case_id, "investigate", key, job_input, reservation_id,
+                settings.max_attempts, settings.queue_ttl_seconds,
+            )
+        except BaseException:
+            # Refused (or the store failed) before any work: return the held allowance now.
+            self._release_quietly(reservation_id)
+            raise
+        if job is None:
+            self._release_quietly(reservation_id)
+            raise PublicServiceError("the research job could not be queued; try again")
+        created = bool(job.get("created"))
+        if not created:
+            # Another request with the same key won the race: one job, one reservation.
+            self._release_quietly(reservation_id)
+        return self._job_started_view(job, created=created)
+
+    @staticmethod
+    def _job_started_view(job: dict[str, Any], *, created: bool) -> dict[str, Any]:
+        view = job_model.public_job_view(job)
+        view["created"] = created
+        view["message"] = (
+            "Research is queued as a durable job. Poll get_job_status with job_id; cancel_research stops it "
+            "at the next stage. Retrying start_research with the same idempotency_key returns this job."
+        )
+        return view
+
+    def _job(self, user_id: str, job_id: Any) -> dict[str, Any]:
+        jid = str(job_id or "").strip()
+        try:
+            jid = str(uuid.UUID(jid))
+        except ValueError:
+            raise JobNotFound("unknown job_id") from None
+        row = self.store.get_research_job(user_id, jid)
+        if not row or str(row.get("user_id")) != str(user_id) or str(row.get("id")) != jid:
+            raise JobNotFound("unknown job_id")
+        return row
+
+    def get_job_status(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        """The tenant's own job: status, attempts, units so far and, when it succeeded, the run summary."""
+        job = self._job(user_id, a.get("job_id"))
+        view = job_model.public_job_view(job)
+        if view["status"] == "succeeded" and view["run_id"]:
+            stored = self.store.get_run(user_id, str(view["run_id"]))
+            if stored and isinstance(stored.get("snapshot"), dict):
+                result = summary(stored["snapshot"])
+                unpriced = list(stored.get("unpriced_components") or [])
+                result["known_cost_usd"] = float(stored.get("known_cost_usd") or 0.0)
+                result["cost_fully_priced"] = not unpriced
+                result["unpriced_cost_components"] = unpriced
+                view["result"] = result
+        return view
+
+    def cancel_research(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        """Cancel the tenant's own job: queued -> cancelled now; running -> stops at its next stage."""
+        job = self._job(user_id, a.get("job_id"))
+        before = str(job.get("status"))
+        row = self.store.request_cancel_research_job(str(job["id"]), user_id)
+        if row is None:
+            raise JobNotFound("unknown job_id")
+        if str(row.get("status")) == "cancelled" and before == "queued":
+            # The database ended the job and accounted its reservation (released, or an
+            # unsettled marker for work recorded by an earlier attempt): settle it now.
+            try:
+                self.reconcile_usage(str(row["reservation_id"]))
+            except Exception:
+                _LOG.warning("settlement of cancelled job %s is pending reconciliation", row.get("id"))
+            self._record_case_outcome(row, None, "failed")
+        view = job_model.public_job_view(row)
+        status = view["status"]
+        view["cancel_effect"] = {
+            "cancelled": "cancelled" if before != "cancelled" else "already_cancelled",
+            "cancel_requested": "will_stop_at_next_stage",
+        }.get(status, "no_op_" + status)
+        return view
+
+    def _record_case_outcome(self, job: dict[str, Any], run_id: str | None, status: str) -> None:
+        case_ref = (job.get("input") or {}).get("case") if isinstance(job.get("input"), dict) else None
+        if not case_ref:
+            return
+        try:
+            self.store.record_case_run(str(case_ref["approval_id"]), str(job["user_id"]), run_id, status)
+        except Exception:
+            _LOG.error("could not record the case outcome of research job %s", job.get("id"))
+
+    # ---- worker side --------------------------------------------------------------------
+
+    def run_research_job(self, job: dict[str, Any], lease: job_model.JobLease) -> dict[str, Any]:
+        """Execute one claimed job with the shared research core (called by the worker).
+
+        Uses only the frozen job input. Checkpoints and honours cancel/budget/shutdown at
+        every stage boundary, then settles the job's reservation by the M1 rules: release
+        when nothing ran, charge the partial cost after work began, and record an unsettled
+        marker plus reconcile when settlement fails after the result is saved.
+        Returns {"status": <final or transitional status>, ...}.
+        """
+        settings = self._job_settings()
+        checkpoint = dict(job.get("checkpoint") or {})
+        phase = checkpoint.get("phase")
+        if phase == "result_saved":
+            return self._complete_job(job, lease, checkpoint)
+        if phase == "finalizing":
+            return self._finalize_job(job, lease, checkpoint)
+
+        base_units = float(job.get("cost_so_far") or 0.0)
+        base_cost = float(checkpoint.get("known_cost_usd") or 0.0)
+        attempts = int(job.get("attempts") or 1)
+
+        def ending(code: str, units: float, known: float, unpriced: list[str]) -> dict[str, Any]:
+            return self._finalize_job(job, lease, {
+                "phase": "finalizing", "outcome": code, "units": units, "known_cost_usd": known,
+                "unpriced": unpriced, "attempt": attempts,
+            })
+
+        inp = job.get("input")
+        try:
+            if (not isinstance(inp, dict) or inp.get("schema") != job_model.JOB_INPUT_SCHEMA
+                    or not isinstance(inp.get("args"), dict) or not str(inp.get("objective") or "").strip()):
+                raise JobInvalid("the stored job input is invalid")
+            budget_units = None if inp.get("budget_units") is None else float(inp["budget_units"])
+            execution_plan = str(inp.get("execution_plan") or "payg")
+            if execution_plan not in PLANS:
+                raise JobInvalid("the stored job input is invalid")
+            objective = str(inp["objective"])
+            args, contract, _plan = self._prepare_research(objective, dict(inp["args"]), None)
+        except (PublicServiceError, PublicInputError, ValueError, TypeError, KeyError) as exc:
+            code = getattr(exc, "code", "JOB_INVALID")
+            return ending(code, base_units, base_cost, ["job_refused"])
+
+        attempt = _ResearchAttempt(execution_plan)
+
+        def progress() -> tuple[float, float]:
+            partial = self._partial_usage(attempt.provider, attempt.ledger)
+            if partial is None:
+                return base_units, base_cost
+            return base_units + partial[0], base_cost + partial[1]
+
+        def stage_hook(stage: str) -> None:
+            units, known = progress()
+            lease.beat({"phase": "running", "stage": stage, "attempt": attempts,
+                        "base_units": base_units, "known_cost_usd": known}, units)
+            if lease.cancel_requested:
+                raise job_model.JobCancelled(stage)
+            if budget_units is not None and units > budget_units + 1e-9:
+                raise job_model.JobBudgetExhausted(stage)
+            if lease.shutdown.is_set():
+                raise job_model.WorkerShutdown(stage)
+
+        try:
+            stage_hook("start")
+            self._execute_research(attempt, contract, args, stage_hook=stage_hook)
+        except job_model.LeaseLost:
+            # The job belongs to whoever reclaimed it; this worker neither finishes nor charges.
+            return {"status": "lease_lost"}
+        except job_model.JobCancelled:
+            units, known = progress()
+            return ending("CANCELLED", units, known, self._partial_components(attempt))
+        except job_model.JobBudgetExhausted:
+            units, known = progress()
+            return ending("BUDGET_EXHAUSTED", units, known, self._partial_components(attempt))
+        except job_model.WorkerShutdown:
+            units, known = progress()
+            row = self.store.fail_research_job(
+                str(job["id"]), lease.worker_id, "WORKER_SHUTDOWN", True, 0, units,
+                {"phase": "requeued", "known_cost_usd": known, "attempt": attempts},
+                settings.queue_ttl_seconds,
+            )
+            return {"status": str((row or {}).get("status") or "lease_lost")}
+        except PublicServiceError as exc:
+            units, known = progress()
+            return ending(exc.code, units, known, self._partial_components(attempt))
+        except Exception as exc:
+            units, known = progress()
+            code = ("PROVIDER_UNAVAILABLE"
+                    if isinstance(exc, (OSError, TimeoutError, ConnectionError, urllib.error.URLError))
+                    else "EXECUTION_FAILED")
+            _LOG.warning("research job %s attempt %s failed (%s)", job.get("id"), attempts, code)
+            if attempts < int(job.get("max_attempts") or 1):
+                row = self.store.fail_research_job(
+                    str(job["id"]), lease.worker_id, code, True, settings.backoff(attempts), units,
+                    {"phase": "retry_wait", "known_cost_usd": known, "attempt": attempts, "last_error": code},
+                    settings.queue_ttl_seconds,
+                )
+                if row is None:
+                    return {"status": "lease_lost"}
+                return {"status": str(row.get("status")), "error_code": code}
+            return ending(code, units, known, self._partial_components(attempt))
+
+        snap, cost = attempt.snap, attempt.cost
+        assert snap is not None and cost is not None
+        total_units = base_units + float(snap["usage_units"])
+        total_known = base_cost + float(cost.known_cost_usd)
+        try:
+            self._persist_run(str(job["user_id"]), objective, attempt)
+        except Exception:
+            # The work ran but its result was not stored: charge it and fail (M1 semantics).
+            return ending("RESULT_NOT_SAVED", total_units, total_known,
+                          sorted(set(cost.unpriced_components) | {"partial_run"}))
+        saved = {
+            "phase": "result_saved", "run_id": snap["run_id"], "units": total_units,
+            "known_cost_usd": total_known, "unpriced": list(cost.unpriced_components), "attempt": attempts,
+        }
+        try:
+            lease.beat(saved, total_units)
+        except job_model.LeaseLost:
+            return {"status": "lease_lost"}
+        return self._complete_job(job, lease, saved)
+
+    @staticmethod
+    def _partial_components(attempt: _ResearchAttempt) -> list[str]:
+        partial = PublicService._partial_usage(attempt.provider, attempt.ledger)
+        return partial[2] if partial is not None else ["partial_run"]
+
+    def _complete_job(self, job: dict[str, Any], lease: job_model.JobLease, saved: dict[str, Any]) -> dict[str, Any]:
+        """Settle the saved result (idempotent) and mark the job succeeded."""
+        settlement = self._settle_work(
+            str(job["reservation_id"]),
+            run_id=str(saved["run_id"]),
+            actual_units=float(saved["units"]),
+            known_cost_usd=float(saved.get("known_cost_usd") or 0.0),
+            unpriced_components=list(saved.get("unpriced") or []),
+        )
+        row = self.store.complete_research_job(str(job["id"]), lease.worker_id, str(saved["run_id"]),
+                                               float(saved["units"]))
+        if row is None:
+            return {"status": "lease_lost", "settlement": settlement}
+        self._record_case_outcome(job, str(saved["run_id"]), "complete")
+        return {"status": "succeeded", "run_id": str(saved["run_id"]), "settlement": settlement}
+
+    def _finalize_job(self, job: dict[str, Any], lease: job_model.JobLease, final: dict[str, Any]) -> dict[str, Any]:
+        """End a job that did not succeed: checkpoint the decision, account the reservation, finish the row."""
+        settings = self._job_settings()
+        units = float(final.get("units") or 0.0)
+        known = float(final.get("known_cost_usd") or 0.0)
+        code = str(final["outcome"])
+        try:
+            lease.beat(final, units)
+        except job_model.LeaseLost:
+            return {"status": "lease_lost"}
+        reservation_id = str(job["reservation_id"])
+        if units <= 0 and known <= 0:
+            self._release_quietly(reservation_id)  # refused or stopped before any work
+            settlement = "released"
+        else:
+            settlement = self._settle_work(
+                reservation_id, run_id=None, actual_units=units, known_cost_usd=known,
+                unpriced_components=sorted(set(final.get("unpriced") or []) | {"partial_run"}),
+            )
+        row = self.store.fail_research_job(
+            str(job["id"]), lease.worker_id, code, False, 0, units, final, settings.queue_ttl_seconds,
+        )
+        if row is None:
+            return {"status": "lease_lost", "settlement": settlement}
+        self._record_case_outcome(job, None, "failed")
+        return {"status": str(row.get("status")), "error_code": code, "settlement": settlement,
+                "cost_units": units}
 
     def verify_claim(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         return self._run(user_id, f"Verify the claim: {a['claim']}", a)
@@ -1627,6 +2112,7 @@ class PublicService:
             "improvements": self.store.list_improvements(user_id),
             "usage_events": self.store.list_usage(user_id),
             "cases": self.store.list_cases(user_id),
+            "research_jobs": [job_model.public_job_view(j) for j in self.store.list_research_jobs(user_id)],
         }
 
     def delete_account(self, user_id: str, confirmation: str) -> dict[str, Any]:

@@ -602,6 +602,14 @@ class ApprovalPageTests(CaseTestBase):
 class MCPCaseFlowTests(CaseTestBase):
     """The case flow through the real MCP tool surface (typed refusals, approval URL)."""
 
+    def setUp(self):
+        super().setUp()
+        # The MCP tools build their own PublicService on the real clock, so the approval
+        # recorded here must use real time too; a fixed date makes it expire once that
+        # date's TTL has passed in wall-clock time.
+        self.clock.now = datetime.now(timezone.utc)
+        self.service = PublicService(self.store, clock=self.clock)
+
     def _call(self, name, args):
         from mcp import Client
         from mcp.server.auth.provider import AccessToken

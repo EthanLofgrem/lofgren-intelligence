@@ -39,6 +39,9 @@ TOOL_LEVELS: dict[str, str] = {
     "compile_objective": "V1",
     "plan_research": "V1",
     "investigate": "V1",
+    "start_research": "V1",
+    "get_job_status": "V1",
+    "cancel_research": "V1",
     "verify_claim": "V1",
     "get_finding": "V1",
     "find_contradictions": "V1",
@@ -85,7 +88,7 @@ GATED: dict[str, str] = {
 }
 
 # Tools that reserve usage before running (units decided per call).
-RESERVED_METERING = ("investigate", "verify_claim", "discover", "build_artifact", "measure_outcome",
+RESERVED_METERING = ("investigate", "start_research", "verify_claim", "discover", "build_artifact", "measure_outcome",
                      "evaluate_improvement")
 
 # Claims that no test or certification in this repository proves. The

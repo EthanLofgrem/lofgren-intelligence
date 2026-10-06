@@ -139,6 +139,15 @@ class FakeStore:
         return [row for (uid, _), row in self.improvements.items() if uid == user_id][:limit]
 
     def reserve_usage(self, reservation_id, user_id, operation, units):
+        from datetime import timedelta
+        now = self._job_now()
+        # li_reserve_usage (li_research_jobs migration): a 'reserved' row older than one hour
+        # expires unless a live job holds it (held_until in the future).
+        for row in self.reservations.values():
+            if (row["user_id"] == user_id and row["status"] == "reserved"
+                    and row.get("created_at", now) < now - timedelta(hours=1)
+                    and (row.get("held_until") is None or row["held_until"] < now)):
+                row["status"] = "expired"
         quota = float(self.entitlement.get("quota_units_per_week") or 0)
         active = bool(self.entitlement.get("active"))
         used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == user_id)
@@ -147,8 +156,218 @@ class FakeStore:
             return False
         self.reservations[reservation_id] = {
             "user_id": user_id, "operation": operation, "units": float(units), "status": "reserved",
+            "created_at": now, "held_until": None, "job_id": None,
         }
         return True
+
+    # ---- In-memory model of the li_research_jobs RPCs (li_research_jobs migration) ----------
+    job_clock = None
+
+    def _job_now(self):
+        from datetime import datetime, timezone
+        return (self.job_clock or (lambda: datetime.now(timezone.utc)))()
+
+    @property
+    def jobs(self):
+        return self.__dict__.setdefault("_jobs", {})
+
+    @property
+    def _job_lock(self):
+        import threading
+        return self.__dict__.setdefault("_job_lock_obj", threading.RLock())
+
+    @staticmethod
+    def _job_out(row, **extra):
+        from datetime import datetime
+        out = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in row.items()}
+        out.update(extra)
+        return json.loads(json.dumps(out))
+
+    def _hold(self, job, until):
+        res = self.reservations.get(job["reservation_id"])
+        if res is not None:
+            res["held_until"] = until
+
+    def _job_account(self, job, reason):
+        """li_research_job_account: release when no work was recorded, else an unsettled marker."""
+        res = self.reservations.get(job["reservation_id"])
+        if res is None:
+            return
+        cost = job["checkpoint"].get("known_cost_usd")
+        cost = max(float(cost), 0.0) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+        if float(job["cost_so_far"]) > 0:
+            if res["status"] in ("reserved", "expired", "released"):
+                res.update({"status": "unsettled", "run_id": None, "pending_units": float(job["cost_so_far"]),
+                            "pending_known_cost_usd": cost,
+                            "pending_unpriced_components": ["partial_run", reason], "held_until": None})
+        elif res["status"] == "reserved":
+            res.update({"status": "released", "held_until": None})
+
+    def enqueue_research_job(self, job_id, user_id, case_id, kind, idempotency_key, job_input,
+                             reservation_id, max_attempts, queue_ttl_seconds):
+        from datetime import timedelta
+        with self._job_lock:
+            if not idempotency_key or len(idempotency_key) > 200 or int(queue_ttl_seconds) <= 0:
+                return None
+            for row in self.jobs.values():
+                if row["user_id"] == user_id and row["idempotency_key"] == idempotency_key:
+                    return self._job_out(row, created=False)
+            res = self.reservations.get(reservation_id)
+            if (not res or res["user_id"] != user_id or res["status"] != "reserved"
+                    or res.get("job_id") is not None):
+                return None
+            now = self._job_now()
+            until = now + timedelta(seconds=int(queue_ttl_seconds))
+            res.update({"held_until": until, "job_id": job_id})
+            self.jobs[job_id] = {
+                "id": job_id, "user_id": user_id, "case_id": case_id, "kind": kind,
+                "idempotency_key": idempotency_key, "status": "queued", "input": json.loads(json.dumps(job_input)),
+                "lease_owner": None, "lease_expires_at": None, "heartbeat_at": None, "attempts": 0,
+                "max_attempts": max(1, min(int(max_attempts or 3), 10)), "checkpoint": {},
+                "reservation_id": reservation_id, "result_run_id": None, "error_code": None, "cost_so_far": 0.0,
+                "not_before": now, "queue_expires_at": until, "created_at": now, "updated_at": now,
+                "started_at": None, "finished_at": None, "cancel_requested_at": None,
+            }
+            return self._job_out(self.jobs[job_id], created=True)
+
+    def claim_research_job(self, worker, lease_seconds, hold_grace_seconds):
+        from datetime import timedelta
+        with self._job_lock:
+            now = self._job_now()
+            ready = sorted((r for r in self.jobs.values() if r["status"] == "queued"
+                            and r["not_before"] <= now and r["queue_expires_at"] > now),
+                           key=lambda r: (r["not_before"], r["created_at"], r["id"]))
+            if not ready or not worker or int(lease_seconds) <= 0:
+                return None
+            row = ready[0]
+            row.update({"status": "running", "lease_owner": worker,
+                        "lease_expires_at": now + timedelta(seconds=int(lease_seconds)), "heartbeat_at": now,
+                        "attempts": row["attempts"] + 1, "started_at": row["started_at"] or now, "updated_at": now})
+            self._hold(row, row["lease_expires_at"] + timedelta(seconds=max(int(hold_grace_seconds or 0), 0)))
+            return self._job_out(row)
+
+    def heartbeat_research_job(self, job_id, worker, lease_seconds, hold_grace_seconds,
+                               checkpoint=None, cost_so_far=None):
+        from datetime import timedelta
+        with self._job_lock:
+            now = self._job_now()
+            row = self.jobs.get(job_id)
+            if (not row or row["lease_owner"] != worker or row["status"] not in ("running", "cancel_requested")
+                    or row["lease_expires_at"] is None or row["lease_expires_at"] <= now
+                    or (cost_so_far is not None and float(cost_so_far) < 0)):
+                return None
+            row["lease_expires_at"] = now + timedelta(seconds=int(lease_seconds))
+            row["heartbeat_at"] = now
+            if checkpoint is not None:
+                row["checkpoint"] = json.loads(json.dumps(checkpoint))
+            if cost_so_far is not None:
+                row["cost_so_far"] = max(float(row["cost_so_far"]), float(cost_so_far))
+            row["updated_at"] = now
+            self._hold(row, row["lease_expires_at"] + timedelta(seconds=max(int(hold_grace_seconds or 0), 0)))
+            return self._job_out(row)
+
+    def complete_research_job(self, job_id, worker, run_id, cost_so_far):
+        with self._job_lock:
+            row = self.jobs.get(job_id)
+            if (not run_id or float(cost_so_far) < 0 or not row or row["lease_owner"] != worker
+                    or row["status"] not in ("running", "cancel_requested")):
+                return None
+            now = self._job_now()
+            row.update({"status": "succeeded", "result_run_id": run_id, "cost_so_far": float(cost_so_far),
+                        "error_code": None, "lease_owner": None, "lease_expires_at": None,
+                        "finished_at": now, "updated_at": now})
+            self._hold(row, None)
+            return self._job_out(row)
+
+    def fail_research_job(self, job_id, worker, error_code, retryable, backoff_seconds, cost_so_far,
+                          checkpoint, queue_ttl_seconds):
+        from datetime import timedelta
+        with self._job_lock:
+            row = self.jobs.get(job_id)
+            if (not error_code or len(error_code) > 64 or float(cost_so_far) < 0 or not row
+                    or row["lease_owner"] != worker or row["status"] not in ("running", "cancel_requested")):
+                return None
+            now = self._job_now()
+            cost = max(float(row["cost_so_far"]), float(cost_so_far))
+            if (retryable and error_code != "CANCELLED" and row["status"] == "running"
+                    and (row["attempts"] < row["max_attempts"] or error_code == "WORKER_SHUTDOWN")):
+                backoff = timedelta(seconds=max(int(backoff_seconds or 0), 0))
+                until = now + backoff + timedelta(seconds=max(int(queue_ttl_seconds or 86400), 1))
+                row.update({"status": "queued", "lease_owner": None, "lease_expires_at": None,
+                            "attempts": max(row["attempts"] - 1, 0) if error_code == "WORKER_SHUTDOWN"
+                            else row["attempts"],
+                            "error_code": error_code, "cost_so_far": cost,
+                            "checkpoint": json.loads(json.dumps(checkpoint)) if checkpoint is not None
+                            else row["checkpoint"],
+                            "not_before": now + backoff, "queue_expires_at": until, "updated_at": now})
+                self._hold(row, until)
+                return self._job_out(row)
+            row.update({"status": "cancelled" if error_code == "CANCELLED" else "failed",
+                        "lease_owner": None, "lease_expires_at": None, "error_code": error_code,
+                        "cost_so_far": cost,
+                        "checkpoint": json.loads(json.dumps(checkpoint)) if checkpoint is not None
+                        else row["checkpoint"],
+                        "finished_at": now, "updated_at": now})
+            self._job_account(row, error_code.lower())
+            self._hold(row, None)
+            return self._job_out(row)
+
+    def request_cancel_research_job(self, job_id, user_id):
+        with self._job_lock:
+            row = self.jobs.get(job_id)
+            if not row or row["user_id"] != user_id:
+                return None
+            now = self._job_now()
+            if row["status"] == "queued":
+                row.update({"status": "cancelled", "error_code": "CANCELLED", "cancel_requested_at": now,
+                            "finished_at": now, "updated_at": now})
+                self._job_account(row, "cancelled")
+            elif row["status"] == "running":
+                row.update({"status": "cancel_requested", "cancel_requested_at": now, "updated_at": now})
+            return self._job_out(row)
+
+    def reclaim_research_jobs(self, limit, queue_ttl_seconds):
+        from datetime import timedelta
+        with self._job_lock:
+            now = self._job_now()
+            until = now + timedelta(seconds=max(int(queue_ttl_seconds or 86400), 1))
+            ids = []
+            expired = sorted((r for r in self.jobs.values() if r["status"] in ("running", "cancel_requested")
+                              and r["lease_expires_at"] is not None and r["lease_expires_at"] <= now),
+                             key=lambda r: (r["lease_expires_at"], r["id"]))[:max(int(limit or 100), 1)]
+            for row in expired:
+                finishing = row["checkpoint"].get("phase") in ("result_saved", "finalizing")
+                if not finishing and (row["status"] == "cancel_requested" or row["attempts"] >= row["max_attempts"]):
+                    cancelled = row["status"] == "cancel_requested"
+                    row.update({"status": "cancelled" if cancelled else "failed",
+                                "error_code": "CANCELLED" if cancelled else "LEASE_EXPIRED",
+                                "lease_owner": None, "lease_expires_at": None, "finished_at": now, "updated_at": now})
+                    self._job_account(row, row["error_code"].lower())
+                else:
+                    row.update({"status": "queued", "lease_owner": None, "lease_expires_at": None,
+                                "not_before": now, "queue_expires_at": until, "updated_at": now})
+                    self._hold(row, until)
+                ids.append(row["id"])
+            stale = sorted((r for r in self.jobs.values() if r["status"] == "queued" and r["queue_expires_at"] <= now),
+                           key=lambda r: (r["queue_expires_at"], r["id"]))[:max(int(limit or 100), 1)]
+            for row in stale:
+                row.update({"status": "failed", "error_code": "QUEUE_EXPIRED", "finished_at": now, "updated_at": now})
+                self._job_account(row, "queue_expired")
+                ids.append(row["id"])
+            return ids
+
+    def get_research_job(self, user_id, job_id):
+        row = self.jobs.get(job_id)
+        return self._job_out(row) if row and row["user_id"] == user_id else None
+
+    def get_research_job_by_key(self, user_id, idempotency_key):
+        for row in self.jobs.values():
+            if row["user_id"] == user_id and row["idempotency_key"] == idempotency_key:
+                return self._job_out(row)
+        return None
+
+    def list_research_jobs(self, user_id, limit=1000):
+        return [self._job_out(r) for r in self.jobs.values() if r["user_id"] == user_id][:limit]
 
     def finalize_usage(self, reservation_id, run_id, actual_units, known_cost_usd, unpriced_components):
         row = self.reservations.get(reservation_id)

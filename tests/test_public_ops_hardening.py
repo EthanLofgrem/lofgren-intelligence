@@ -940,17 +940,19 @@ class CITriggerTests(unittest.TestCase):
                 self.assertNotIn("startsWith", cond)
                 self.assertNotIn("pull_request", cond)
                 for branch in branches + ("build/public-ops-hardening", "build/public-hardening-rebased",
-                                          "build/release-candidate"):
+                                          "build/release-candidate", "build/rc-durable-jobs"):
                     self.assertIn(f"github.ref_name == '{branch}'", cond)
-                self.assertEqual(cond.count("github.ref_name =="), len(branches) + 3)
-                self.assertIn("needs: test", text[text.index(f"\n  {job}:\n"):][:400])
+                self.assertEqual(cond.count("github.ref_name =="), len(branches) + 4)
+                self.assertIn("needs: test", text[text.index(f"\n  {job}:\n"):][:500])
 
     def test_v2_gate_job_is_unchanged(self):
         cond = self._job_condition(self._workflow("tests.yml"), "v2-ready-for-v3")
-        # Exactly the original two branches plus the release candidate; still push-only.
+        # Exactly the original two branches plus the release candidate and the durable-jobs
+        # branch built on it; still push-only.
         self.assertEqual(cond.strip(), "if: ${{ github.event_name == 'push' && (github.ref_name == "
                                        "'build/v2-complete' || github.ref_name == 'build/public-v2-integration' "
-                                       "|| github.ref_name == 'build/release-candidate') }}")
+                                       "|| github.ref_name == 'build/release-candidate' "
+                                       "|| github.ref_name == 'build/rc-durable-jobs') }}")
 
 
 if __name__ == "__main__":

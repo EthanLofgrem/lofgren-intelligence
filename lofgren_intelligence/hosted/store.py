@@ -399,6 +399,104 @@ class SupabaseStore:
             {"select": "*", "case_id": f"eq.{case_id}", "user_id": f"eq.{user_id}", "order": "created_at.asc,id.asc"},
         )
 
+    # ---- durable research jobs (li_research_jobs; li_research_jobs migration) ----------------
+
+    @staticmethod
+    def _rpc_row(result: Any, name: str) -> dict[str, Any] | None:
+        """A jsonb RPC answer: the row as a dict, or None (refused / not found)."""
+        if isinstance(result, list):
+            result = result[0] if result else None
+        if isinstance(result, dict) and len(result) == 1 and name in result:
+            result = result[name]
+        if result is None:
+            return None
+        if not isinstance(result, dict) or not result.get("id"):
+            raise StoreError("job store returned an invalid answer")
+        return result
+
+    def enqueue_research_job(
+        self, job_id: str, user_id: str, case_id: str | None, kind: str, idempotency_key: str,
+        job_input: dict[str, Any], reservation_id: str, max_attempts: int, queue_ttl_seconds: int,
+    ) -> dict[str, Any] | None:
+        """The new job (created=True), the existing job for the key (created=False), or None."""
+        return self._rpc_row(self.rpc("li_enqueue_research_job", {
+            "p_id": job_id, "p_user_id": user_id, "p_case_id": case_id, "p_kind": kind,
+            "p_idempotency_key": idempotency_key, "p_input": job_input,
+            "p_reservation_id": reservation_id, "p_max_attempts": int(max_attempts),
+            "p_queue_ttl_seconds": int(queue_ttl_seconds),
+        }), "li_enqueue_research_job")
+
+    def claim_research_job(self, worker: str, lease_seconds: int, hold_grace_seconds: int) -> dict[str, Any] | None:
+        return self._rpc_row(self.rpc("li_claim_research_job", {
+            "p_worker": worker, "p_lease_seconds": int(lease_seconds),
+            "p_hold_grace_seconds": int(hold_grace_seconds),
+        }), "li_claim_research_job")
+
+    def heartbeat_research_job(
+        self, job_id: str, worker: str, lease_seconds: int, hold_grace_seconds: int,
+        checkpoint: dict[str, Any] | None = None, cost_so_far: float | None = None,
+    ) -> dict[str, Any] | None:
+        """The job row while this worker holds the lease; None once the lease is lost."""
+        return self._rpc_row(self.rpc("li_heartbeat_research_job", {
+            "p_id": job_id, "p_worker": worker, "p_lease_seconds": int(lease_seconds),
+            "p_hold_grace_seconds": int(hold_grace_seconds), "p_checkpoint": checkpoint,
+            "p_cost_so_far": None if cost_so_far is None else float(cost_so_far),
+        }), "li_heartbeat_research_job")
+
+    def complete_research_job(self, job_id: str, worker: str, run_id: str, cost_so_far: float) -> dict[str, Any] | None:
+        return self._rpc_row(self.rpc("li_complete_research_job", {
+            "p_id": job_id, "p_worker": worker, "p_run_id": run_id, "p_cost_so_far": float(cost_so_far),
+        }), "li_complete_research_job")
+
+    def fail_research_job(
+        self, job_id: str, worker: str, error_code: str, retryable: bool, backoff_seconds: int,
+        cost_so_far: float, checkpoint: dict[str, Any] | None, queue_ttl_seconds: int,
+    ) -> dict[str, Any] | None:
+        return self._rpc_row(self.rpc("li_fail_research_job", {
+            "p_id": job_id, "p_worker": worker, "p_error_code": error_code, "p_retryable": bool(retryable),
+            "p_backoff_seconds": int(backoff_seconds), "p_cost_so_far": float(cost_so_far),
+            "p_checkpoint": checkpoint, "p_queue_ttl_seconds": int(queue_ttl_seconds),
+        }), "li_fail_research_job")
+
+    def request_cancel_research_job(self, job_id: str, user_id: str) -> dict[str, Any] | None:
+        return self._rpc_row(self.rpc("li_request_cancel_research_job", {
+            "p_id": job_id, "p_user_id": user_id,
+        }), "li_request_cancel_research_job")
+
+    def reclaim_research_jobs(self, limit: int, queue_ttl_seconds: int) -> list[str]:
+        result = self.rpc("li_reclaim_research_jobs", {
+            "p_limit": int(limit), "p_queue_ttl_seconds": int(queue_ttl_seconds),
+        })
+        if isinstance(result, dict) and len(result) == 1 and "li_reclaim_research_jobs" in result:
+            result = result["li_reclaim_research_jobs"]
+        if result is None:
+            return []
+        if not isinstance(result, list) or not all(isinstance(x, str) for x in result):
+            raise StoreError("job store returned an invalid answer")
+        return list(result)
+
+    def get_research_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_research_jobs",
+            query={"select": "*", "id": f"eq.{job_id}", "user_id": f"eq.{user_id}", "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def get_research_job_by_key(self, user_id: str, idempotency_key: str) -> dict[str, Any] | None:
+        rows = self._table(
+            "li_research_jobs",
+            query={"select": "*", "user_id": f"eq.{user_id}", "idempotency_key": f"eq.{idempotency_key}",
+                   "limit": "1"},
+        )
+        return rows[0] if rows else None
+
+    def list_research_jobs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        return self._select_all(
+            "li_research_jobs",
+            {"select": "*", "user_id": f"eq.{user_id}", "order": "created_at.asc,id.asc"},
+            cap=limit,
+        )
+
     def take_rate_limit(self, user_id: str, bucket: str = "mcp", limit: int = 60, window_seconds: int = 60) -> bool:
         result = self.rpc("li_take_rate_limit", {
             "p_user_id": user_id,
