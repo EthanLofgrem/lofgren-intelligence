@@ -139,7 +139,12 @@ def s_discovered_web_research() -> str:
                                robots_allowed=lambda u: "blocked" not in u)
     reg = AdapterRegistry()
     reg.register(adapter)
-    r = _run(OBJECTIVE, reg)
+    # This scenario uses canned pages, not live network evidence. Keep DNS
+    # deterministic too; production fetches still use the protected resolver.
+    from unittest.mock import patch
+    with patch("lofgren_intelligence.adapters.net.socket.getaddrinfo",
+               return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+        r = _run(OBJECTIVE, reg)
     urls = {s.uri for s in r.graph.sources.values()}
     assert urls == {"https://phoenix.gov/permits"}, urls
     assert any("robots.txt" in g for g in r.gaps), "robots refusal recorded"
