@@ -21,7 +21,7 @@ from ..intent.clarification import clarify_objective, requires_clarification, to
 
 CHARTER_SCHEMA = "lofgren.case-charter/1"
 
-SOURCE_KEYS = ("texts", "urls", "search", "lat", "lon", "fetch_orbits", "imagery")
+SOURCE_KEYS = ("texts", "urls", "search", "lat", "lon", "fetch_orbits", "imagery", "europepmc", "trials", "max_records", "sources_manifest")
 
 STATUS_FOR_CLARIFICATION = {
     "CLARIFICATION_REQUIRED": "clarifying",
