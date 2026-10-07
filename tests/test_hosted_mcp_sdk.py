@@ -31,6 +31,9 @@ class OfficialMCPTests(unittest.IsolatedAsyncioTestCase):
             async with Client(server) as client:
                 tools = await client.list_tools()
                 names = {tool.name for tool in tools.tools}
+                for tool in tools.tools:
+                    if tool.name in {"clarify_objective", "plan_research", "investigate", "start_research", "verify_claim"}:
+                        self.assertTrue({"europepmc", "trials", "max_records", "sources_manifest"} <= set(tool.input_schema["properties"]))
                 self.assertIn("investigate", names)
                 self.assertIn("export_knowledge_map2", names)
                 self.assertIn("account_status", names)
