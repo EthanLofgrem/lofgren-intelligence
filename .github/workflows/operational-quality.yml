@@ -77,6 +77,21 @@ jobs:
           cd "$RUNNER_TEMP"
           /tmp/lofgren-venv/bin/python "$GITHUB_WORKSPACE/scripts/installed_release_smoke.py" \
             --expected-sha "$GITHUB_SHA"
+      - name: Bind release artifacts to the exact source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          python -m lofgren_intelligence.release.ci artifact-create \
+            --dist dist \
+            --source-sha "$GITHUB_SHA" \
+            --source-tree "$source_tree" \
+            --output release-artifact-manifest.json
+          python -m lofgren_intelligence.release.ci artifact-verify \
+            --dist dist \
+            --manifest release-artifact-manifest.json \
+            --expected-sha "$GITHUB_SHA" \
+            --expected-tree "$source_tree"
       - name: Reject accidental secrets/artifacts
         shell: bash
         run: |
@@ -89,3 +104,13 @@ jobs:
             echo "Tracked generated artifact detected"
             exit 1
           fi
+      - name: Retain exact-SHA release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lofgren-intelligence-${{ github.sha }}
+          path: |
+            dist/*
+            release-artifact-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
