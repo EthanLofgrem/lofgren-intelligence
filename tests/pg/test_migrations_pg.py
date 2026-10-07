@@ -112,12 +112,17 @@ create table if not exists supabase_migrations.schema_migrations (
 """
 
 
-def apply_migrations(dbname: str) -> list[str]:
-    """Apply every not-yet-applied migration in filename order; return the applied names."""
+def apply_migrations(dbname: str, before: str | None = None) -> list[str]:
+    """Apply every not-yet-applied migration in filename order; return the applied names.
+
+    With ``before``, stop at (and do not apply) that migration and everything after it.
+    """
     applied: list[str] = []
     with admin_connect(dbname) as conn:
         conn.execute(LEDGER_DDL)
         for path in migration_files():
+            if before is not None and path.name >= before:
+                break
             version, _, name = path.stem.partition("_")
             raw = path.read_bytes()
             text = raw.decode("utf-8")
@@ -485,6 +490,121 @@ class PrivilegeTest(PgCase):
         self.assertIsNone(conn.execute("select auth.uid()").fetchone()[0])
         conn.execute("select set_config('request.jwt.claim.sub', %s, false)", (uid,))
         self.assertEqual(str(conn.execute("select auth.uid()").fetchone()[0]), uid)
+
+
+# ---------------------------------------------------------------------------
+# Q30: no default PUBLIC / anon / authenticated privilege on any li_ object
+# ---------------------------------------------------------------------------
+
+Q30_MIGRATION = "20261006090000_li_revoke_public_defaults.sql"
+LI_SEQUENCES = {"li_rate_events_id_seq", "li_rate_limit_events_id_seq", "li_case_events_id_seq"}
+
+# Every ACL entry on every li_ object in schema public. A NULL ACL means the
+# built-in default (acldefault), which for functions is EXECUTE to PUBLIC and
+# for types USAGE to PUBLIC, so the defaults are expanded rather than skipped.
+LI_ACL_SQL = r"""
+select kind, name, (acl).grantee, (acl).privilege_type from (
+  select 'sequence' as kind, c.relname::text as name,
+         aclexplode(coalesce(c.relacl, acldefault('s', c.relowner))) as acl
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relname like 'li\_%' and c.relkind = 'S'
+  union all
+  select 'table', c.relname::text, aclexplode(coalesce(c.relacl, acldefault('r', c.relowner)))
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relname like 'li\_%' and c.relkind in ('r', 'p', 'v', 'm', 'f')
+  union all
+  select 'function', p.oid::regprocedure::text, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner)))
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname like 'li\_%'
+  union all
+  select 'type', t.typname::text, aclexplode(coalesce(t.typacl, acldefault('T', t.typowner)))
+    from pg_type t join pg_namespace n on n.oid = t.typnamespace
+   where n.nspname = 'public' and t.typname like 'li\_%' and t.typelem = 0
+) s
+"""
+
+
+def li_acl_holes(conn) -> list[tuple]:
+    """(kind, object, grantee, privilege) for every privilege PUBLIC, anon or authenticated holds."""
+    roles = {oid: name for oid, name in conn.execute(
+        "select oid, rolname::text from pg_roles where rolname in ('anon', 'authenticated')").fetchall()}
+    assert set(roles.values()) == {"anon", "authenticated"}, roles
+    roles[0] = "PUBLIC"
+    return sorted((kind, name, roles[grantee], priv)
+                  for kind, name, grantee, priv in conn.execute(LI_ACL_SQL).fetchall() if grantee in roles)
+
+
+@pg_test
+class PublicDefaultPrivilegeTest(PgCase):
+    def test_the_sequence_hole_existed_before_q30_and_q30_closes_it(self):
+        dbname = create_clean_database("q30")
+        apply_bootstrap(dbname)
+        applied = apply_migrations(dbname, before=Q30_MIGRATION)
+        self.assertTrue(applied)
+        self.assertNotIn(Q30_MIGRATION, applied)
+        with admin_connect(dbname) as conn:
+            # Before Q30, Supabase's default privileges left the identity sequences open.
+            for seq in sorted(LI_SEQUENCES):
+                for role in ("anon", "authenticated"):
+                    for priv in ("USAGE", "SELECT", "UPDATE"):
+                        with self.subTest(stage="before", sequence=seq, role=role, priv=priv):
+                            self.assertTrue(conn.execute("select has_sequence_privilege(%s, %s, %s)",
+                                                         (role, f"public.{seq}", priv)).fetchone()[0])
+            self.assertTrue(li_acl_holes(conn))
+        self.assertEqual(apply_migrations(dbname)[0], Q30_MIGRATION)
+        with admin_connect(dbname) as conn:
+            self.assertEqual(li_acl_holes(conn), [])
+
+    def test_no_li_object_grants_anything_to_public_anon_or_authenticated(self):
+        names = {r[0] for r in self.admin.execute(
+            "select c.relname::text from pg_class c join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = 'public' and c.relkind = 'S' and c.relname like 'li\\_%'").fetchall()}
+        self.assertEqual(names, LI_SEQUENCES)
+        kinds = {r[0] for r in self.admin.execute(LI_ACL_SQL).fetchall()}
+        self.assertEqual(kinds, {"sequence", "table", "function", "type"}, "the ACL sweep saw every object kind")
+        self.assertEqual(li_acl_holes(self.admin), [])
+
+    def test_anon_and_authenticated_cannot_read_advance_or_reset_any_li_sequence(self):
+        state_sql = pgsql.SQL("select last_value, is_called from {}")
+        before = {seq: self.admin.execute(state_sql.format(pgsql.Identifier("public", seq))).fetchone()
+                  for seq in LI_SEQUENCES}
+        for role in ("anon", "authenticated"):
+            conn = role_connect(self.dbname, role)  # a restricted API role, never the admin
+            self.addCleanup(conn.close)
+            for seq in sorted(LI_SEQUENCES):
+                qualified = f"public.{seq}"
+                with self.subTest(role=role, sequence=seq):
+                    for priv in ("USAGE", "SELECT", "UPDATE"):
+                        self.assertFalse(self.one("select has_sequence_privilege(%s, %s, %s)",
+                                                  (role, qualified, priv))[0], f"{role} has {priv} on {seq}")
+                    with self.assertRaises(pg_errors.InsufficientPrivilege):
+                        conn.execute("select nextval(%s::regclass)", (qualified,))
+                    with self.assertRaises(pg_errors.InsufficientPrivilege):
+                        conn.execute("select setval(%s::regclass, 1)", (qualified,))
+                    with self.assertRaises(pg_errors.InsufficientPrivilege):
+                        conn.execute(state_sql.format(pgsql.Identifier("public", seq)))
+        # Final state: no sequence moved.
+        after = {seq: self.admin.execute(state_sql.format(pgsql.Identifier("public", seq))).fetchone()
+                 for seq in LI_SEQUENCES}
+        self.assertEqual(after, before)
+
+    def test_service_role_keeps_what_the_store_needs(self):
+        for seq in sorted(LI_SEQUENCES):
+            with self.subTest(sequence=seq):
+                self.assertTrue(self.one("select has_sequence_privilege('service_role', %s, 'USAGE')",
+                                         (f"public.{seq}",))[0])
+        for typ in ("li_research_jobs", "li_case_events"):
+            with self.subTest(type=typ):
+                self.assertTrue(self.one("select has_type_privilege('service_role', %s, 'USAGE')",
+                                         (f"public.{typ}",))[0])
+                for role in ("anon", "authenticated"):
+                    self.assertFalse(self.one("select has_type_privilege(%s, %s, 'USAGE')",
+                                              (role, f"public.{typ}"))[0])
+        # An identity-backed insert through a store RPC still works for service_role.
+        key = sha(f"q30-{uuid.uuid4()}")
+        self.assertEqual(self.store.take_keyed_rate_limit("activate", key, 5, 60), 0)
+        self.assertEqual(self.one("select count(*) from public.li_rate_limit_events where key_hash = %s",
+                                  (key,))[0], 1)
 
 
 # ---------------------------------------------------------------------------
