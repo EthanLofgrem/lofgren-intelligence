@@ -39,10 +39,65 @@ not passed).
 
 ## Intelligence Cases (clarification and charter approval)
 
-A consequential or underspecified objective (for example "design a low-cost
-water purification system") is not researched straight away. `investigate`
-and `plan_research` return 3-7 high-information clarification questions
-instead, and the work happens through an Intelligence Case:
+A consequential, broad or underspecified objective (for example "design a
+low-cost water purification system") is not researched straight away.
+`investigate` and `plan_research` return 3-7 high-information clarification
+questions instead, and the work happens through an Intelligence Case.
+
+### Classification and domain question banks
+
+Every objective is classified deterministically (explicit keyword and
+structure rules in `lofgren_intelligence/intent/clarification.py`, no model
+call). The result is returned as `domain`, `consequence` and
+`classification` (`broad_scope`, `domains_matched`, `signals`):
+
+- **Domain** (priority order): `medical`, `legal`, `financial`, `safety`,
+  `engineering_design`, `general`. A design objective whose only special
+  match is safety keeps the engineering-design bank. An objective that matches
+  no domain takes the `general` path; one bank is used per case, so no other
+  domain's prompts appear.
+- **Consequence** is `high` for medical, legal and safety objectives, for any
+  amount of money (a financial objective with a money target), and for public
+  impact (public, communities, residents...); otherwise `standard`.
+- **Broad scope**: two or more sub-questions, a chain of three or more
+  and/or, an enumeration of several open dimensions, ranking words
+  ("strongest", "best") or prioritisation ("which ... deserve priority").
+- **Rule**: clarification is required for any high-consequence objective, any
+  broad objective, and (as before) any short design objective. A simple
+  factual question ("What is the capital of France?") skips it.
+
+| Domain | Question keys (highest information first) |
+| --- | --- |
+| medical | `purpose` (education, research, product or clinician-discussion prep; never individual care), `population`, `focus`, `emphasis`, `evidence_types` (incl. preclinical), `evidence_cutoff`, `depth_budget` |
+| financial / commercial | `purpose`, `baseline_assets`, `revenue_definition` (one-time vs MRR, timeframe), `launch_budget` (is spending authorized), `channel_constraints` (is a named platform required or preferred), `risk_and_hours`, `evidence_standard` |
+| legal / regulatory | `jurisdiction`, `parties` (by role), `purpose` (research, not legal advice), `time`, `sources` |
+| safety / infrastructure | `jurisdiction`, `standards`, `affected_population`, `purpose` |
+| engineering_design | `location`, `users`, `problem`, `success`, `cost`, `constraints`, `source_or_environment` (unchanged) |
+| general | `purpose`, `scope`, `time_cutoff`, `sources`, `depth_budget` |
+
+Each question carries why it matters and examples. Only unanswered questions
+are asked; an answer (including `unknown`) is kept and never asked again. No
+question asks for identifiable patient information.
+
+Medical, financial, legal and safety cases carry a fixed `safety_notice`
+(medical: no diagnosis or treatment advice, never share identifiable patient
+information; financial: no personalised advice or revenue guarantee) and
+domain `exclusions` (medical: no dosing or treatment instructions, no patient
+contact, no private medical data; financial: no spending, publishing,
+customer contact or supplier commitments without approval). A notice never
+replaces clarification, evidence verification or approval, and LI is not a
+diagnostic or legal-advice engine: a first-person medical or legal request is
+flagged `individual_advice_request` and excluded from advice. Every charter
+`authorizes: research_only`; operational verbs in the objective (launch,
+spend, publish, contact...) are flagged `operational_execution_requested`
+and are researched, never executed.
+
+`use a reasonable default` records an explicit, conservative default in the
+charter's `defaults_applied` (`recorded_as: default`, `verified: false`);
+`unknown` stays in `critical_unknowns`. `READY_FOR_SCOPE_APPROVAL` never
+means approved.
+
+### Case flow
 
 1. `clarify_objective` opens a case (`case_id`, charter version 1, content
    hash). Each later call with `case_id` and `expected_version` records the
