@@ -116,6 +116,8 @@ lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
 # Free public sources (no keys): Europe PMC literature, ClinicalTrials.gov registrations, operator-selected URLs.
 # Abstracts are labelled abstract_only and retracted papers are excluded; a registered trial is labelled
 # as not being evidence of efficacy; manifest pages are labelled operator_selected with retrieval time and sha256.
+# The labels, dates and passages stay with the evidence: in the run JSON, under each source in the report, and in
+# the receipt's evidence entries.
 lofgren investigate "Does metformin reduce cardiovascular events?" --europepmc "metformin cardiovascular outcomes" \
   --trials "metformin cardiovascular" --max-records 20 --sources-manifest sources.json  # lofgren.sources-manifest/1
 
