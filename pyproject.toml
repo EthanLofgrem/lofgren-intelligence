@@ -27,3 +27,12 @@ include = ["lofgren_intelligence*"]
 # Static CSS/JS/SVG for the public site and console shell (served from /static/), plus the
 # pinned third-party browser code and its license notice (served from /static/vendor/).
 "lofgren_intelligence.hosted" = ["static/*.css", "static/*.js", "static/*.svg", "static/vendor/*.js", "static/vendor/README.md"]
+
+# Vercel runs `uv sync --no-dev`, which does not select package extras.
+# A default runtime group installs hosted dependencies without adding them to
+# the core wheel's requirements (the stdlib-only core remains installable).
+[dependency-groups]
+hosted-runtime = ["mcp>=2,<3", "cryptography>=43,<46"]
+
+[tool.uv]
+default-groups = ["hosted-runtime"]
