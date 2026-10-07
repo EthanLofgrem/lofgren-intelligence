@@ -736,6 +736,9 @@ class JobsMigrationTests(unittest.TestCase):
             "20261006060100_usage_settlement.sql": "0e188093f523d08efff9be4f11479b3ec4995443c17d5ab8e2e4decd16b79322",
             # The jobs migration is changed only by later forward migrations (finalize cap).
             "20261006070000_li_research_jobs.sql": "dcb4f249ce38735f90513f7e0bbc5944d1cdcb517ba857b842e91a5527bbb030",
+            # Applied too; later changes are forward migrations only.
+            "20261006080000_li_research_job_finalize_cap.sql":
+                "ca42202abe55216e797dee48a75d80baeef7357b34d71d71257a13e2f9d54b43",
         }
         for name, digest in applied.items():
             raw = (self._dir() / name).read_bytes().replace(b"\r\n", b"\n")
@@ -747,9 +750,10 @@ class JobsMigrationTests(unittest.TestCase):
         files = sorted(p.name for p in self._dir().glob("*_li_research_jobs.sql"))
         self.assertEqual(len(files), 1)
         self.assertGreater(files[0], "20261006060100_usage_settlement.sql")
-        # Only its forward follow-up (the finalize cap) comes after it.
+        # Its forward follow-up (the finalize cap) comes after it. Later forward migrations are
+        # allowed: the migrations are named explicitly instead of assuming which one is last.
         later = [p.name for p in sorted(self._dir().glob("*.sql")) if p.name > files[0]]
-        self.assertEqual(later, ["20261006080000_li_research_job_finalize_cap.sql"])
+        self.assertIn("20261006080000_li_research_job_finalize_cap.sql", later)
         sql = (self._dir() / files[0]).read_text(encoding="utf-8").lower()
         self.assertIn("create table if not exists public.li_research_jobs", sql)
         self.assertIn("alter table public.li_research_jobs enable row level security", sql)
@@ -787,7 +791,10 @@ class JobsMigrationTests(unittest.TestCase):
     def test_finalize_cap_migration_is_forward_locked_down_and_bounded(self):
         import re
         name = "20261006080000_li_research_job_finalize_cap.sql"
-        self.assertEqual(sorted(p.name for p in self._dir().glob("*.sql"))[-1], name)
+        # Named explicitly: it follows the jobs migration it amends (later forward migrations may follow it).
+        names = sorted(p.name for p in self._dir().glob("*.sql"))
+        self.assertIn(name, names)
+        self.assertGreater(name, "20261006070000_li_research_jobs.sql")
         sql = (self._dir() / name).read_text(encoding="utf-8").lower()
         self.assertIn("add column if not exists finalize_reclaims integer not null default 0", sql)
         self.assertIn("check (finalize_reclaims >= 0)", sql)
