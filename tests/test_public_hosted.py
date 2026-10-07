@@ -73,19 +73,24 @@ class FakeStore:
 
     def consume_oauth_code(self, digest):
         row = self.oauth_codes.pop(digest, None)
-        return row
+        # li_consume_oauth_code: a used code is refused.
+        return row if row and not row.get("used_at") else None
 
     def put_access_token(self, row):
         self.access_tokens[row["token_hash"]] = dict(row)
 
     def get_access_token(self, digest):
-        return self.access_tokens.get(digest)
+        # SupabaseStore.get_access_token filters revoked_at is null.
+        row = self.access_tokens.get(digest)
+        return row if row and not row.get("revoked_at") else None
 
     def put_refresh_token(self, row):
         self.refresh_tokens[row["token_hash"]] = dict(row)
 
     def consume_refresh_token(self, digest):
-        return self.refresh_tokens.pop(digest, None)
+        # li_consume_refresh_token: a used refresh token is refused.
+        row = self.refresh_tokens.pop(digest, None)
+        return row if row and not row.get("used_at") else None
 
     def save_run(self, row):
         self.runs[(row["user_id"], row["run_id"])] = dict(row)
@@ -650,10 +655,39 @@ class FakeStore:
     def list_usage(self, user_id, limit=5000):
         return [row for row in self.usage if row["user_id"] == user_id][:limit]
 
+    # In-memory model of the account-deletion store calls (SupabaseStore).
+    def revoke_user_credentials(self, user_id):
+        for table, column in ((self.access_tokens, "revoked_at"), (self.refresh_tokens, "used_at"),
+                              (self.oauth_codes, "used_at")):
+            for row in table.values():
+                if row.get("user_id") == user_id and not row.get(column):
+                    row[column] = "revoked"
+
+    def close_entitlement(self, user_id):
+        if user_id == "u1" and self.entitlement is not None:
+            self.entitlement["active"] = False
+
+    def list_open_usage_reservations(self, user_id):
+        return [{"id": rid, **row} for rid, row in self.reservations.items()
+                if row["user_id"] == user_id and row["status"] in ("reserved", "unsettled")]
+
     def delete_auth_user(self, user_id):
+        """auth.users deletion and its ON DELETE CASCADE over every li_* table keyed by user_id."""
+        if getattr(self, "deleted_user", None) == user_id:
+            return False
         self.deleted_user = user_id
-        self.account = None
-        self.entitlement = None
+        if user_id == "u1":
+            self.account = None
+            self.entitlement = None
+        for name in ("oauth_codes", "access_tokens", "refresh_tokens", "reservations", "cases",
+                     "case_approvals"):
+            table = getattr(self, name)
+            setattr(self, name, {k: v for k, v in table.items() if v.get("user_id") != user_id})
+        self.case_charters = {k: v for k, v in self.case_charters.items() if v.get("user_id") != user_id}
+        self.case_events = [e for e in self.case_events if e.get("user_id") != user_id]
+        jobs = self.jobs
+        for job_id in [k for k, v in jobs.items() if v["user_id"] == user_id]:
+            del jobs[job_id]
         self.runs = {k: v for k, v in self.runs.items() if k[0] != user_id}
         self.discoveries = {k: v for k, v in self.discoveries.items() if k[0] != user_id}
         self.artifacts = {k: v for k, v in self.artifacts.items() if k[0] != user_id}
@@ -661,6 +695,7 @@ class FakeStore:
         self.outcomes = {k: v for k, v in self.outcomes.items() if k[0] != user_id}
         self.improvements = {k: v for k, v in self.improvements.items() if k[0] != user_id}
         self.usage = [row for row in self.usage if row["user_id"] != user_id]
+        return True
 
     def record_usage(self, row):
         self.usage.append(dict(row))
@@ -675,7 +710,7 @@ class FakeStore:
         self.billing_events[row["stripe_event_id"]] = dict(row)
 
     def get_entitlement_by_subscription(self, subscription_id):
-        if self.entitlement.get("stripe_subscription_id") == subscription_id:
+        if self.entitlement and self.entitlement.get("stripe_subscription_id") == subscription_id:
             return self.entitlement
         return None
 

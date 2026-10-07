@@ -49,16 +49,38 @@ The hosted account page exposes:
 - authenticated export of account, entitlement, runs and usage records;
 - permanent account deletion behind an exact confirmation phrase.
 
-For a paid account, deletion first attempts to cancel its Stripe subscription.
+Deletion first closes the account to new work: every OAuth access token is
+revoked, refresh tokens and unused authorization codes are consumed, and the
+entitlement is deactivated so no new usage can be reserved. Queued research
+jobs are cancelled and running ones are asked to stop at their next stage;
+usage awaiting reconciliation is settled, and an open reservation that can no
+longer belong to live work is released. While a job or a reservation has not
+settled, nothing is deleted: the request is refused with
+`account_deletion_pending` and a retry completes it (the account stays closed
+in the meantime).
+
+For a paid account, deletion then attempts to cancel its Stripe subscription.
 If cancellation fails, deletion stops rather than deleting the account while
 leaving a chargeable subscription behind. Deleting the Supabase Auth user then
-cascades LI account/run/token/usage records through foreign keys.
+cascades LI account, entitlement, token, run, discovery, artifact, action,
+outcome, improvement, case, research-job, reservation and usage records through
+foreign keys, and the deletion is verified. Retrying a deletion that already
+completed is safe.
+
+After deletion, a Stripe event that ends a subscription of the deleted account
+is receipted without effect. An event that would grant paid access to an
+account that no longer exists is refused and left for an operator: whether
+such a subscription is cancelled or refunded is not decided by LI.
 
 ## Retention
 
 Research/account data is retained while the account exists so receipts and
 project history remain reproducible. Account deletion removes LI-hosted
-account/run/token/usage records through the database cascade. Provider-side
+account/run/token/usage records through the database cascade. Records that are
+not tied to the user are kept: Stripe webhook receipts (event id, type and
+payload hash only), the Founding Free activation counter (activation numbers
+are never reused), registered OAuth clients and hashed, time-pruned rate-limit
+keys. Provider-side
 records (for example Stripe financial records) may have independent legal or
 operational retention requirements.
 

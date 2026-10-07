@@ -550,13 +550,48 @@ class SupabaseStore:
             cap=limit,
         )
 
-    def delete_auth_user(self, user_id: str) -> None:
-        quoted = urllib.parse.quote(user_id, safe="")
-        _db(
-            f"{self.url}/auth/v1/admin/users/{quoted}",
-            "DELETE",
-            headers=self._headers,
+    # ---- account deletion (PublicService.delete_account) ----
+
+    def revoke_user_credentials(self, user_id: str) -> None:
+        """Revoke every OAuth credential of a user: access tokens are revoked, refresh
+        tokens and unused authorization codes are consumed (their RPCs then refuse them)."""
+        stamp = utcnow()
+        owner = {"user_id": f"eq.{user_id}"}
+        self._table("li_access_tokens", "PATCH", query={**owner, "revoked_at": "is.null"},
+                    body={"revoked_at": stamp}, prefer="return=minimal")
+        self._table("li_refresh_tokens", "PATCH", query={**owner, "used_at": "is.null"},
+                    body={"used_at": stamp}, prefer="return=minimal")
+        self._table("li_oauth_codes", "PATCH", query={**owner, "used_at": "is.null"},
+                    body={"used_at": stamp}, prefer="return=minimal")
+
+    def close_entitlement(self, user_id: str) -> None:
+        """active = false: li_reserve_usage then refuses every new reservation for the user."""
+        self._table("li_entitlements", "PATCH", query={"user_id": f"eq.{user_id}"},
+                    body={"active": False, "updated_at": utcnow()}, prefer="return=minimal")
+
+    def list_open_usage_reservations(self, user_id: str) -> list[dict[str, Any]]:
+        """The user's reservations that are not finished: 'reserved' or 'unsettled'."""
+        return self._select_all(
+            "li_usage_reservations",
+            {"select": "*", "user_id": f"eq.{user_id}", "status": "in.(reserved,unsettled)",
+             "order": "created_at.asc,id.asc"},
         )
+
+    def delete_auth_user(self, user_id: str) -> bool:
+        """Delete the Supabase Auth user (the database cascade removes LI data).
+
+        True when deleted now, False when the user was already gone (a retry).
+        """
+        quoted = urllib.parse.quote(user_id, safe="")
+        try:
+            json_request(f"{self.url}/auth/v1/admin/users/{quoted}", "DELETE", headers=self._headers)
+        except HTTPError as exc:
+            if exc.status == 404:
+                return False
+            raise StoreError(f"database request failed (HTTP {exc.status})") from None
+        except (urllib.error.URLError, OSError, ValueError):
+            raise StoreError("database is unreachable") from None
+        return True
 
     def save_discovery(self, row: dict[str, Any]) -> None:
         self._table("li_discoveries", "POST", body=row, prefer="return=minimal,resolution=merge-duplicates")
