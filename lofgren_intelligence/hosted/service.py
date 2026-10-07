@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import os
@@ -370,13 +371,27 @@ class PublicService:
     @staticmethod
     def _registry(a: dict[str, Any]):
         # Local file paths and arbitrary local sensors are deliberately absent from remote mode.
-        return build_registry(
+        registry = build_registry(
             texts=a.get("texts"),
             urls=a.get("urls"),
             fetch_orbits=bool(a.get("fetch_orbits")),
             imagery=bool(a.get("imagery")),
             search=a.get("search"),
         )
+        from ..adapters.europepmc import EuropePMCAdapter
+        from ..adapters.clinicaltrials import ClinicalTrialsAdapter
+        from ..adapters.manifest import OperatorSourcesAdapter, parse_manifest
+        from ..adapters.public_api import PublicHTTPClient
+        for key, adapter in (("europepmc", EuropePMCAdapter), ("trials", ClinicalTrialsAdapter)):
+            if a.get(key):
+                registry.register(adapter(a[key], max_records=a.get("max_records", 20), max_pages=2,
+                    client=PublicHTTPClient(key, timeout=15, max_retries=1, min_interval_s=1.2)))
+        if a.get("sources_manifest") is not None:
+            manifest = parse_manifest(json.dumps(a["sources_manifest"], sort_keys=True, allow_nan=False).encode("utf-8"))
+            registry.register(OperatorSourcesAdapter(manifest,
+                client=PublicHTTPClient("operator_sources", timeout=15, max_retries=1, min_interval_s=1.2)))
+        return registry
+
 
     def activate(self, user_id: str, email: str | None = None) -> dict[str, Any]:
         return self.store.activate_account(user_id, email)
@@ -810,6 +825,8 @@ class PublicService:
             max_network = int(os.environ.get("LI_SYNC_MAX_NETWORK_TASKS", "") or SYNC_MAX_NETWORK_TASKS)
         except ValueError:
             max_network = SYNC_MAX_NETWORK_TASKS
+        if any(t.adapter_id in {"europepmc", "clinicaltrials", "operator_sources"} for t in plan.tasks):
+            raise AsyncRequired("public-source retrieval requires start_research and the durable worker")
         network = sum(1 for t in plan.tasks if t.adapter_id not in LOCAL_ADAPTERS)
         if float(plan.estimated_work_units) > max_units + 1e-9 or network > max_network:
             raise AsyncRequired(

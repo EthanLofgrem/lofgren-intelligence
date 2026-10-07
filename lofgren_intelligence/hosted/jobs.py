@@ -24,7 +24,7 @@ JOB_STATUSES = ("queued", "running", "cancel_requested") + TERMINAL_STATUSES
 
 # Only these request keys reach the research run. Everything else a client sends
 # is dropped before the input is frozen into the job row.
-SOURCE_ARG_KEYS = ("texts", "urls", "search", "lat", "lon", "fetch_orbits", "imagery", "max_spend_usd")
+SOURCE_ARG_KEYS = ("texts", "urls", "search", "lat", "lon", "fetch_orbits", "imagery", "max_spend_usd", "europepmc", "trials", "max_records", "sources_manifest")
 
 # Idempotency keys are stored and filtered on; keep them to a plain, bounded charset.
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,190}$")

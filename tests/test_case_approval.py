@@ -460,7 +460,8 @@ class ConcurrencyAndBudgetTests(CaseTestBase):
             self.start(case)
         self.assert_no_work()
 
-    def test_approved_charter_values_drive_execution_inputs(self):
+    @patch("lofgren_intelligence.adapters.net.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+    def test_approved_charter_values_drive_execution_inputs(self, _dns):
         case = self.open_ready_case(budget={"max_spend_usd": 2.5, "max_units": 80})
         self.approve(case)
         captured = {}

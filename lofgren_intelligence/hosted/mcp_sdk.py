@@ -82,6 +82,10 @@ def _source_args(
     texts: dict[str, str] | None = None,
     urls: list[str] | None = None,
     search: str | None = None,
+        europepmc: str | None = None,
+        trials: str | None = None,
+        max_records: int | None = None,
+        sources_manifest: dict[str, Any] | None = None,
     lat: float | None = None,
     lon: float | None = None,
     fetch_orbits: bool = False,
@@ -95,6 +99,9 @@ def _source_args(
         out["urls"] = urls
     if search is not None:
         out["search"] = search
+    for key, value in (("europepmc", europepmc), ("trials", trials), ("max_records", max_records), ("sources_manifest", sources_manifest)):
+        if value is not None:
+            out[key] = value
     if lat is not None:
         out["lat"] = lat
     if lon is not None:
@@ -155,6 +162,10 @@ def build_mcp(base_url: str) -> MCPServer:
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
+        europepmc: str | None = None,
+        trials: str | None = None,
+        max_records: int | None = None,
+        sources_manifest: dict[str, Any] | None = None,
         lat: float | None = None,
         lon: float | None = None,
     ) -> dict[str, Any]:
@@ -178,7 +189,7 @@ def build_mcp(base_url: str) -> MCPServer:
         budget = {k: v for k, v in (("max_spend_usd", max_spend_usd), ("max_units", max_units)) if v is not None}
         if budget:
             args["budget"] = budget
-        for key, value in (("texts", texts), ("urls", urls), ("search", search), ("lat", lat), ("lon", lon)):
+        for key, value in (("texts", texts), ("urls", urls), ("search", search), ("europepmc", europepmc), ("trials", trials), ("max_records", max_records), ("sources_manifest", sources_manifest), ("lat", lat), ("lon", lon)):
             if value is not None:
                 args[key] = value
         return service.clarify_objective(user_id, args, base)
@@ -210,6 +221,10 @@ def build_mcp(base_url: str) -> MCPServer:
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
+        europepmc: str | None = None,
+        trials: str | None = None,
+        max_records: int | None = None,
+        sources_manifest: dict[str, Any] | None = None,
         lat: float | None = None,
         lon: float | None = None,
         fetch_orbits: bool = False,
@@ -223,7 +238,7 @@ def build_mcp(base_url: str) -> MCPServer:
         """
         user_id, service = _caller()
         args = _source_args(
-            texts=texts, urls=urls, search=search, lat=lat, lon=lon,
+            texts=texts, urls=urls, search=search, europepmc=europepmc, trials=trials, max_records=max_records, sources_manifest=sources_manifest, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
         ) | {"objective": objective, "answers": answers or {}}
         if case_id is not None:
@@ -239,6 +254,10 @@ def build_mcp(base_url: str) -> MCPServer:
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
+        europepmc: str | None = None,
+        trials: str | None = None,
+        max_records: int | None = None,
+        sources_manifest: dict[str, Any] | None = None,
         lat: float | None = None,
         lon: float | None = None,
         fetch_orbits: bool = False,
@@ -254,7 +273,7 @@ def build_mcp(base_url: str) -> MCPServer:
         """
         user_id, service = _caller()
         args = _source_args(
-            texts=texts, urls=urls, search=search, lat=lat, lon=lon,
+            texts=texts, urls=urls, search=search, europepmc=europepmc, trials=trials, max_records=max_records, sources_manifest=sources_manifest, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
         ) | {"objective": objective, "answers": answers or {}}
         if case_id is not None:
@@ -273,6 +292,10 @@ def build_mcp(base_url: str) -> MCPServer:
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
+        europepmc: str | None = None,
+        trials: str | None = None,
+        max_records: int | None = None,
+        sources_manifest: dict[str, Any] | None = None,
         lat: float | None = None,
         lon: float | None = None,
         fetch_orbits: bool = False,
@@ -288,7 +311,7 @@ def build_mcp(base_url: str) -> MCPServer:
         """
         user_id, service = _caller()
         args = _source_args(
-            texts=texts, urls=urls, search=search, lat=lat, lon=lon,
+            texts=texts, urls=urls, search=search, europepmc=europepmc, trials=trials, max_records=max_records, sources_manifest=sources_manifest, lat=lat, lon=lon,
             fetch_orbits=fetch_orbits, imagery=imagery, max_spend_usd=max_spend_usd,
         ) | {"objective": objective, "answers": answers or {}}
         if case_id is not None:
@@ -318,12 +341,16 @@ def build_mcp(base_url: str) -> MCPServer:
         texts: dict[str, str] | None = None,
         urls: list[str] | None = None,
         search: str | None = None,
+        europepmc: str | None = None,
+        trials: str | None = None,
+        max_records: int | None = None,
+        sources_manifest: dict[str, Any] | None = None,
         max_spend_usd: float = 5.0,
     ) -> dict[str, Any]:
         """Verify one factual claim against supplied or discovered evidence."""
         user_id, service = _caller()
         return service.verify_claim(user_id, _source_args(
-            texts=texts, urls=urls, search=search, max_spend_usd=max_spend_usd,
+            texts=texts, urls=urls, search=search, europepmc=europepmc, trials=trials, max_records=max_records, sources_manifest=sources_manifest, max_spend_usd=max_spend_usd,
         ) | {"claim": claim})
 
     @tool()

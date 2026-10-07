@@ -177,7 +177,8 @@ class EnqueueTests(JobTestBase):
         self.assertEqual(self.store.jobs, {})
         self.assertEqual([r["status"] for r in self.store.reservations.values()], ["released"])
 
-    def test_synchronous_path_refuses_unbounded_work(self):
+    @patch("lofgren_intelligence.adapters.net.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+    def test_synchronous_path_refuses_unbounded_work(self, _dns):
         with patch.dict(os.environ, {"LI_SYNC_MAX_WORK_UNITS": "0.5"}), \
                 patch.object(service_module, "run_investigation") as run:
             with self.assertRaises(AsyncRequired):
