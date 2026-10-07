@@ -13,6 +13,7 @@ from lofgren_intelligence.release.ci import (
     ArtifactManifestError,
     PACKAGE_STEP,
     build_artifact_manifest,
+    normalize_source_distribution,
     verify_artifact_manifest,
     verify_exact_ci,
     write_artifact_manifest,
@@ -197,6 +198,16 @@ class ReleaseArtifactManifestTests(unittest.TestCase):
         write_artifact_manifest(build_artifact_manifest(self.dist, "1" * 40, "2" * 40), output)
         with self.assertRaisesRegex(ArtifactManifestError, "expected SHA"):
             verify_artifact_manifest(output, self.dist, expected_sha="3" * 40)
+
+    def test_sdist_normalization_is_reproducible(self):
+        first = self.sdist.read_bytes()
+        normalize_source_distribution(self.dist, 1234567890)
+        normalized = self.sdist.read_bytes()
+        self.assertNotEqual(first, normalized)
+
+        self._write_sdist("Lofgren-Intelligence", "0.7.0")
+        normalize_source_distribution(self.dist, 1234567890)
+        self.assertEqual(self.sdist.read_bytes(), normalized)
 
 
 if __name__ == "__main__":
