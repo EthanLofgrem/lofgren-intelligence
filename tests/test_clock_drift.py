@@ -69,6 +69,7 @@ class ClockShiftHarness(unittest.TestCase):
                  "datetime.date.today().toordinal(), child)")
         env = {**_clean_env(), "LI_TEST_CLOCK_SHIFT_SECONDS": str(365 * 86400.0),
                "PYTHONPATH": os.pathsep.join(p for p in (str(SITE), _clean_env().get("PYTHONPATH")) if p)}
+        before = datetime.now(timezone.utc)
         out = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True,
                              env=env, timeout=120)
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -77,7 +78,11 @@ class ClockShiftHarness(unittest.TestCase):
         year = timedelta(days=365)
         for value in (float(dt_now), float(time_now), float(child)):
             self.assertAlmostEqual(value, (real + year).timestamp(), delta=600)
-        self.assertEqual(int(today), (real + year).date().toordinal())
+        # date.today() is the LOCAL calendar date of the shifted clock: compare it with that, not
+        # with the UTC date (they differ for part of every day outside UTC). Both ends of the probe
+        # are sampled so a local midnight during the probe cannot flake it.
+        shifted_local = {datetime.fromtimestamp((t + year).timestamp()).date().toordinal() for t in (before, real)}
+        self.assertIn(int(today), shifted_local)
 
     def test_the_selection_covers_the_fixed_clock_modules(self):
         mods = clock_sensitive_modules()
