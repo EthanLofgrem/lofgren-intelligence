@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -77,6 +80,43 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def normalize_source_distribution(dist_dir: Path, epoch: int) -> Path:
+    """Rewrite the single sdist with stable gzip and tar metadata."""
+    if epoch < 0:
+        raise ArtifactManifestError("source date epoch must not be negative")
+    dist_dir = dist_dir.resolve()
+    sdists = sorted(dist_dir.glob("*.tar.gz"))
+    if len(sdists) != 1:
+        raise ArtifactManifestError("dist must contain exactly one .tar.gz source distribution")
+    source = sdists[0]
+    entries: list[tuple[tarfile.TarInfo, bytes | None]] = []
+    try:
+        with tarfile.open(source, mode="r:gz") as archive:
+            for member in archive.getmembers():
+                if member.name.startswith("/") or ".." in Path(member.name).parts:
+                    raise ArtifactManifestError(f"unsafe source distribution member: {member.name}")
+                stream = archive.extractfile(member) if member.isfile() else None
+                entries.append((member, stream.read() if stream is not None else None))
+    except tarfile.TarError as exc:
+        raise ArtifactManifestError(f"{source.name} is not a valid source archive") from exc
+
+    temporary = source.with_name(f".{source.name}.normalized")
+    with temporary.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as output:
+                for original, payload in entries:
+                    member = copy.copy(original)
+                    member.uid = 0
+                    member.gid = 0
+                    member.uname = ""
+                    member.gname = ""
+                    member.mtime = epoch
+                    member.pax_headers = {}
+                    output.addfile(member, io.BytesIO(payload) if payload is not None else None)
+    temporary.replace(source)
+    return source
 
 
 def build_artifact_manifest(dist_dir: Path, source_sha: str, source_tree: str) -> dict[str, Any]:
@@ -242,6 +282,9 @@ def _artifact_parser() -> argparse.ArgumentParser:
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--expected-sha")
     verify.add_argument("--expected-tree")
+    normalize = subparsers.add_parser("artifact-normalize-sdist")
+    normalize.add_argument("--dist", type=Path, required=True)
+    normalize.add_argument("--epoch", type=int, required=True)
     return parser
 
 
@@ -251,13 +294,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "artifact-create":
             manifest = build_artifact_manifest(args.dist, args.source_sha, args.source_tree)
             write_artifact_manifest(manifest, args.output)
-        else:
+        elif args.command == "artifact-verify":
             manifest = verify_artifact_manifest(
                 args.manifest,
                 args.dist,
                 expected_sha=args.expected_sha,
                 expected_tree=args.expected_tree,
             )
+        else:
+            normalized = normalize_source_distribution(args.dist, args.epoch)
+            manifest = {"normalized_sdist": normalized.name, "source_date_epoch": args.epoch}
     except ArtifactManifestError as exc:
         print(f"release artifact identity failed: {exc}", file=sys.stderr)
         return 1
