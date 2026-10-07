@@ -449,6 +449,33 @@ class PrivilegeTest(PgCase):
                     with self.assertRaises(pg_errors.InsufficientPrivilege):
                         conn.execute(self.null_call(name, argtypes))
 
+    def test_authenticated_with_its_own_jwt_claim_still_reaches_nothing(self):
+        user = self.new_user()
+        self.save_run(self.svc, user, "run-own")
+        before = {t: self.one(pgsql.SQL("select count(*) from {}").format(pgsql.Identifier("public", t)))[0]
+                  for t in sorted(LI_TABLES)}
+        conn = role_connect(self.dbname, "authenticated")  # restricted role, never the admin
+        self.addCleanup(conn.close)
+        conn.execute("select set_config('request.jwt.claim.sub', %s, false)", (user,))
+        self.assertEqual(str(conn.execute("select auth.uid()").fetchone()[0]), user)
+        for table in ("li_runs", "li_accounts", "li_entitlements", "li_usage_events", "li_research_jobs"):
+            with self.subTest(table=table):
+                ident = pgsql.Identifier("public", table)
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute(pgsql.SQL("select * from {} where user_id = %s").format(ident), (user,))
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute(pgsql.SQL("update {} set user_id = user_id where user_id = %s").format(ident),
+                                 (user,))
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute(pgsql.SQL("delete from {} where user_id = %s").format(ident), (user,))
+        with self.assertRaises(pg_errors.InsufficientPrivilege):
+            conn.execute("select public.li_reserve_usage(%s::uuid, %s::uuid, 'investigate', 1)",
+                         (str(uuid.uuid4()), user))
+        after = {t: self.one(pgsql.SQL("select count(*) from {}").format(pgsql.Identifier("public", t)))[0]
+                 for t in sorted(LI_TABLES)}
+        self.assertEqual(after, before)
+        self.assertEqual(self.one("select count(*) from public.li_runs where user_id = %s", (user,))[0], 1)
+
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
         self.assertEqual(len(expected), 23, sorted(expected))
@@ -677,6 +704,17 @@ class CaseApprovalTest(PgCase):
         winners = [r for r in results if r is not None and r["consumed_now"]]
         self.assertEqual(len(winners), 1)
         self.assertEqual(sum(1 for r in results if r is None), 3)
+        # Final state: consumed once, by the winning key, with one event and one started run.
+        consumed_at, key, run_status = self.one(
+            "select consumed_at, idempotency_key, run_status from public.li_case_approvals where id = %s",
+            (row["id"],))
+        self.assertIsNotNone(consumed_at)
+        self.assertEqual(key, f"key-{results.index(winners[0])}")
+        self.assertEqual(run_status, "started")
+        self.assertEqual(self.one("select count(*) from public.li_case_events where case_id = %s "
+                                  "and kind = 'approval_consumed'", (case_id,))[0], 1)
+        self.assertEqual(self.one("select status from public.li_cases where id = %s", (case_id,))[0],
+                         "research_started")
 
     def test_wrong_user_is_refused(self):
         owner, other = self.new_user(), self.new_user()
@@ -744,6 +782,9 @@ class UsageTest(PgCase):
         self.assertIsNone(self.reservation(r2))
         self.assertTrue(self.store.reserve_usage(r3, user, "investigate", 200))  # exactly the quota
         self.assertFalse(self.store.reserve_usage(self.rid(), user, "investigate", 0.01))
+        self.assertEqual(self.admin.execute(
+            "select id::text, status, reserved_units from public.li_usage_reservations where user_id = %s "
+            "order by reserved_units desc", (user,)).fetchall(), [(r1, "reserved", 300), (r3, "reserved", 200)])
 
     def test_finalize_release_and_requota(self):
         user = self.new_user()
@@ -955,6 +996,9 @@ class JobsTest(PgCase):
         self.assertTrue(self.store.finalize_usage(rid, None, 4, 0, []))
         done = self.store.complete_research_job(job_id, "w2", "run-x", 4)
         self.assertEqual(done["status"], "succeeded")
+        status, attempts, owner, _l, _e, result_run, _f, cost = self.job(job_id)
+        self.assertEqual((status, attempts, owner, result_run, float(cost)), ("succeeded", 2, None, "run-x", 4.0))
+        self.assertEqual(self.reservation(rid)[0], "settled")
         self.assertIsNone(self.reservation(rid)[7])
 
     def test_lease_expiry_with_no_attempts_left_fails_and_accounts_the_work(self):
@@ -979,6 +1023,7 @@ class JobsTest(PgCase):
         self.assertIsNone(self.store.request_cancel_research_job(job_id, other))
         cancelled = self.store.request_cancel_research_job(job_id, user)
         self.assertEqual((cancelled["status"], cancelled["error_code"]), ("cancelled", "CANCELLED"))
+        self.assertEqual(self.job(job_id)[0::4], ("cancelled", "CANCELLED"))
         self.assertEqual(self.reservation(rid)[0], "released")
         self.assertEqual(self.store.request_cancel_research_job(job_id, user)["status"], "cancelled")
         self.assertIsNone(self.store.claim_research_job("w1", 60, 60))
@@ -1004,6 +1049,8 @@ class JobsTest(PgCase):
         ended = self.store.fail_research_job(job_id, "w1", "CANCELLED", True, 0, 0, None, 600)
         self.assertEqual(ended["status"], "cancelled")
         self.assertEqual(self.reservation(rid)[0], "released")
+        status, _a, owner, lease, error, *_rest = self.job(job_id)
+        self.assertEqual((status, owner, lease, error), ("cancelled", None, None, "CANCELLED"))
 
     def test_fail_with_retry_then_exhaustion(self):
         user = self.new_user()
@@ -1026,6 +1073,8 @@ class JobsTest(PgCase):
         self.assertIsNone(self.store.fail_research_job(job_id, "w1", "UPSTREAM_TIMEOUT", True, 0, 0, None, 600))
         final = self.store.fail_research_job(job_id, "w2", "UPSTREAM_TIMEOUT", True, 0, 0, None, 600)
         self.assertEqual((final["status"], final["attempts"]), ("failed", 2))
+        status, attempts, owner, _l, error, *_rest = self.job(job_id)
+        self.assertEqual((status, attempts, owner, error), ("failed", 2, None, "UPSTREAM_TIMEOUT"))
         self.assertEqual(self.reservation(rid)[0], "released")
         self.assertIsNone(self.store.claim_research_job("w2", 60, 60))
 
@@ -1185,6 +1234,8 @@ class RateLimitTest(PgCase):
             lambda: [b.take_rate_limit(user, "mcp", 5, 60) for _ in range(6)],
         ])
         self.assertEqual((out[0] + out[1]).count(True), 5)
+        self.assertEqual(self.one("select count(*) from public.li_rate_events where user_id = %s and bucket = 'mcp'",
+                                  (user,))[0], 5)
 
 
 # ---------------------------------------------------------------------------
@@ -1256,6 +1307,10 @@ class OAuthAndBillingTest(PgCase):
         self.assertIsNone(self.store.consume_oauth_code(code))
         self.assertEqual(self.store.consume_refresh_token(refresh)["user_id"], user)
         self.assertIsNone(self.store.consume_refresh_token(refresh))
+        # Final state: each one-time credential is marked used, once.
+        self.assertIsNotNone(self.one("select used_at from public.li_oauth_codes where code_hash = %s", (code,))[0])
+        self.assertIsNotNone(self.one("select used_at from public.li_refresh_tokens where token_hash = %s",
+                                      (refresh,))[0])
 
     def test_stripe_event_applies_exactly_once(self):
         user = self.new_user()
@@ -1265,6 +1320,8 @@ class OAuthAndBillingTest(PgCase):
         first = self.store.apply_stripe_entitlement_event(**args)
         second = self.store.apply_stripe_entitlement_event(**args)
         self.assertEqual([bool(first), bool(second)], [True, False])
+        self.assertEqual(self.one("select count(*) from public.li_billing_events where stripe_event_id = %s",
+                                  (args["event_id"],))[0], 1)
         kind, quota = self.one("select kind, quota_units_per_week from public.li_entitlements where user_id = %s",
                                (user,))
         self.assertEqual((kind, float(quota)), ("paid", 5000.0))

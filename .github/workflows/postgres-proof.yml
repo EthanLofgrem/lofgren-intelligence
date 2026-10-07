@@ -114,10 +114,15 @@ jobs:
               esc = "\n".join(chunk).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               print(f"::notice title=postgres-proof per-test results {i}/{len(chunks)}::" + esc)
           EOF
-      - name: Upload the test log
+      - name: Capture the PostgreSQL server log
+        if: always()
+        run: docker logs "${{ job.services.postgres.id }}" > pg-server.log 2>&1
+      - name: Upload the test and server logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: postgres-proof-log
-          path: pg-proof.log
+          path: |
+            pg-proof.log
+            pg-server.log
           if-no-files-found: error
