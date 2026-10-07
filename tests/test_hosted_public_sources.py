@@ -53,3 +53,15 @@ class HostedSourceWorkerTests(JobTestBase):
         saved = next(iter(self.store.runs.values()))["snapshot"]
         self.assertTrue(saved["receipt_intact"])
         self.assertIn("europepmc", json.dumps(saved).lower())
+
+    def test_trial_input_survives_queue_with_registry_label(self):
+        with patch('lofgren_intelligence.adapters.public_api.PublicHTTPClient.get_json', return_value=json.loads(fixture('clinicaltrials_page1.json'))) as fetch:
+            out = self.start('trials', trials='zelvapril hypertension', max_records=2)
+            fetch.assert_not_called()
+            self.assertEqual(self.job(out['job_id'])['input']['args']['trials'], 'zelvapril hypertension')
+            results = self.drain()
+        self.assertEqual([r['status'] for r in results], ['succeeded'])
+        self.assertTrue(fetch.called)
+        saved = next(iter(self.store.runs.values()))['snapshot']
+        self.assertTrue(saved['receipt_intact'])
+        self.assertIn('clinicaltrials', json.dumps(saved).lower())
