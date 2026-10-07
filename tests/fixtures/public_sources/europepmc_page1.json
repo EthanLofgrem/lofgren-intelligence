@@ -1,0 +1,52 @@
+{
+  "version": "6.9",
+  "hitCount": 5,
+  "nextCursorMark": "AoIIQFixturePage2",
+  "request": {"queryString": "zelvapril hypertension", "resultType": "core", "cursorMark": "*", "pageSize": 3, "sort": "", "synonym": false},
+  "resultList": {
+    "result": [
+      {
+        "id": "90000001", "source": "MED", "pmid": "90000001", "pmcid": "PMC9000001",
+        "doi": "10.5555/FIXTURE.0001",
+        "title": "Zelvapril for hypertension in adults: a <i>systematic review</i> and meta-analysis.",
+        "authorString": "Rivera A, Okafor B, Lind C.",
+        "authorList": {"author": [{"fullName": "Rivera A", "firstName": "Ana", "lastName": "Rivera"},
+                                  {"fullName": "Okafor B", "firstName": "Bola", "lastName": "Okafor"},
+                                  {"fullName": "Lind C", "firstName": "Carl", "lastName": "Lind"}]},
+        "journalInfo": {"journal": {"title": "Journal of Fixture Cardiology", "isoabbreviation": "J Fixture Cardiol"},
+                        "printPublicationDate": "2024-03-01", "yearOfPublication": 2024},
+        "pubYear": "2024",
+        "abstractText": "<h4>Background</h4>Zelvapril is a fictional antihypertensive used in this fixture. <h4>Results</h4>Across 12 trials, zelvapril lowered systolic blood pressure in adults with hypertension by 9 mmHg compared with placebo. Hypertension control improved in treated adults.",
+        "pubTypeList": {"pubType": ["Systematic Review", "Meta-Analysis", "Journal Article", "Review"]},
+        "isOpenAccess": "Y", "inEPMC": "Y", "inPMC": "Y", "hasPDF": "Y", "license": "cc by",
+        "firstPublicationDate": "2024-02-15",
+        "commentCorrectionList": {"commentCorrection": [{"source": "MED", "id": "90000099", "reference": "J Fixture Cardiol. 2024;1:1.", "type": "Comment in", "orderIn": 1}]}
+      },
+      {
+        "id": "90000002", "source": "MED", "pmid": "90000002",
+        "doi": "10.5555/fixture.0002",
+        "title": "A randomized controlled trial of zelvapril in older adults with hypertension.",
+        "authorString": "Chen D, Novak E.",
+        "journalInfo": {"journal": {"title": "Fixture Medicine"}},
+        "pubYear": "2023",
+        "abstractText": "In this randomized trial of 400 older adults with hypertension, zelvapril reduced systolic blood pressure by 7 mmHg at 12 weeks.",
+        "pubTypeList": {"pubType": ["Randomized Controlled Trial", "Journal Article"]},
+        "isOpenAccess": "N", "inEPMC": "N",
+        "firstPublicationDate": "2023-06-01",
+        "commentCorrectionList": {"commentCorrection": [{"source": "MED", "id": "90000098", "reference": "Fixture Med. 2023;2:2.", "type": "Erratum in", "orderIn": 1}]}
+      },
+      {
+        "id": "90000003", "source": "MED", "pmid": "90000003",
+        "title": "Zelvapril cures hypertension in every adult patient.",
+        "authorString": "Doe J.",
+        "journalInfo": {"journal": {"title": "Fixture Letters"}},
+        "pubYear": "2022",
+        "abstractText": "Zelvapril normalized blood pressure in all 50 adults with hypertension.",
+        "pubTypeList": {"pubType": ["Retracted Publication", "Journal Article"]},
+        "isOpenAccess": "N", "inEPMC": "N",
+        "firstPublicationDate": "2022-01-10",
+        "commentCorrectionList": {"commentCorrection": [{"source": "MED", "id": "90000097", "reference": "Fixture Lett. 2023;3:3.", "type": "Retraction in", "orderIn": 1}]}
+      }
+    ]
+  }
+}

@@ -199,10 +199,14 @@ def run_investigation(
                           provider.usage["output_tokens"] - before["output_tokens"])
                 ledger.record("research", "model", provider.name, 0.0, 0.0,
                               f"claim extraction on {ev.id}; tokens in/out {tokens[0]}/{tokens[1]}", len(found))
+            # A record-scoped source (one registered trial) pins every claim it yields to that record, so that
+            # look-alike statements about different records never corroborate or contradict each other.
+            pinned = ev.data.get("claim_subject")
+            pinned = pinned if isinstance(pinned, str) else ""
             for c in found:
                 claim = graph.add_claim(Claim(c["statement"], origin=origin, value=c.get("value"),
                                               unit=c.get("unit", ""), polarity=c.get("polarity", 1),
-                                              subject=c.get("subject", ""), question_id=task.question_id,
+                                              subject=c.get("subject", "") or pinned, question_id=task.question_id,
                                               scope=infer_scope(c["statement"], ev, contract.location)),
                                         supported_by=[ev.id])
                 if c.get("calculation"):

@@ -1,0 +1,25 @@
+{
+  "version": "6.9",
+  "hitCount": 5,
+  "nextCursorMark": "AoIIQFixturePage2",
+  "request": {"queryString": "zelvapril hypertension", "resultType": "core", "cursorMark": "AoIIQFixturePage2", "pageSize": 3},
+  "resultList": {
+    "result": [
+      {
+        "id": "PPR900004", "source": "PPR", "doi": "10.1101/2025.01.01.900004",
+        "title": "Zelvapril and nocturnal blood pressure in hypertension: a cohort preprint",
+        "authorString": "Silva F.",
+        "bookOrReportDetails": {"publisher": "medRxiv", "yearOfPublication": 2025},
+        "pubYear": "2025",
+        "pubTypeList": {"pubType": ["Preprint"]},
+        "isOpenAccess": "Y", "inEPMC": "Y",
+        "firstPublicationDate": "2025-01-05"
+      },
+      {
+        "id": "90000005", "source": "MED", "pmid": "90000005",
+        "authorString": "Nobody N.",
+        "pubYear": "2021"
+      }
+    ]
+  }
+}

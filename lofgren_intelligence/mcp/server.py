@@ -62,6 +62,16 @@ _SOURCE_PROPS: dict[str, Any] = {
               "description": "Inline documents: title -> text."},
     "urls": {"type": "array", "items": {"type": "string"}, "description": "Public web pages to read."},
     "search": {"type": "string", "enum": ["brave"], "description": "Discover web pages (needs BRAVE_API_KEY)."},
+    "europepmc": {"type": "string", "maxLength": 500,
+                  "description": "Search Europe PMC literature (free API; abstracts only, retracted papers excluded)."},
+    "trials": {"type": "string", "maxLength": 500,
+               "description": "Search ClinicalTrials.gov registrations (free API; a registration is not "
+                              "evidence of efficacy)."},
+    "max_records": {"type": "integer", "minimum": 1, "maximum": 100,
+                    "description": "Records per public-source query (default 20)."},
+    "sources_manifest": {"type": "string",
+                         "description": "Local JSON manifest of operator-selected public URLs "
+                                        "(lofgren.sources-manifest/1)."},
     "lat": {"type": "number"},
     "lon": {"type": "number"},
     "tle_path": {"type": "string", "description": "File of orbital elements for pass prediction."},
@@ -337,7 +347,9 @@ class Server:
     def _registry(a: dict):
         return build_registry(files=a.get("files"), texts=a.get("texts"), urls=a.get("urls"),
                               tle_path=a.get("tle_path"), fetch_orbits=bool(a.get("fetch_orbits")),
-                              imagery=bool(a.get("imagery")), search=a.get("search"))
+                              imagery=bool(a.get("imagery")), search=a.get("search"),
+                              europepmc=a.get("europepmc"), trials=a.get("trials"),
+                              max_records=a.get("max_records", 20), sources_manifest=a.get("sources_manifest"))
 
     def _contract(self, objective: str, a: dict):
         return compile_intent(objective, max_spend_usd=float(a.get("max_spend_usd", 5.0)), location=self._location(a))

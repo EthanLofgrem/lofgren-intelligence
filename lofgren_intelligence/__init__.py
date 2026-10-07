@@ -14,8 +14,11 @@ from pathlib import Path
 
 from .adapters import (
     AdapterRegistry,
+    ClinicalTrialsAdapter,
     DocumentAdapter,
+    EuropePMCAdapter,
     ImageryCatalogAdapter,
+    OperatorSourcesAdapter,
     OrbitalPassAdapter,
     SearchProvider,
     SensorAdapter,
@@ -40,7 +43,17 @@ def build_registry(
     sensor_csvs: list[str | Path] | None = None,
     sensors_authorized: bool = False,
     search: SearchProvider | str | None = None,
+    europepmc: str | None = None,
+    trials: str | None = None,
+    max_records: int = 20,
+    sources_manifest: str | Path | None = None,
 ) -> AdapterRegistry:
+    """Registry of the evidence sources a run may use.
+
+    `europepmc` and `trials` are search queries for the free Europe PMC and ClinicalTrials.gov APIs, each
+    bounded to `max_records` records (1-100); `sources_manifest` is a JSON file of operator-selected public
+    URLs (see adapters/manifest.py). All of them fetch through the SSRF-protected public fetcher.
+    """
     reg = AdapterRegistry()
     if search:
         if isinstance(search, str):
@@ -60,6 +73,12 @@ def build_registry(
         reg.register(ImageryCatalogAdapter())
     if sensor_csvs:
         reg.register(SensorAdapter(sensor_csvs, authorized=sensors_authorized))
+    if europepmc:
+        reg.register(EuropePMCAdapter(europepmc, max_records=max_records))
+    if trials:
+        reg.register(ClinicalTrialsAdapter(trials, max_records=max_records))
+    if sources_manifest:
+        reg.register(OperatorSourcesAdapter(sources_manifest))
     return reg
 
 

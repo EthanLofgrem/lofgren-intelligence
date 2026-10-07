@@ -1,0 +1,8 @@
+{
+  "schema": "lofgren.sources-manifest/1",
+  "description": "Fixture: two operator-selected public pages.",
+  "sources": [
+    {"url": "https://reports.example.org/zelvapril-market.html", "title": "Zelvapril market note", "publisher": "Example Reports"},
+    {"url": "https://data.example.net/zelvapril.txt", "note": "plain-text summary"}
+  ]
+}
