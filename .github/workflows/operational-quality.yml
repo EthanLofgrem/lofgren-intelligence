@@ -64,6 +64,8 @@ jobs:
       - name: Build wheel and source distribution
         run: |
           python -m pip install --upgrade pip build
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_SHA")"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python -m build
       - name: Install built wheel in clean venv
         run: |
@@ -82,6 +84,9 @@ jobs:
         run: |
           set -euo pipefail
           source_tree="$(git rev-parse 'HEAD^{tree}')"
+          python -m lofgren_intelligence.release.ci artifact-normalize-sdist \
+            --dist dist \
+            --epoch "$SOURCE_DATE_EPOCH"
           python -m lofgren_intelligence.release.ci artifact-create \
             --dist dist \
             --source-sha "$GITHUB_SHA" \
@@ -92,6 +97,20 @@ jobs:
             --manifest release-artifact-manifest.json \
             --expected-sha "$GITHUB_SHA" \
             --expected-tree "$source_tree"
+      - name: Rebuild and prove artifact reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          rebuild="$RUNNER_TEMP/rebuild"
+          python -m build --outdir "$rebuild"
+          python -m lofgren_intelligence.release.ci artifact-normalize-sdist \
+            --dist "$rebuild" \
+            --epoch "$SOURCE_DATE_EPOCH"
+          python -m lofgren_intelligence.release.ci artifact-verify \
+            --dist "$rebuild" \
+            --manifest release-artifact-manifest.json \
+            --expected-sha "$GITHUB_SHA" \
+            --expected-tree "$(git rev-parse 'HEAD^{tree}')"
       - name: Reject accidental secrets/artifacts
         shell: bash
         run: |
