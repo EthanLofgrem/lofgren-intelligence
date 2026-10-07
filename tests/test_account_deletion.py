@@ -283,7 +283,7 @@ class DeletionLifecycleTests(DeletionTestBase):
         self.assertEqual(OAuthService(self.store).authenticate(self.tokens["u1"]["access_token"]).user_id, "u1")
 
     def test_complete_deletion_removes_every_tenant_record_and_leaves_the_other_tenant_untouched(self):
-        u2_job = self.service.start_research("u2", {"objective": "Other tenant objective",
+        u2_job = self.service.start_research("u2", {"objective": "Other account objective",
                                                     "texts": {"doc (fictional)": "Synthetic text."},
                                                     "idempotency_key": "u2-k"}, "https://li.example")["job_id"]
         out = self.delete()
