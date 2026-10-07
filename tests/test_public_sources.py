@@ -651,5 +651,169 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(reg.get("clinicaltrials").max_records, 4)
 
 
+
+# ---------------------------------------------------------------------------------------------------------------
+class PipelineRunTest(unittest.TestCase):
+    """Owner review (Q24): both adapters take part in an actual LI research run.
+
+    `lofgren investigate` and the discovery pipeline run through build_registry (the CLI path) against the
+    recorded fixtures, served by URL through the SSRF-protected fetcher's seam. The evidence behind the
+    run's claims must carry its source id, dates, passage and the provenance labels (text_scope, the
+    results label, the registered-trial label), and so must the stored result, the report and the receipt.
+    """
+
+    LIT = {"peer_reviewed_literature", "preprint"}
+
+    def router(self, req, timeout=None):
+        url = req.full_url
+        self.urls.append(url)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        host = urllib.parse.urlsplit(url).hostname
+        if host == "www.ebi.ac.uk":
+            return ok("europepmc_page1.json" if q.get("cursorMark") == "*" else "europepmc_page2.json")
+        if host == "clinicaltrials.gov":
+            return ok("clinicaltrials_page2.json" if q.get("pageToken") else "clinicaltrials_page1.json")
+        raise AssertionError(f"unexpected request {url}")
+
+    def setUp(self):
+        self.urls = []
+        seam = patch("lofgren_intelligence.adapters.public_api.safe_urlopen", self.router)
+        seam.start()
+        self.addCleanup(seam.stop)
+
+    def investigate(self, out):
+        from lofgren_intelligence import cli
+
+        argv = ["investigate", OBJECTIVE, "--europepmc", "zelvapril", "--trials", "zelvapril",
+                "--max-records", "10", "--as-of", NOW,
+                "--out", str(out / "report.md"), "--json", str(out / "run.json"), "--receipt", str(out / "receipt.json")]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(argv), 0)
+        return (json.loads((out / "run.json").read_text(encoding="utf-8")),
+                (out / "report.md").read_text(encoding="utf-8"),
+                json.loads((out / "receipt.json").read_text(encoding="utf-8")))
+
+    def test_investigate_carries_labelled_evidence_into_the_result_report_and_receipt(self):
+        import tempfile
+
+        from lofgren_intelligence.kernel.receipt import verify_receipt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stored, report, receipt = self.investigate(Path(tmp))
+        hosts = {urllib.parse.urlsplit(u).hostname for u in self.urls}
+        self.assertEqual(hosts, {"www.ebi.ac.uk", "clinicaltrials.gov"}, "both adapters fetched")
+
+        graph = stored["evidence_graph"]
+        sources = {src["id"]: src for src in graph["sources"]}
+        evidence = {e["id"]: e for e in graph["evidence"]}
+        claims = {c["id"]: c for c in graph["claims"]}
+        lit = {i: e for i, e in evidence.items() if e["data"].get("source_class") in self.LIT}
+        trials = {i: e for i, e in evidence.items() if e["data"].get("source_class") == "trial_registry"}
+        self.assertEqual(len(lit), 3)
+        self.assertEqual(len(trials), 3)
+        self.assertEqual(set(evidence), set(lit) | set(trials))
+
+        # Stored result: every evidence item carries its source id, dates, passage and labels.
+        for eid, e in lit.items():
+            with self.subTest(evidence=eid):
+                src = sources[e["source_id"]]
+                self.assertTrue(e["content"].strip())
+                self.assertIn(e["data"]["text_scope"], ("abstract_only", "title_only"))
+                self.assertIs(e["data"]["full_text_fetched"], False)
+                self.assertEqual(e["observed_at"], e["data"]["publication_date"])
+                self.assertEqual(src["published_at"], e["data"]["publication_date"])
+                self.assertTrue(src["retrieved_at"])
+                self.assertEqual(e["data"]["retrieval"]["retrieved_at"], src["retrieved_at"])
+        for eid, e in trials.items():
+            with self.subTest(evidence=eid):
+                self.assertTrue(e["content"].startswith("ClinicalTrials.gov reports that trial "))
+                self.assertEqual(e["data"]["evidence_label"], EVIDENCE_LABEL)
+                self.assertIn(e["data"]["results_label"], ("results_posted_not_fetched", "no_results_posted"))
+                self.assertEqual(e["data"]["results_label"] == "results_posted_not_fetched",
+                                 e["data"]["results_posted"])
+                self.assertIs(e["data"]["results_fetched"], False)
+                self.assertTrue(sources[e["source_id"]]["retrieved_at"])
+        self.assertEqual({e["data"]["results_label"] for e in trials.values()},
+                         {"results_posted_not_fetched", "no_results_posted"})
+        self.assertEqual({e["data"]["text_scope"] for e in lit.values()}, {"abstract_only", "title_only"})
+
+        # Claims rest on both adapters' evidence; the findings cite claims whose evidence is labelled.
+        support = {cid: {evidence[x]["data"]["source_class"] for x in c["supporting"]} for cid, c in claims.items()}
+        self.assertTrue(any(classes & self.LIT for classes in support.values()))
+        self.assertTrue(any("trial_registry" in classes for classes in support.values()))
+        cited = [cid for f in stored["findings"] for cid in f["claim_ids"]]
+        self.assertTrue(cited)
+        for cid in cited:
+            for x in claims[cid]["supporting"]:
+                self.assertTrue(evidence[x]["data"].get("source_class"))
+                if evidence[x]["data"]["source_class"] == "trial_registry":
+                    self.assertEqual(evidence[x]["data"]["evidence_label"], EVIDENCE_LABEL)
+
+        # Receipt: intact, and each evidence entry carries the same source id, labels, dates and passage.
+        self.assertTrue(verify_receipt(receipt))
+        self.assertEqual(receipt["research_id"], stored["research_id"])
+        r_evidence = {e["id"]: e for e in receipt["evidence"]}
+        self.assertEqual(set(r_evidence), set(evidence))
+        self.assertEqual({src["id"] for src in receipt["sources"]}, set(sources))
+        for eid, e in evidence.items():
+            with self.subTest(receipt_evidence=eid):
+                r = r_evidence[eid]
+                self.assertEqual(r["source_id"], e["source_id"])
+                self.assertEqual(r["passage"], e["content"])
+                self.assertEqual(r["content_hash"], hashlib.sha256(r["passage"].encode()).hexdigest())
+                self.assertEqual(r["labels"], {k: e["data"][k] for k in r["labels"]})
+                self.assertEqual(r["labels"]["source_class"], e["data"]["source_class"])
+                self.assertEqual(r["dates"]["retrieved_at"], sources[e["source_id"]]["retrieved_at"])
+                if eid in lit:
+                    self.assertEqual(r["labels"]["text_scope"], e["data"]["text_scope"])
+                    self.assertEqual(r["dates"]["observed_at"], e["observed_at"])
+                else:
+                    self.assertEqual(r["labels"]["evidence_label"], EVIDENCE_LABEL)
+                    self.assertEqual(r["labels"]["results_label"], e["data"]["results_label"])
+                    for k in ("start_date", "primary_completion_date", "completion_date"):
+                        if e["data"].get(k):
+                            self.assertEqual(r["dates"][k], e["data"][k])
+        r_claims = {c["id"]: c for c in receipt["claims"]}
+        for cid in cited:
+            self.assertEqual(r_claims[cid]["supporting"], claims[cid]["supporting"])
+
+        # Report: every labelled evidence item is listed under its source with its labels, dates and passage.
+        self.assertIn(receipt["research_id"], report)
+        for eid, e in evidence.items():
+            with self.subTest(report_evidence=eid):
+                line = next(x for x in report.splitlines() if f"evidence `{eid}`" in x)
+                self.assertIn(f"source `{e['source_id']}`", line)
+                self.assertIn(f"source_class={e['data']['source_class']}", line)
+                self.assertIn(f"retrieved_at {sources[e['source_id']]['retrieved_at']}", line)
+                if eid in lit:
+                    self.assertIn(f"text_scope={e['data']['text_scope']}", line)
+                    self.assertIn(f"observed_at {e['observed_at']}", line)
+                else:
+                    self.assertIn(f"evidence_label={EVIDENCE_LABEL}", line)
+                    self.assertIn(f"results_label={e['data']['results_label']}", line)
+                self.assertIn("passage: “" + " ".join(e["content"].split()) + "”", report)
+        self.assertIn(sources[next(iter(trials.values()))["source_id"]]["uri"], report)
+
+    def test_discovery_runs_on_the_labelled_research(self):
+        from lofgren_intelligence.discovery.pipeline import discover_from_run
+        from lofgren_intelligence.kernel.knowledge_map import export_knowledge_map
+
+        reg = build_registry(europepmc="zelvapril", trials="zelvapril", max_records=10)
+        self.assertEqual({a.id for a in reg.all()}, {"europepmc", "clinicaltrials"})
+        result = run_investigation(contract(), reg, plan_id="payg", verifier=Verifier(now=VERIFY_AT))
+        self.assertTrue(result.completed)
+        classes = {e.data.get("source_class") for e in result.graph.evidence.values()}
+        self.assertEqual(classes, {"peer_reviewed_literature", "preprint", "trial_registry"})
+        labelled = [e for e in result.receipt["evidence"] if "labels" in e]
+        self.assertEqual(len(labelled), len(result.graph.evidence))
+        discovery = discover_from_run(result, OBJECTIVE)
+        # The discovery rests on exactly this research and its knowledge state.
+        self.assertEqual(discovery.receipt["evidence"]["research_id"], result.receipt["research_id"])
+        self.assertEqual(discovery.receipt["evidence"]["knowledge_state_hash"], result.receipt["knowledge_state_hash"])
+        km = export_knowledge_map(result)
+        self.assertEqual({e["id"] for e in km["evidence"]}, set(result.graph.evidence))
+        self.assertEqual({e["source_id"] for e in km["evidence"]}, set(result.graph.sources))
+
+
 if __name__ == "__main__":
     unittest.main()

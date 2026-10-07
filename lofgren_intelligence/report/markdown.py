@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ..evidence.types import ClaimStatus, Scope, to_dict
 from ..kernel.pipeline import RunResult
+from ..kernel.receipt import evidence_dates, evidence_labels
 
 _STATUS_LABEL = {
     ClaimStatus.VERIFIED: "Verified",
@@ -134,6 +135,16 @@ def render_markdown(r: RunResult, include_receipt: bool = True) -> str:
             s = g.sources[sid]
             meta = ", ".join(x for x in (s.kind.value, s.publisher, s.license) if x)
             w(f"{n}. {s.title} — {s.uri} ({meta}; retrieved {s.retrieved_at})")
+            # Public-source evidence keeps its provenance labels and passage next to its source.
+            for e in g.evidence.values():
+                labels = evidence_labels(e.data) if e.source_id == sid else {}
+                if labels:
+                    shown = "; ".join(f"{k}={str(v).lower() if isinstance(v, bool) else v}"
+                                      for k, v in labels.items())
+                    passage = " ".join(e.content.split())
+                    dates = ", ".join(f"{k} {v}" for k, v in evidence_dates(e).items()) or "no date"
+                    w(f"   - evidence `{e.id}` (source `{sid}`; {dates}): {shown}")
+                    w(f"     - passage: “{passage}”")
         w("")
 
     w("## Loop status\n")

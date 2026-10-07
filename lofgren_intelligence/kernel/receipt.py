@@ -55,6 +55,50 @@ def canonical_hash(obj: Any) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+# Provenance labels that public-source adapters (Europe PMC, ClinicalTrials.gov, the operator source manifest)
+# put on their evidence. They limit what the evidence may be used for (an abstract is not the full text; a
+# registered trial is not evidence of efficacy; posted results were not fetched), so a receipt and a report
+# carry them with the evidence instead of leaving them only in the run's graph.
+PROVENANCE_LABEL_KEYS = ("source_class", "text_scope", "full_text_fetched", "evidence_label", "results_label",
+                         "results_posted", "results_fetched", "selection")
+
+
+def evidence_labels(data: Any) -> dict:
+    """The provenance labels present on one evidence item's data (empty for unlabelled evidence)."""
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in PROVENANCE_LABEL_KEYS if k in data}
+
+
+# Dates a public-source record carries besides the evidence's own observed_at (a registration has no single
+# observation date; its registry dates and the retrieval time are what date it).
+PROVENANCE_DATE_KEYS = ("publication_date", "start_date", "primary_completion_date", "completion_date")
+
+
+def evidence_dates(e: Any) -> dict:
+    """observed_at, the record's own dates and its retrieval time, where present."""
+    data = e.data if isinstance(e.data, dict) else {}
+    dates = {"observed_at": e.observed_at} if e.observed_at else {}
+    dates.update({k: data[k] for k in PROVENANCE_DATE_KEYS if data.get(k)})
+    retrieval = data.get("retrieval") if isinstance(data.get("retrieval"), dict) else {}
+    retrieved = retrieval.get("retrieved_at") or data.get("retrieved_at")
+    if retrieved:
+        dates["retrieved_at"] = retrieved
+    return dates
+
+
+def _receipt_evidence(e: Any) -> dict:
+    entry = {"id": e.id, "source_id": e.source_id, "kind": e.kind.value, "content_hash": e.content_hash,
+             "observed_at": e.observed_at, "valid_from": e.valid_from, "valid_to": e.valid_to}
+    labels = evidence_labels(e.data)
+    if labels:
+        # Public-source evidence: the labels and the passage itself (public text; content_hash commits to it).
+        entry["labels"] = labels
+        entry["dates"] = evidence_dates(e)
+        entry["passage"] = e.content
+    return entry
+
+
 def build_receipt(r: "RunResult") -> dict:
     from .. import __version__
     from ..report.markdown import render_markdown
@@ -83,9 +127,7 @@ def build_receipt(r: "RunResult") -> dict:
                      "license": s.license, "published_at": s.published_at, "retrieved_at": s.retrieved_at,
                      "independence_group": s.independence_group, "derived_from": s.derived_from}
                     for s in g.sources.values()],
-        "evidence": [{"id": e.id, "source_id": e.source_id, "kind": e.kind.value, "content_hash": e.content_hash,
-                      "observed_at": e.observed_at, "valid_from": e.valid_from, "valid_to": e.valid_to}
-                     for e in g.evidence.values()],
+        "evidence": [_receipt_evidence(e) for e in g.evidence.values()],
         "rejected_evidence": sorted(e for e in g.evidence if e not in used_evidence),
         "claims": [{"id": c.id, "statement": c.statement, "origin": c.origin.value, "type": c.claim_type.value,
                     "status": c.status.value, "confidence": c.confidence, "method": c.confidence_method,
