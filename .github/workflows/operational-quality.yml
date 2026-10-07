@@ -6,6 +6,7 @@ on:
       - "ops/**"
       - "build/**"
       - "release/**"
+      - "task/li-integration*"
   # Every pull request, whatever its base branch.
   pull_request:
 
@@ -67,8 +68,15 @@ jobs:
       - name: Install built wheel in clean venv
         run: |
           python -m venv /tmp/lofgren-venv
-          /tmp/lofgren-venv/bin/python -m pip install dist/*.whl
+          artifact_wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$artifact_wheel"
+          /tmp/lofgren-venv/bin/python -m pip install "${artifact_wheel}[hosted]"
           /tmp/lofgren-venv/bin/lofgren --help
+      - name: Exercise installed hosted artifact outside source tree
+        run: |
+          cd "$RUNNER_TEMP"
+          /tmp/lofgren-venv/bin/python "$GITHUB_WORKSPACE/scripts/installed_release_smoke.py" \
+            --expected-sha "$GITHUB_SHA"
       - name: Reject accidental secrets/artifacts
         shell: bash
         run: |
