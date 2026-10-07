@@ -50,3 +50,6 @@ class HostedSourceWorkerTests(JobTestBase):
         self.assertEqual([r['status'] for r in results], ['succeeded'])
         self.assertTrue(fetch.called)
         self.assertEqual(len(self.store.runs), 1)
+        saved = next(iter(self.store.runs.values()))["snapshot"]
+        self.assertTrue(saved["receipt_intact"])
+        self.assertIn("europepmc", json.dumps(saved).lower())
