@@ -535,6 +535,270 @@ class DeletionStripeTests(DeletionTestBase):
         self.assertNotIn("evt_paid", self.store.billing_events)
 
 
+
+# ---- concurrent deletion vs a research worker (owner review, Q18) --------------------------------
+
+class DeletionVersusWorkerTests(DeletionTestBase):
+    """A worker that is mid-job when deletion starts must recreate nothing for the deleted user.
+
+    Deletion refuses while a job is open (queued/running/cancel_requested), so the only worker
+    that can still be running after the cascade is one whose job ended under it: its lease
+    expired and li_reclaim_research_jobs ended the job (no attempts left). That is exactly the
+    worker modelled here, at three moments: inside a research stage, after the last stage but
+    before the result is saved, and after the result is saved but before the job is completed.
+    Every write it then attempts names a deleted auth user; the auth.users(id) foreign key
+    refuses it (FakeStore models the refusal, tests/pg proves it on PostgreSQL), and every job
+    RPC finds no job. The worker ends with status 'lease_lost' and never raises.
+    """
+
+    def _end_the_job_under_the_worker_then_delete(self, job_id, seen):
+        self.clock.advance(SETTINGS.lease_seconds + 1)
+        reclaimed = self.store.reclaim_research_jobs(100, SETTINGS.queue_ttl_seconds, 3)
+        self.assertIn(job_id, reclaimed)
+        job = self.store.jobs[job_id]
+        self.assertEqual((job["status"], job["error_code"]), ("failed", "LEASE_EXPIRED"))
+        with patch.object(service_module, "cancel_subscription") as cancel:
+            seen["deleted"] = self.delete()
+        cancel.assert_not_called()  # u1 has no subscription in this fixture
+        seen["u1_rows_at_deletion"] = self.u1_rows()
+        self.assertEqual(seen["u1_rows_at_deletion"], {})
+
+    def u1_rows(self):
+        s = self.store
+        rows = {
+            "runs": [k for k in s.runs if k[0] == "u1"],
+            "jobs": [k for k, v in s.jobs.items() if v["user_id"] == "u1"],
+            "reservations": [k for k, v in s.reservations.items() if v["user_id"] == "u1"],
+            "usage": [e["id"] for e in s.usage if e["user_id"] == "u1"],
+            "discoveries": [k for k in s.discoveries if k[0] == "u1"],
+            "artifacts": [k for k in s.artifacts if k[0] == "u1"],
+            "actions": [k for k in s.actions if k[0] == "u1"],
+            "outcomes": [k for k in s.outcomes if k[0] == "u1"],
+            "improvements": [k for k in s.improvements if k[0] == "u1"],
+            "cases": [k for k, v in s.cases.items() if v.get("user_id") == "u1"],
+            "case_events": [e for e in s.case_events if e.get("user_id") == "u1"],
+        }
+        return {k: v for k, v in rows.items() if v}
+
+    def _run_zombie(self, moment):
+        job_id = self.start("zombie-" + moment)["job_id"]
+        self.store.jobs[job_id]["max_attempts"] = 1  # the reclaim ends the job instead of requeueing it
+        seen = {"refused_writes": []}
+        original_save_run = self.store.save_run
+
+        def save_run(row):
+            try:
+                return original_save_run(row)
+            except StoreError:
+                seen["refused_writes"].append(("save_run", row["user_id"], row["run_id"]))
+                raise
+
+        self.store.save_run = save_run
+        original_persist = PublicService._persist_run
+
+        def persist(service, user_id, objective, attempt):
+            if moment == "before_save":
+                self._end_the_job_under_the_worker_then_delete(job_id, seen)
+            out = original_persist(service, user_id, objective, attempt)
+            seen["saved_run_id"] = attempt.snap["run_id"]
+            if moment == "after_save":
+                self.assertIsNotNone(self.store.get_run("u1", attempt.snap["run_id"]))
+                self._end_the_job_under_the_worker_then_delete(job_id, seen)
+            return out
+
+        with patch.object(PublicService, "_persist_run", persist):
+            if moment == "mid_research":
+                with at_stage("verify", lambda _ledger: self._end_the_job_under_the_worker_then_delete(job_id, seen)):
+                    results = self.drain()
+            else:
+                results = self.drain()
+        return job_id, seen, results
+
+    def _assert_nothing_recreated(self, job_id, seen, results):
+        self.assertTrue(seen["deleted"]["deleted"])
+        # The completion failed cleanly: no exception, no success, no crash.
+        self.assertEqual([r["status"] for r in results], ["lease_lost"])
+        self.assertNotIn("run_id", results[0])
+        # Nothing exists for the deleted user afterwards: no run, job, usage, reservation or artifact.
+        self.assertEqual(self.u1_rows(), {})
+        self.assertNotIn(job_id, self.store.jobs)
+        self.assert_u1_gone()
+        self.assert_u2_intact()
+        self.assertEqual(self.store.list_research_jobs("u1"), [])
+        self.assertEqual(self.store.list_usage("u1"), [])
+
+    def test_a_worker_inside_a_research_stage_recreates_nothing(self):
+        job_id, seen, results = self._run_zombie("mid_research")
+        self._assert_nothing_recreated(job_id, seen, results)
+        self.assertNotIn("saved_run_id", seen)  # it stopped at the next stage boundary
+        self.assertEqual(seen["refused_writes"], [])
+
+    def test_a_worker_about_to_save_its_result_recreates_nothing(self):
+        job_id, seen, results = self._run_zombie("before_save")
+        self._assert_nothing_recreated(job_id, seen, results)
+        # It did try to save: the foreign key refused the write for the deleted user.
+        self.assertEqual(len(seen["refused_writes"]), 1)
+        self.assertEqual(seen["refused_writes"][0][1], "u1")
+        self.assertNotIn("saved_run_id", seen)
+
+    def test_a_worker_that_saved_before_deletion_has_its_result_cascaded_and_cannot_complete(self):
+        job_id, seen, results = self._run_zombie("after_save")
+        self._assert_nothing_recreated(job_id, seen, results)
+        self.assertIsNone(self.store.get_run("u1", seen["saved_run_id"]))
+        self.assertEqual(seen["refused_writes"], [])
+
+    def test_every_late_write_for_the_deleted_user_is_refused(self):
+        with patch.object(service_module, "cancel_subscription"):
+            self.assertTrue(self.delete()["deleted"])
+        s = self.store
+        for name, call in (
+            ("save_run", lambda: s.save_run({"user_id": "u1", "run_id": "RR-LATE", "snapshot": {}})),
+            ("save_discovery", lambda: s.save_discovery({"user_id": "u1", "discovery_id": "D-LATE"})),
+            ("save_artifact", lambda: s.save_artifact({"user_id": "u1", "artifact_id": "A-LATE"})),
+            ("save_action", lambda: s.save_action({"user_id": "u1", "action_id": "X-LATE"})),
+            ("save_outcome", lambda: s.save_outcome({"user_id": "u1", "outcome_id": "O-LATE"})),
+            ("save_improvement", lambda: s.save_improvement({"user_id": "u1", "improvement_id": "I-LATE"})),
+            ("record_usage", lambda: s.record_usage({"id": "ev-late", "user_id": "u1", "units": 1.0})),
+            ("enqueue_research_job", lambda: s.enqueue_research_job("job-late", "u1", None, "investigate", "late",
+                                                                    {}, "res-late", 1, 600)),
+            ("create_case", lambda: s.create_case(str(uuid.uuid4()), "u1", "o", "clarifying", "h" * 64, {}, {})),
+        ):
+            with self.subTest(write=name):
+                with self.assertRaises(StoreError):
+                    call()
+        self.assertFalse(s.reserve_usage("res-late", "u1", "investigate", 1.0))
+        self.assertIsNone(s.heartbeat_research_job("job-late", "w1", 60, 60, None, 1.0))
+        self.assertEqual(self.u1_rows(), {})
+        self.assert_u2_intact()
+
+
+# ---- provider failure partway through deletion (owner review, Q18) -------------------------------
+
+class DeletionPartialFailureTests(DeletionTestBase):
+    """A failure at any step stops deletion without reporting success; a retry is safe and completes.
+
+    Each step that talks to the database or Stripe is failed in turn, on a paid account that has
+    a queued job, an unsettled usage marker and an abandoned reservation, so every step runs.
+    """
+
+    STEPS = (
+        ("revoke_user_credentials", "store", StoreError("database is unreachable")),
+        ("close_entitlement", "store", StoreError("database is unreachable")),
+        ("list_research_jobs", "store", StoreError("database is unreachable")),
+        ("request_cancel_research_job", "store", StoreError("database is unreachable")),
+        ("list_open_usage_reservations", "store", StoreError("database is unreachable")),
+        ("settle_usage", "store", StoreError("database is unreachable")),
+        ("release_usage", "store", StoreError("database is unreachable")),
+        ("cancel_subscription", "stripe", StripeAPIError(500, "api_error", "")),
+        ("cancel_subscription", "stripe", StripeError("Stripe API is unreachable")),
+        ("cancel_subscription", "stripe", StripeError("Stripe did not confirm that the subscription was cancelled")),
+        ("delete_auth_user", "store", StoreError("database is unreachable")),
+    )
+    BEFORE_STRIPE = {"revoke_user_credentials", "close_entitlement", "list_research_jobs",
+                     "request_cancel_research_job", "list_open_usage_reservations", "settle_usage",
+                     "release_usage"}
+
+    def fixture(self):
+        self.store.entitlement.update({"kind": "paid", "plan_id": "researcher",
+                                       "stripe_subscription_id": "sub_test", "stripe_customer_id": "cus_test"})
+        job_id = self.start("queued")["job_id"]
+        self.assertTrue(self.store.reserve_usage("res-marker", "u1", "investigate", 5.0))
+        self.assertTrue(self.store.mark_usage_unsettled("res-marker", "RR-SAME", 4.0, 0.02, ["partial_run"]))
+        self.assertTrue(self.store.reserve_usage("res-stale", "u1", "investigate", 5.0))
+        self.clock.advance(3601)
+        return job_id
+
+    def test_a_failure_at_any_step_reports_no_success_and_a_retry_completes_safely(self):
+        for step, target, error in self.STEPS:
+            with self.subTest(step=step, error=str(error)):
+                self.setUp()
+                job_id = self.fixture()
+                if target == "store":
+                    first = patch.object(self.store, step, side_effect=error)
+                    stripe_first = patch.object(service_module, "cancel_subscription")
+                else:
+                    first = patch.object(self.store, "get_account", wraps=self.store.get_account)  # no-op
+                    stripe_first = patch.object(service_module, "cancel_subscription", side_effect=error)
+                with first, stripe_first as cancel:
+                    with self.assertRaises((StoreError, StripeError, PublicServiceError)):
+                        self.delete()
+                    stripe_calls = cancel.call_count
+                # No success reported, nothing removed, and Stripe untouched before its step.
+                self.assertEqual(stripe_calls, 0 if step in self.BEFORE_STRIPE else 1)
+                self.assertIsNotNone(self.store.get_account("u1"))
+                self.assertEqual(self.store.get_entitlement("u1")["stripe_subscription_id"], "sub_test")
+                self.assertEqual(self.store.get_run("u1", "RR-SAME")["snapshot"]["owner"], "u1")
+                self.assertFalse(hasattr(self.store, "deleted_user"))
+                # The retry completes; the marker is charged exactly once across both attempts.
+                charged = {}
+                original = self.store.delete_auth_user
+
+                def snapshot(uid, original=original, charged=charged):
+                    charged["marker"] = [dict(e) for e in self.store.usage if e["id"] == "res-marker"]
+                    charged["stale"] = [dict(e) for e in self.store.usage if e["id"] == "res-stale"]
+                    charged["job"] = dict(self.store.jobs[job_id])
+                    return original(uid)
+
+                self.store.delete_auth_user = snapshot
+                with patch.object(service_module, "cancel_subscription") as cancel:
+                    out = self.delete()
+                cancel.assert_called_once_with("sub_test")
+                self.assertTrue(out["deleted"])
+                self.assertTrue(out["subscription_cancelled"])
+                self.assertEqual(len(charged["marker"]), 1)
+                self.assertEqual((charged["marker"][0]["units"], charged["marker"][0]["known_cost_usd"]), (4.0, 0.02))
+                self.assertEqual(charged["stale"], [])  # released, never charged
+                self.assertEqual(charged["job"]["status"], "cancelled")
+                self.assert_u1_gone()
+                self.assert_u2_intact()
+
+    def test_a_deletion_whose_identity_removal_had_no_effect_is_not_reported_as_done(self):
+        self.fixture()
+        with patch.object(service_module, "cancel_subscription"):
+            with patch.object(self.store, "delete_auth_user", return_value=True):
+                with self.assertRaises(PublicServiceError):
+                    self.delete()
+            self.assertIsNotNone(self.store.get_account("u1"))
+            self.assertTrue(self.delete()["deleted"])
+        self.assert_u1_gone()
+
+    def test_an_unconfirmed_stripe_cancellation_stops_deletion(self):
+        from lofgren_intelligence.hosted import stripe as stripe_module
+        self.fixture()
+        for answer in ({"id": "sub_test", "status": "active"}, {"id": "sub_test"}, None, []):
+            with self.subTest(answer=answer):
+                with patch.object(stripe_module, "stripe_delete", return_value=answer), \
+                        patch.object(stripe_module, "stripe_get") as get:
+                    with self.assertRaises(StripeError) as ctx:
+                        self.delete()
+                get.assert_not_called()
+                self.assertIn("did not confirm", str(ctx.exception))
+                self.assertIsNotNone(self.store.get_account("u1"))
+                self.assertFalse(hasattr(self.store, "deleted_user"))
+        with patch.object(stripe_module, "stripe_delete", return_value={"id": "sub_test", "status": "canceled"}):
+            self.assertTrue(self.delete()["deleted"])
+        self.assert_u1_gone()
+
+    def test_the_route_never_reports_success_for_a_failed_step(self):
+        store = FakeStore(quota=500)
+        store.entitlement.update({"stripe_subscription_id": "sub_test"})
+        for error in (StripeAPIError(500, "api_error", ""), StripeError("Stripe API is unreachable")):
+            with self.subTest(error=str(error)):
+                with patch.object(service_module, "cancel_subscription", side_effect=error):
+                    status, body = _post(store, {"confirmation": ACCOUNT_DELETION_PHRASE})
+                self.assertEqual((status, body["error"]), (400, "account_deletion_refused"))
+                self.assertNotIn("deleted", body)
+                self.assertIsNotNone(store.account)
+        with patch.object(store, "delete_auth_user", side_effect=StoreError("database is unreachable")), \
+                patch.object(service_module, "cancel_subscription"):
+            status, body = _post(store, {"confirmation": ACCOUNT_DELETION_PHRASE})
+        self.assertEqual((status, body["error"]), (400, "account_deletion_refused"))
+        self.assertNotIn("deleted", body)
+        with patch.object(service_module, "cancel_subscription"):
+            status, body = _post(store, {"confirmation": ACCOUNT_DELETION_PHRASE})
+        self.assertEqual((status, body["deleted"]), (200, True))
+
+
 # ---- HTTP route -------------------------------------------------------------------------------
 
 def _post(store, body, token="supabase-session"):

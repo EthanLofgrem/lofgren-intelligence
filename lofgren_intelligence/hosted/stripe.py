@@ -126,13 +126,18 @@ def cancel_subscription(subscription_id: str) -> dict[str, Any]:
     A user whose subscription already ended (for example through the billing
     portal) keeps its id on the entitlement. Without this, account deletion
     would fail forever on Stripe's error for the second cancellation.
-    Any other failure still raises, so deletion stops before data removal.
+    Any other failure still raises, so deletion stops before data removal. So
+    does an answer that does not confirm the subscription ended (unknown =
+    not cancelled): account deletion never proceeds on an unconfirmed cancel.
     """
     if not subscription_id:
         raise StripeError("Stripe subscription id is required")
     path = "/v1/subscriptions/" + urllib.parse.quote(subscription_id, safe="")
     try:
-        return stripe_delete(path)
+        result = stripe_delete(path)
+        if not isinstance(result, dict) or str(result.get("status") or "") not in _ENDED:
+            raise StripeError("Stripe did not confirm that the subscription was cancelled")
+        return result
     except StripeAPIError as exc:
         if exc.status == 404:
             return {"id": subscription_id, "status": "canceled", "already_ended": True}

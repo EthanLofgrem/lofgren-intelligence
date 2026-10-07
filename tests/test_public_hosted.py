@@ -48,6 +48,14 @@ class FakeStore:
         self.case_events = []
         self.verified_user = {"id": "u1", "email": "u@example.com"}
 
+    # Every li_* table keyed by user_id references auth.users(id): once the auth user is deleted
+    # (delete_auth_user), PostgreSQL refuses any write that names it (foreign-key violation,
+    # PostgREST HTTP 409, SupabaseStore StoreError). Writes are refused here the same way.
+    def _fk(self, user_id):
+        if user_id in self.__dict__.get("deleted_users", ()):
+            from lofgren_intelligence.hosted.store import StoreError
+            raise StoreError("database request failed (HTTP 409)")
+
     def verify_supabase_user(self, token):
         if token != "supabase-session":
             raise RuntimeError("bad session")
@@ -69,6 +77,7 @@ class FakeStore:
         return self.oauth_clients.get(client_id)
 
     def put_oauth_code(self, row):
+        self._fk(row.get("user_id"))
         self.oauth_codes[row["code_hash"]] = dict(row)
 
     def consume_oauth_code(self, digest):
@@ -77,6 +86,7 @@ class FakeStore:
         return row if row and not row.get("used_at") else None
 
     def put_access_token(self, row):
+        self._fk(row.get("user_id"))
         self.access_tokens[row["token_hash"]] = dict(row)
 
     def get_access_token(self, digest):
@@ -85,6 +95,7 @@ class FakeStore:
         return row if row and not row.get("revoked_at") else None
 
     def put_refresh_token(self, row):
+        self._fk(row.get("user_id"))
         self.refresh_tokens[row["token_hash"]] = dict(row)
 
     def consume_refresh_token(self, digest):
@@ -93,12 +104,14 @@ class FakeStore:
         return row if row and not row.get("used_at") else None
 
     def save_run(self, row):
+        self._fk(row["user_id"])
         self.runs[(row["user_id"], row["run_id"])] = dict(row)
 
     def get_run(self, user_id, run_id):
         return self.runs.get((user_id, run_id))
 
     def save_discovery(self, row):
+        self._fk(row["user_id"])
         self.discoveries[(row["user_id"], row["discovery_id"])] = dict(row)
 
     def get_discovery(self, user_id, discovery_id):
@@ -108,6 +121,7 @@ class FakeStore:
         return [row for (uid, _), row in self.discoveries.items() if uid == user_id][:limit]
 
     def save_artifact(self, row):
+        self._fk(row["user_id"])
         self.artifacts[(row["user_id"], row["artifact_id"])] = dict(row)
 
     def get_artifact(self, user_id, artifact_id):
@@ -117,6 +131,7 @@ class FakeStore:
         return [row for (uid, _), row in self.artifacts.items() if uid == user_id][:limit]
 
     def save_action(self, row):
+        self._fk(row["user_id"])
         self.actions[(row["user_id"], row["action_id"])] = dict(row)
 
     def get_action(self, user_id, action_id):
@@ -126,6 +141,7 @@ class FakeStore:
         return [row for (uid, _), row in self.actions.items() if uid == user_id][:limit]
 
     def save_outcome(self, row):
+        self._fk(row["user_id"])
         self.outcomes[(row["user_id"], row["outcome_id"])] = dict(row)
 
     def get_outcome(self, user_id, outcome_id):
@@ -135,6 +151,7 @@ class FakeStore:
         return [row for (uid, _), row in self.outcomes.items() if uid == user_id][:limit]
 
     def save_improvement(self, row):
+        self._fk(row["user_id"])
         self.improvements[(row["user_id"], row["improvement_id"])] = dict(row)
 
     def get_improvement(self, user_id, improvement_id):
@@ -153,6 +170,8 @@ class FakeStore:
                     and row.get("created_at", now) < now - timedelta(hours=1)
                     and (row.get("held_until") is None or row["held_until"] < now)):
                 row["status"] = "expired"
+        if self.entitlement is None or user_id in self.__dict__.get("deleted_users", ()):
+            return False
         quota = float(self.entitlement.get("quota_units_per_week") or 0)
         active = bool(self.entitlement.get("active"))
         used = sum(float(x.get("units") or 0) for x in self.usage if x["user_id"] == user_id)
@@ -240,6 +259,7 @@ class FakeStore:
     def enqueue_research_job(self, job_id, user_id, case_id, kind, idempotency_key, job_input,
                              reservation_id, max_attempts, queue_ttl_seconds):
         from datetime import timedelta
+        self._fk(user_id)
         with self._job_lock:
             if not idempotency_key or len(idempotency_key) > 200 or int(queue_ttl_seconds) <= 0:
                 return None
@@ -512,6 +532,7 @@ class FakeStore:
         return max(versions) if versions else None
 
     def create_case(self, case_id, user_id, objective, status, content_hash, charter, answers):
+        self._fk(user_id)
         if case_id in self.cases:
             raise RuntimeError("duplicate case id")
         now = self._case_now().isoformat()
@@ -620,6 +641,7 @@ class FakeStore:
         return True
 
     def add_case_event(self, row):
+        self._fk(row.get("user_id"))
         self.case_events.append(dict(row))
 
     def list_case_events(self, user_id, case_id):
@@ -676,6 +698,7 @@ class FakeStore:
         if getattr(self, "deleted_user", None) == user_id:
             return False
         self.deleted_user = user_id
+        self.__dict__.setdefault("deleted_users", set()).add(user_id)
         if user_id == "u1":
             self.account = None
             self.entitlement = None
@@ -698,6 +721,7 @@ class FakeStore:
         return True
 
     def record_usage(self, row):
+        self._fk(row["user_id"])
         self.usage.append(dict(row))
 
     def usage_units_since(self, user_id, since_iso):

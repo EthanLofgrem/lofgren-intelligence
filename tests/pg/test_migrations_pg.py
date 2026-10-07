@@ -1270,5 +1270,163 @@ class OAuthAndBillingTest(PgCase):
         self.assertEqual((kind, float(quota)), ("paid", 5000.0))
 
 
+
+# ---------------------------------------------------------------------------
+# Q18 owner review: account deletion racing a research worker
+# ---------------------------------------------------------------------------
+
+USER_TABLES_SQL = r"""
+select c.table_name::text from information_schema.columns c
+ where c.table_schema = 'public' and c.table_name like 'li\_%' and c.column_name = 'user_id'
+ order by 1
+"""
+
+
+def wait_until_lock_waiting(admin, pid: int, limit: float = 15.0) -> None:
+    """Block until backend `pid` is waiting on a heavyweight lock (deterministic interleaving)."""
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        row = admin.execute("select wait_event_type from pg_stat_activity where pid = %s", (pid,)).fetchone()
+        if row and row[0] == "Lock":
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"backend {pid} never waited on a lock")
+
+
+@pg_test
+class AccountDeletionRaceTest(PgCase):
+    """A worker that is mid-job when deletion starts recreates nothing after the cascade.
+
+    The worker, the reclaimer, the deletion and the identity removal each use their own
+    connection. Every refusal is checked on the worker's own restricted service_role
+    session, and the proof is the final table state: no row of any li_ table keyed by
+    user_id names the deleted user.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # Claims and reclaims are global: this class gets its own clean database.
+        cls.dbname, _ = provision("deletion")
+
+    def user_rows(self, user):
+        tables = [r[0] for r in self.admin.execute(USER_TABLES_SQL).fetchall()]
+        self.assertGreaterEqual(len(tables), 17)
+        for table in ("li_runs", "li_research_jobs", "li_usage_reservations", "li_usage_events", "li_artifacts",
+                      "li_discoveries", "li_cases", "li_case_events"):
+            self.assertIn(table, tables)
+        counts = {}
+        for table in tables:
+            n = self.admin.execute(pgsql.SQL("select count(*) from {} where user_id = %s").format(
+                pgsql.Identifier("public", table)), (user,)).fetchone()[0]
+            if n:
+                counts[table] = n
+        return counts
+
+    def delete_identity(self, user):
+        """What Supabase Auth's admin delete does: remove auth.users (the cascade does the rest)."""
+        self.admin.execute("delete from auth.users where id = %s", (user,))
+
+    def test_a_worker_whose_job_ended_under_it_recreates_nothing_after_deletion(self):
+        user = self.new_user()
+        rid = str(uuid.uuid4())
+        self.assertTrue(self.store.reserve_usage(rid, user, "investigate", 20))
+        job_id = self.store.enqueue_research_job(str(uuid.uuid4()), user, None, "investigate", "zombie",
+                                                 {"objective": "x"}, rid, 1, 600)["id"]
+        worker = self.new_store()       # the worker's own connection
+        reclaimer = self.new_store()    # another worker's housekeeping
+        deleter = self.new_store()      # PublicService.delete_account's RPCs
+        self.assertEqual(worker.claim_research_job("w1", 1, 0)["id"], job_id)
+        self.assertIsNotNone(worker.heartbeat_research_job(job_id, "w1", 1, 0,
+                                                           {"phase": "running", "known_cost_usd": 0.01}, 3))
+        lease = self.one("select lease_expires_at from public.li_research_jobs where id = %s", (job_id,))[0]
+        self.wait_db_past(lease)
+        # The worker is stalled mid-research; its lease expires and the job ends without it.
+        self.assertIn(job_id, reclaimer.reclaim_research_jobs(100, 600, 3))
+        self.assertEqual(self.one("select status, error_code from public.li_research_jobs where id = %s",
+                                  (job_id,)), ("failed", "LEASE_EXPIRED"))
+        # Deletion: no open job, the marker is settled, then the identity and the cascade.
+        self.assertEqual(deleter.request_cancel_research_job(job_id, user)["status"], "failed")
+        self.assertEqual(deleter.settle_usage(rid), "settled")
+        self.delete_identity(user)
+        self.assertEqual(self.user_rows(user), {})
+
+        # The worker wakes up and tries to finish: every write is refused, every job RPC finds nothing.
+        with self.assertRaises(pg_errors.ForeignKeyViolation):
+            self.save_run(worker.conn, user, "run-zombie")
+        with self.assertRaises(pg_errors.ForeignKeyViolation):
+            worker.conn.execute("insert into public.li_usage_events(id, user_id, run_id, operation, units) "
+                                "values (%s, %s, null, 'investigate', 5)", (str(uuid.uuid4()), user))
+        self.assertIsNone(worker.heartbeat_research_job(job_id, "w1", 60, 0, {"phase": "result_saved"}, 5))
+        self.assertIsNone(worker.complete_research_job(job_id, "w1", "run-zombie", 5))
+        self.assertIsNone(worker.fail_research_job(job_id, "w1", "RESULT_NOT_SAVED", False, 0, 5,
+                                                   {"phase": "finalizing"}, 600))
+        self.assertFalse(worker.finalize_usage(rid, "run-zombie", 5, 0.01, []))
+        self.assertFalse(worker.mark_usage_unsettled(rid, "run-zombie", 5, 0.01, ["partial_run"]))
+        self.assertEqual(worker.settle_usage(rid), "missing")
+        self.assertFalse(worker.reserve_usage(str(uuid.uuid4()), user, "investigate", 1))
+        try:
+            again = worker.enqueue_research_job(str(uuid.uuid4()), user, None, "investigate", "zombie-2",
+                                                {"objective": "x"}, rid, 1, 600)
+        except StoreError:
+            again = None
+        self.assertIsNone(again)
+        # Final state, read on an independent admin connection.
+        self.assertEqual(self.user_rows(user), {})
+        self.assertIsNone(self.one("select 1 from auth.users where id = %s", (user,)))
+
+    def test_a_result_insert_that_wins_the_race_is_removed_by_the_cascade(self):
+        user = self.new_user()
+        worker = role_connect(self.dbname)
+        self.addCleanup(worker.close)
+        deleter = admin_connect(self.dbname)
+        self.addCleanup(deleter.close)
+        failures = []
+        with worker.transaction():
+            self.save_run(worker, user, "run-first")  # uncommitted: holds a key-share lock on auth.users
+
+            def delete():
+                try:
+                    deleter.execute("delete from auth.users where id = %s", (user,))
+                except BaseException as exc:  # noqa: BLE001 - reported below
+                    failures.append(exc)
+
+            t = threading.Thread(target=delete)
+            t.start()
+            wait_until_lock_waiting(self.admin, deleter.info.backend_pid)  # the delete waits for the insert
+        t.join(30)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(self.user_rows(user), {})
+        self.assertIsNone(self.one("select 1 from auth.users where id = %s", (user,)))
+
+    def test_a_result_insert_that_loses_the_race_is_refused(self):
+        user = self.new_user()
+        worker = role_connect(self.dbname)
+        self.addCleanup(worker.close)
+        deleter = admin_connect(self.dbname)
+        self.addCleanup(deleter.close)
+        outcome = []
+        with deleter.transaction():
+            deleter.execute("delete from auth.users where id = %s", (user,))  # uncommitted
+
+            def insert():
+                try:
+                    self.save_run(worker, user, "run-late")
+                    outcome.append("inserted")
+                except pg_errors.ForeignKeyViolation:
+                    outcome.append("refused")
+                except BaseException as exc:  # noqa: BLE001 - reported below
+                    outcome.append(exc)
+
+            t = threading.Thread(target=insert)
+            t.start()
+            wait_until_lock_waiting(self.admin, worker.info.backend_pid)  # the insert waits for the delete
+        t.join(30)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(outcome, ["refused"])
+        self.assertEqual(self.user_rows(user), {})
+        self.assertIsNone(self.one("select 1 from auth.users where id = %s", (user,)))
+
+
 if __name__ == "__main__":
     unittest.main()
