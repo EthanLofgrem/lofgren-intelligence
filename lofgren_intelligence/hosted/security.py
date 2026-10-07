@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..adapters.net import validate_public_url
@@ -23,6 +24,20 @@ def validate_remote_args(args: dict[str, Any]) -> dict[str, Any]:
     a = dict(args)
     if "files" in a or "tle_path" in a:
         raise PublicInputError("server-local file paths are not accepted by the remote MCP service")
+    from ..adapters.public_api import check_query, check_bound
+    from ..adapters.manifest import parse_manifest
+    for key in ("europepmc", "trials"):
+        if a.get(key) is not None:
+            a[key] = check_query(a[key], key)
+    if "max_records" in a:
+        a["max_records"] = check_bound(a["max_records"], "max_records", 20)
+    if a.get("sources_manifest") is not None:
+        if not isinstance(a["sources_manifest"], dict):
+            raise PublicInputError("remote sources_manifest must be an inline object, never a file path")
+        raw = json.dumps(a["sources_manifest"], sort_keys=True, allow_nan=False).encode("utf-8")
+        manifest = parse_manifest(raw)
+        if len(manifest.sources) > MAX_URLS:
+            raise PublicInputError("too many manifest URLs")
     objective = a.get("objective") or a.get("claim")
     if objective is not None and len(str(objective)) > MAX_OBJECTIVE_CHARS:
         raise PublicInputError("objective/claim is too large")
