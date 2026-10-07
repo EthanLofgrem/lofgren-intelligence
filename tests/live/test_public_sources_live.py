@@ -3,6 +3,11 @@
 One tiny real query to Europe PMC and one to ClinicalTrials.gov, through the SSRF-protected fetcher. It runs
 only when LI_LIVE_SMOKE=1 and is skipped otherwise, so CI never depends on a third-party API. It lives in its
 own module, with no pinned instant, so the clock-shift check (tests/test_clock_drift.py) does not run it.
+
+tests/live is not a package, so the default suite (unittest discover -s tests) never collects it and the
+exact-SHA gates' zero-skip rule holds. Run it explicitly:
+
+    LI_LIVE_SMOKE=1 python -m unittest -v tests.live.test_public_sources_live
 """
 
 import os

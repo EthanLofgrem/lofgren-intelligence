@@ -9,6 +9,10 @@ everywhere and keep that proof honest:
    test's own store, service-role or admin connection;
 3. every test reads the final table state on its own (admin) connection, not just RPC returns;
 4. the job refuses skips, and uploads the test log and the server log as artifacts, always.
+
+The opt-in suites (tests/pg, and tests/live: the live public-API smoke) are not packages, so the default
+suite never collects them: the exact-SHA gates require zero skipped tests, and a skipped test proves nothing.
+Each is run explicitly where it can run: tests/pg by postgres-proof (zero skips allowed), tests/live by hand.
 """
 
 from __future__ import annotations
@@ -114,6 +118,19 @@ class PostgresProofContractTests(unittest.TestCase):
         classes = re.findall(r"^class (\w+)\((?:PgCase|unittest\.TestCase)\):$", source, re.M)
         self.assertEqual(len(re.findall(r"^@pg_test\nclass ", source, re.M)),
                          len([c for c in classes if c != "PgCase"]))  # PgCase is the base: no tests
+
+
+    def test_opt_in_suites_stay_out_of_the_default_suite_but_load_by_name(self):
+        loader = unittest.TestLoader()
+        for package, module, minimum in (("pg", "tests.pg.test_migrations_pg", 48),
+                                         ("live", "tests.live.test_public_sources_live", 2)):
+            with self.subTest(suite=module):
+                self.assertFalse((ROOT / "tests" / package / "__init__.py").exists(),
+                                 f"tests/{package} must not be a package: the default suite would collect its skips")
+                self.assertGreaterEqual(loader.loadTestsFromName(module).countTestCases(), minimum)
+        # Every other test directory is collected by the default suite as usual.
+        dirs = {p.parent.name for p in (ROOT / "tests").glob("*/test_*.py")}
+        self.assertEqual(dirs, {"pg", "live"})
 
 
 if __name__ == "__main__":

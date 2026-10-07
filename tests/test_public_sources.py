@@ -2,7 +2,8 @@
 
 Every test here runs offline against recorded JSON fixtures (tests/fixtures/public_sources, written by hand
 from the documented response shapes; the drug "zelvapril" is fictional). The one exception is
-tests/test_public_sources_live.py, which makes one tiny query to each API and runs only when LI_LIVE_SMOKE=1.
+tests/live/test_public_sources_live.py, which makes one tiny query to each API and runs only when LI_LIVE_SMOKE=1
+(explicitly: it is outside the default suite).
 """
 
 import contextlib
