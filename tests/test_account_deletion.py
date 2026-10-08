@@ -152,7 +152,7 @@ class AccountPageScriptTests(unittest.TestCase):
                 if "src=" not in attrs:
                     source_inline += 1
         self.assertEqual(source_inline, rendered)
-        self.assertEqual(rendered, 4)
+        self.assertEqual(rendered, 5)
 
 
 # ---- server-side lifecycle --------------------------------------------------------------------

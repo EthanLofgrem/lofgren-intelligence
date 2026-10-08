@@ -534,7 +534,7 @@ class ApprovalPageTests(CaseTestBase):
         raw = json.dumps(body or {}).encode()
         scope = {"type": "http", "method": method, "path": f"/cases/{case_id}", "raw_path": b"/cases/x",
                  "query_string": b"", "headers": headers, "scheme": "https", "server": ("li.example", 443),
-                 "client": ("203.0.113.9", 1), "root_path": "", "path_params": {"case_id": case_id}}
+                 "client": ("203.0.113.9", 1), "root_path": "", "path_params": {"case_id": case_id, "job_id": case_id}}
 
         async def receive():
             return {"type": "http.request", "body": raw, "more_body": False}
@@ -542,6 +542,58 @@ class ApprovalPageTests(CaseTestBase):
         env = {"SUPABASE_URL": "https://project.supabase.example", "SUPABASE_PUBLISHABLE_KEY": "publishable-test"}
         with patch.object(web_app, "SupabaseStore", return_value=self.store), patch.dict(os.environ, env):
             return asyncio.run(handler(Request(scope, receive)))
+
+    def test_workspace_requires_session_and_uses_server_owner(self):
+        from lofgren_intelligence.hosted import web_app
+        for token in (None, "forged-token"):
+            self.assertEqual(self._call(web_app.workspace_cases, "unused", token).status_code, 401)
+        response = self._call(web_app.workspace_cases, "unused", "tok-u1", "POST",
+                              {"objective": OBJECTIVE, "answers": dict(ANSWERS), "user_id": "u2"})
+        self.assertEqual(response.status_code, 200)
+        saved = json.loads(response.body)
+        self.assertEqual(self.store.cases[saved["case_id"]]["user_id"], "u1")
+        self.assertEqual(self.store.runs, {})
+        with patch.object(self.store, "list_cases", return_value=[
+            {"id": "own", "user_id": "u1", "status": "clarifying", "secret": "do-not-return"},
+            {"id": "foreign", "user_id": "u2", "status": "approved"},
+        ], create=True) as listing:
+            response = self._call(web_app.workspace_cases, "unused", "tok-u1")
+        listing.assert_called_once_with("u1", limit=101)
+        self.assertEqual(json.loads(response.body)["cases"], [{"id": "own", "status": "clarifying"}])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_workspace_durable_start_replay_status_and_cancellation(self):
+        from lofgren_intelligence.hosted import web_app
+        case = self.open_ready_case()
+        refused = self._call(web_app.workspace_start_research, case["case_id"], "tok-u1", "POST")
+        self.assertNotEqual(refused.status_code, 200)
+        self.approve(case)
+        started = self._call(web_app.workspace_start_research, case["case_id"], "tok-u1", "POST",
+                             {"objective": "client replacement", "user_id": "u2"})
+        self.assertEqual(started.status_code, 200, started.body)
+        job = json.loads(started.body)
+        self.assertEqual(job["status"], "queued")
+        replay = self._call(web_app.workspace_start_research, case["case_id"], "tok-u1", "POST")
+        self.assertEqual(json.loads(replay.body)["job_id"], job["job_id"])
+        self.assertEqual(len(self.store.jobs), 1)
+        status = self._call(web_app.workspace_job, job["job_id"], "tok-u1")
+        self.assertEqual(json.loads(status.body)["status"], "queued")
+        for token in (None, "forged-token", "tok-u2"):
+            self.assertNotEqual(self._call(web_app.workspace_job, job["job_id"], token).status_code, 200)
+            self.assertNotEqual(self._call(web_app.workspace_job, job["job_id"], token, "POST").status_code, 200)
+        cancelled = self._call(web_app.workspace_job, job["job_id"], "tok-u1", "POST")
+        self.assertEqual(json.loads(cancelled.body)["status"], "cancelled")
+        self.assertEqual(self.store.runs, {})
+
+    def test_workspace_page_does_not_embed_private_records(self):
+        from lofgren_intelligence.hosted import web_app
+        response = self._call(web_app.workspace_page, "unused")
+        text = response.body.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Real persisted cases", text)
+        self.assertIn("textContent", text)
+        self.assertNotIn("service-role", text)
+        self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
     def test_unauthenticated_and_wrong_user_requests_are_refused(self):
         from lofgren_intelligence.hosted import web_app
@@ -564,6 +616,8 @@ class ApprovalPageTests(CaseTestBase):
         details = self._call(web_app.case_details, case["case_id"], "tok-u1")
         self.assertEqual(details.status_code, 200)
         shown = json.loads(details.body)
+        self.assertEqual(shown["history"]["events"][0]["kind"], "case_created")
+        self.assertEqual(details.headers["cache-control"], "no-store")
         self.assertEqual(shown["content_hash"], case["content_hash"])
         self.assertEqual(shown["charter"]["objective"], OBJECTIVE)
         stale = self._call(web_app.case_approve, case["case_id"], "tok-u1", "POST",
@@ -675,6 +729,34 @@ class MigrationTests(unittest.TestCase):
         for column in ("user_id uuid not null", "content_hash", "budget_usd", "budget_units", "expires_at",
                        "consumed_at", "token_hash", "charter_version"):
             self.assertIn(column, sql)
+
+
+class PersistedHistoryTests(CaseTestBase):
+    def test_history_reopens_saved_events_without_internal_payloads(self):
+        case = self.open_ready_case()
+        self.approve(case)
+        self.store.case_events[0]["token_hash"] = "private-test-token"
+        self.store.case_events[0]["payload"] = {"internal": "private-test-data"}
+        reopened = PublicService(self.store, clock=self.clock).case_charter_details("u1", case["case_id"])
+        self.assertEqual([e["kind"] for e in reopened["history"]["events"]],
+                         ["case_created", "charter_approved"])
+        self.assertNotIn("private-test", json.dumps(reopened["history"]))
+        self.assertFalse(reopened["history"]["truncated"])
+        with self.assertRaises(CaseNotFound):
+            self.service.case_charter_details("u2", case["case_id"])
+
+    def test_history_defends_against_cross_tenant_rows_and_reports_bounds(self):
+        case = self.open_ready_case()
+        rows = [{"case_id": case["case_id"], "user_id": "u1", "kind": f"event-{i}"}
+                for i in range(205)]
+        rows.append({"case_id": case["case_id"], "user_id": "u2", "kind": "other-user"})
+        rows.append({"case_id": "other-case", "user_id": "u1", "kind": "other-case"})
+        with patch.object(self.store, "list_case_events", return_value=rows):
+            history = self.service.case_charter_details("u1", case["case_id"])["history"]
+        self.assertTrue(history["truncated"])
+        self.assertEqual(len(history["events"]), 200)
+        self.assertEqual(history["events"][0]["kind"], "event-5")
+        self.assertEqual(history["events"][-1]["kind"], "event-204")
 
 
 if __name__ == "__main__":

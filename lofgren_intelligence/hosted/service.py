@@ -586,6 +586,14 @@ class PublicService:
             "run_status": approval.get("run_status"),
         }
 
+    def list_owned_cases(self, user_id: str) -> dict[str, Any]:
+        """Bounded workspace index; ownership never comes from request parameters."""
+        rows = self.store.list_cases(user_id, limit=101)
+        owned = [row for row in rows if str(row.get("user_id")) == str(user_id)]
+        return {"cases": [{key: row[key] for key in ("id", "objective", "status", "created_at")
+                           if key in row} for row in owned[:100]],
+                "truncated": len(owned) > 100, "limit": 100}
+
     def case_status(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
         case = self._case(user_id, a.get("case_id"))
         row = self._latest_charter(user_id, case["id"])
@@ -601,6 +609,20 @@ class PublicService:
         view["approval"] = self._approval_state(user_id, case, row)
         view["charter"] = row["charter"]
         view["approval_ttl_minutes"] = case_model.approval_ttl_seconds() // 60
+        # The same owner check and store boundary used by MCP protect browser
+        # history. Only project public fields: never return approval tokens,
+        # internal payloads or worker credentials from an event row.
+        events = self.store.list_case_events(user_id, case["id"])
+        owned = [event for event in events
+                 if str(event.get("user_id")) == str(user_id)
+                 and str(event.get("case_id")) == str(case["id"])]
+        view["history"] = {
+            "events": [{key: event[key] for key in
+                        ("kind", "created_at", "charter_version", "run_id") if key in event}
+                       for event in owned[-200:]],
+            "truncated": len(owned) > 200,
+            "limit": 200,
+        }
         return view
 
     def approve_case_charter(

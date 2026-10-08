@@ -45,6 +45,7 @@ def _supabase_pages():
             "account": _call(web_app.account_page, "/account"),
             "action": asyncio_call(web_app.action_page, "/actions/ACT-1", {"action_id": "ACT-1"}),
             "case": asyncio_call(web_app.case_page, "/cases/CASE-1", {"case_id": "CASE-1"}),
+            "workspace": asyncio_call(web_app.workspace_page, "/workspace", {}),
         }
 
 
@@ -113,7 +114,7 @@ class PageTests(unittest.TestCase):
         cls.pages = _supabase_pages()
 
     def test_every_supabase_page_renders(self):
-        self.assertEqual(set(self.pages), {"consent", "account", "action", "case"})
+        self.assertEqual(set(self.pages), {"consent", "account", "action", "case", "workspace"})
         for name, resp in self.pages.items():
             with self.subTest(page=name):
                 self.assertEqual(resp.status_code, 200)
@@ -178,7 +179,7 @@ class SourceTests(unittest.TestCase):
     def test_no_supabase_page_loads_a_floating_version(self):
         source = (ROOT / "lofgren_intelligence" / "hosted" / "web_app.py").read_text(encoding="utf-8")
         self.assertNotIn("supabase-js@", source)
-        self.assertEqual(source.count("{site.supabase_script_tag(nonce)}"), 4)
+        self.assertEqual(source.count("{site.supabase_script_tag(nonce)}"), len(_supabase_pages()))
 
 
 class StaticRouteTests(unittest.TestCase):
