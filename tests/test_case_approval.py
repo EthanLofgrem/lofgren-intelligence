@@ -543,6 +543,35 @@ class ApprovalPageTests(CaseTestBase):
         with patch.object(web_app, "SupabaseStore", return_value=self.store), patch.dict(os.environ, env):
             return asyncio.run(handler(Request(scope, receive)))
 
+    def test_workspace_requires_session_and_uses_server_owner(self):
+        from lofgren_intelligence.hosted import web_app
+        for token in (None, "forged-token"):
+            self.assertEqual(self._call(web_app.workspace_cases, "unused", token).status_code, 401)
+        response = self._call(web_app.workspace_cases, "unused", "tok-u1", "POST",
+                              {"objective": OBJECTIVE, "answers": dict(ANSWERS), "user_id": "u2"})
+        self.assertEqual(response.status_code, 200)
+        saved = json.loads(response.body)
+        self.assertEqual(self.store.cases[saved["case_id"]]["user_id"], "u1")
+        self.assertEqual(self.store.runs, {})
+        with patch.object(self.store, "list_cases", return_value=[
+            {"id": "own", "user_id": "u1", "status": "clarifying", "secret": "do-not-return"},
+            {"id": "foreign", "user_id": "u2", "status": "approved"},
+        ], create=True) as listing:
+            response = self._call(web_app.workspace_cases, "unused", "tok-u1")
+        listing.assert_called_once_with("u1", limit=101)
+        self.assertEqual(json.loads(response.body)["cases"], [{"id": "own", "status": "clarifying"}])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_workspace_page_does_not_embed_private_records(self):
+        from lofgren_intelligence.hosted import web_app
+        response = self._call(web_app.workspace_page, "unused")
+        text = response.body.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Real persisted cases", text)
+        self.assertIn("textContent", text)
+        self.assertNotIn("service-role", text)
+        self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
+
     def test_unauthenticated_and_wrong_user_requests_are_refused(self):
         from lofgren_intelligence.hosted import web_app
         case = self.open_ready_case()
