@@ -125,6 +125,9 @@ action tools for execution. Hiding tools is not backend permission enforcement.
 The SDK rejects missing/invalid/expired/revoked/wrong-resource credentials with
 401 before tool execution. A valid token without `mcp` receives 403 with an
 insufficient_scope challenge. WWW-Authenticate advertises resource_metadata.
+The SDK also serves its advertised path-specific resource metadata URL; tests
+retrieve the exact challenge URL rather than assuming the root URL. All MCP
+responses carry Cache-Control: no-store, including authorization denials.
 Do not mistake Vercel's SSO 401 for LI's OAuth challenge. Authenticated domain
 denials remain sanitized tool errors; do not leak another owner's object or
 trigger an OAuth loop for a stale charter. Never weaken approval to fix a test.

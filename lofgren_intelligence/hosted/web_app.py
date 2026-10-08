@@ -772,6 +772,9 @@ class RequestTelemetry:
             if message["type"] == "http.response.start":
                 status = int(message["status"])
                 headers = list(message.get("headers", []))
+                if scope.get("path", "").rstrip("/") == "/mcp":
+                    headers = [(key, value) for key, value in headers if key.lower() != b"cache-control"]
+                    headers.append((b"cache-control", b"no-store"))
                 headers.append((b"x-request-id", request_id.encode("ascii")))
                 message["headers"] = headers
             await send(message)

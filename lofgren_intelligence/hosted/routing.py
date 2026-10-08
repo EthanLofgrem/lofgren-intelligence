@@ -21,8 +21,8 @@ class AssessmentResult(BaseModel):
     workflow: Literal["none", "evidence_brief", "comparison", "study_support", "artifact", "monitoring", "action_proposal"]
     clarifications: Annotated[list[str], Field(max_length=5)]
     next_step: Literal["answer_without_li", "ask_clarification", "review_case_scope"]
-    research_started: Literal[False] = False
-    case_created: Literal[False] = False
+    research_started: Literal[False]
+    case_created: Literal[False]
     limitations: list[str]
 
 
@@ -39,6 +39,7 @@ def assess_request(request_summary: str, desired_output: DesiredOutput) -> Asses
 
     def result(decision, reason, workflow="none", questions=None):
         return AssessmentResult(decision=decision, reason=reason, workflow=workflow,
+            research_started=False, case_created=False,
             clarifications=questions or [],
             next_step={"recommended": "review_case_scope", "not_recommended": "answer_without_li", "needs_clarification": "ask_clarification"}[decision],
             limitations=limitations)

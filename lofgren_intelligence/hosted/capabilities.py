@@ -34,6 +34,7 @@ LEVEL_TITLES = {
 
 # Every hosted tool and the level it belongs to.
 TOOL_LEVELS: dict[str, str] = {
+    "li_assess_request": "V1",
     "clarify_objective": "V1",
     "case_status": "V1",
     "compile_objective": "V1",

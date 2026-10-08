@@ -52,6 +52,8 @@ class RoutingTests(unittest.TestCase):
         for key in ("research_started", "case_created"):
             with self.assertRaises(ValidationError):
                 AssessmentResult.model_validate({**data, key: True})
+            with self.assertRaises(ValidationError):
+                AssessmentResult.model_validate({k: v for k, v in data.items() if k != key})
 
 
 class RoutingMCPTests(unittest.IsolatedAsyncioTestCase):
@@ -126,7 +128,13 @@ class OAuthHTTPBoundaryTests(unittest.TestCase):
                     with self.subTest(token=token):
                         response = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
                         self.assertEqual(response.status_code, status)
+                        self.assertEqual(response.headers["cache-control"], "no-store")
                         self.assertIn("resource_metadata=", response.headers["www-authenticate"])
+                        import re
+                        advertised = re.search(r'resource_metadata="([^"]+)"', response.headers["www-authenticate"]).group(1)
+                        discovered = client.get(advertised)
+                        self.assertEqual(discovered.status_code, 200)
+                        self.assertEqual(discovered.json()["resource"], base + "/mcp")
                         if status == 403:
                             self.assertIn("insufficient_scope", response.headers["www-authenticate"])
         self.assertEqual(store.cases, {})

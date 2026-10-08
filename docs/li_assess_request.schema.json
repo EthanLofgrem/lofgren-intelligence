@@ -42,7 +42,6 @@
     "properties": {
       "case_created": {
         "const": false,
-        "default": false,
         "title": "Case Created",
         "type": "boolean"
       },
@@ -85,7 +84,6 @@
       },
       "research_started": {
         "const": false,
-        "default": false,
         "title": "Research Started",
         "type": "boolean"
       },
@@ -109,6 +107,8 @@
       "workflow",
       "clarifications",
       "next_step",
+      "research_started",
+      "case_created",
       "limitations"
     ],
     "title": "AssessmentResult",

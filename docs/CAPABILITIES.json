@@ -19,6 +19,7 @@
         "get_job_status",
         "get_receipt",
         "investigate",
+        "li_assess_request",
         "plan_research",
         "render_report",
         "satellite_passes",
@@ -371,6 +372,15 @@
       "gated_by": null,
       "metering": {
         "kind": "reserved"
+      }
+    },
+    {
+      "name": "li_assess_request",
+      "level": "V1",
+      "public": true,
+      "gated_by": null,
+      "metering": {
+        "kind": "none"
       }
     },
     {
