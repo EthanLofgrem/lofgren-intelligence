@@ -601,6 +601,20 @@ class PublicService:
         view["approval"] = self._approval_state(user_id, case, row)
         view["charter"] = row["charter"]
         view["approval_ttl_minutes"] = case_model.approval_ttl_seconds() // 60
+        # The same owner check and store boundary used by MCP protect browser
+        # history. Only project public fields: never return approval tokens,
+        # internal payloads or worker credentials from an event row.
+        events = self.store.list_case_events(user_id, case["id"])
+        owned = [event for event in events
+                 if str(event.get("user_id")) == str(user_id)
+                 and str(event.get("case_id")) == str(case["id"])]
+        view["history"] = {
+            "events": [{key: event[key] for key in
+                        ("kind", "created_at", "charter_version", "run_id") if key in event}
+                       for event in owned[-200:]],
+            "truncated": len(owned) > 200,
+            "limit": 200,
+        }
         return view
 
     def approve_case_charter(
