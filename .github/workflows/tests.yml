@@ -24,6 +24,8 @@ jobs:
           uv run --frozen --no-dev python scripts/vercel_runtime_smoke.py
       - name: Run tests
         run: python -m unittest discover -s tests -t . -v
+      - name: Offline store contracts (network prohibited)
+        run: python scripts/offline_store_contracts.py
       - name: Installed-package smoke test
         run: |
           python -c "import lofgren_intelligence; from lofgren_intelligence.discovery import DiscoveryContext"

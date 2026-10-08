@@ -1,0 +1,118 @@
+{
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true
+  },
+  "description": "Assess a minimized summary for evidence-backed persistent work; returns routing only.\n\n        Skip casual chat, definitions and arithmetic. The host must omit LI if external sharing is prohibited.\n        No case, source retrieval, research job, paid research reservation or action is created. Requires an\n        authorized MCP connection and uses its operational request-rate limit. Does not schedule monitoring.\n        Send no secrets or unnecessary personal identifiers. Recommendations never grant execution approval.\n        ",
+  "inputSchema": {
+    "properties": {
+      "desired_output": {
+        "enum": [
+          "answer",
+          "evidence_brief",
+          "comparison",
+          "study_support",
+          "artifact",
+          "monitoring",
+          "action_proposal"
+        ],
+        "title": "Desired Output",
+        "type": "string"
+      },
+      "request_summary": {
+        "description": "Minimized request summary; omit secrets and unnecessary personal information.",
+        "maxLength": 3000,
+        "minLength": 1,
+        "title": "Request Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "request_summary",
+      "desired_output"
+    ],
+    "title": "li_assess_requestArguments",
+    "type": "object"
+  },
+  "name": "li_assess_request",
+  "outputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "case_created": {
+        "const": false,
+        "title": "Case Created",
+        "type": "boolean"
+      },
+      "clarifications": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 5,
+        "title": "Clarifications",
+        "type": "array"
+      },
+      "decision": {
+        "enum": [
+          "recommended",
+          "not_recommended",
+          "needs_clarification"
+        ],
+        "title": "Decision",
+        "type": "string"
+      },
+      "limitations": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Limitations",
+        "type": "array"
+      },
+      "next_step": {
+        "enum": [
+          "answer_without_li",
+          "ask_clarification",
+          "review_case_scope"
+        ],
+        "title": "Next Step",
+        "type": "string"
+      },
+      "reason": {
+        "title": "Reason",
+        "type": "string"
+      },
+      "research_started": {
+        "const": false,
+        "title": "Research Started",
+        "type": "boolean"
+      },
+      "workflow": {
+        "enum": [
+          "none",
+          "evidence_brief",
+          "comparison",
+          "study_support",
+          "artifact",
+          "monitoring",
+          "action_proposal"
+        ],
+        "title": "Workflow",
+        "type": "string"
+      }
+    },
+    "required": [
+      "decision",
+      "reason",
+      "workflow",
+      "clarifications",
+      "next_step",
+      "research_started",
+      "case_created",
+      "limitations"
+    ],
+    "title": "AssessmentResult",
+    "type": "object"
+  },
+  "title": "Assess suitability for Lofgren Intelligence"
+}

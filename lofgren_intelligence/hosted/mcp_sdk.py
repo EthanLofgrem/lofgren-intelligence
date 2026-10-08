@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import functools
 import os
-from datetime import datetime
+import anyio
 from typing import Any, Callable
 
 from pydantic import AnyHttpUrl
@@ -19,13 +19,19 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
-from .auth import token_hash
+from .auth import AuthError, token_hash, validated_access_record
 from .service import PublicService, PublicServiceError
 from .store import SupabaseStore
+from .routing import AssessmentResult, DesiredOutput, RequestSummary, assess_request
 
 
 INSTRUCTIONS = (
+    "Use LI when source verification, comparisons, persistent research or governed work adds material value. "
+    "Do not use it for casual conversation, basic definitions or arithmetic. If suitability is unclear, "
+    "li_assess_request can assess a minimized summary without research or case creation. The host must omit LI "
+    "when external sharing is prohibited. A routing recommendation grants no execution authority. "
     "Lofgren Intelligence is a governed V1-V6 outcome-intelligence stack. "
     "V1 researches and verifies evidence; V2 discovers supported possibilities; V3 builds verified artifacts; "
     "V4 proposes external actions that require explicit browser approval before execution; V5 measures outcomes; "
@@ -41,27 +47,22 @@ class OpaqueTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
         store = SupabaseStore()
-        row = store.get_access_token(token_hash(token))
-        if not row:
+        # PostgREST is synchronous. Keep the ASGI event loop responsive while
+        # the SDK's bounded thread pool performs this identity lookup.
+        row = await anyio.to_thread.run_sync(store.get_access_token, token_hash(token))
+        try:
+            user_id, client_id, resource, scopes, expiry = validated_access_record(row)
+        except AuthError:
             return None
-        resource = str(row.get("resource") or "")
         if resource != self.resource_url:
             return None
-        expiry = row.get("expires_at")
-        expires_at: int | None = None
-        if expiry:
-            try:
-                dt = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
-                expires_at = int(dt.timestamp())
-            except ValueError:
-                return None
         return AccessToken(
             token=token,
-            client_id=str(row.get("client_id") or ""),
-            scopes=str(row.get("scope") or "mcp").split(),
-            expires_at=expires_at,
+            client_id=client_id,
+            scopes=list(scopes),
+            expires_at=int(expiry.timestamp()),
             resource=resource,
-            subject=str(row.get("user_id") or ""),
+            subject=user_id,
             claims={"iss": self.resource_url.rsplit("/mcp", 1)[0]},
         )
 
@@ -150,6 +151,26 @@ def build_mcp(base_url: str) -> MCPServer:
     def tool() -> Callable[[Callable[..., Any]], Any]:
         """Register a hosted tool whose PublicServiceError reaches the client as a typed refusal."""
         return lambda fn: mcp.tool()(_public_errors(fn))
+
+    @mcp.tool(title="Assess suitability for Lofgren Intelligence",
+              annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False,
+                                          idempotent_hint=True, open_world_hint=False))
+    def li_assess_request(request_summary: RequestSummary, desired_output: DesiredOutput) -> AssessmentResult:
+        """Assess a minimized summary for evidence-backed persistent work; returns routing only.
+
+        Skip casual chat, definitions and arithmetic. The host must omit LI if external sharing is prohibited.
+        No case, source retrieval, research job, paid research reservation or action is created. Requires an
+        authorized MCP connection and uses its operational request-rate limit. Does not schedule monitoring.
+        Send no secrets or unnecessary personal identifiers. Recommendations never grant execution approval.
+        """
+        try:
+            _caller()  # Existing authorization and operational rate limit, without account activation.
+        except PermissionError:
+            raise ToolError("REQUEST_DENIED: authenticated identity and request allowance are required") from None
+        try:
+            return assess_request(request_summary, desired_output)
+        except ValueError:
+            raise ToolError("INVALID_REQUEST: provide a nonempty bounded summary and supported output") from None
 
     @tool()
     def clarify_objective(

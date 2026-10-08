@@ -21,7 +21,7 @@ The exact hosted tool list is generated, not hand-maintained:
 registry `build_mcp` serves and assigns each tool its level. A test keeps the
 registry, the manifest and this list equal.
 
-- **V1** (Evidence intelligence (research and verification)): `cancel_research`, `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_job_status`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `start_research`, `trace_claim`, `verify_claim`.
+- **V1** (Evidence intelligence (research and verification)): `li_assess_request`, `cancel_research`, `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_job_status`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `start_research`, `trace_claim`, `verify_claim`.
 - **V2** (Discovery intelligence): `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
 - **V3** (Production (verified artifacts)): `build_artifact`, `get_artifact`.
 - **V4** (Authorized execution (browser-approved actions)): `action_status`, `execute_action`, `propose_action`.

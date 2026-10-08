@@ -17,6 +17,19 @@ class HTTPError(RuntimeError):
         self.body = body
 
 
+def require_live_endpoint(url: str) -> None:
+    """Reject documentation endpoints before any request or credential transmission.
+
+    Store construction may retain fixture URLs as inert data. Unit tests mock
+    the transport; a real HTTP operation must never use that fixture as a host.
+    """
+    host = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+    if (host in {"example.com", "example.net", "example.org"}
+            or any(host == suffix or host.endswith("." + suffix)
+                   for suffix in ("example", "invalid", "example.com", "example.net", "example.org"))):
+        raise ValueError("documentation endpoint cannot be used for a live request")
+
+
 @dataclass
 class JSONResponse:
     status: int
@@ -33,6 +46,7 @@ def json_request(
     timeout: float = 30.0,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> JSONResponse:
+    require_live_endpoint(url)
     data = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
     h = {"accept": "application/json", **(headers or {})}
     if body is not None:
