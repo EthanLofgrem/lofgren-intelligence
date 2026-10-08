@@ -73,6 +73,10 @@ Its issuer is the canonical base, with `/oauth/authorize`, `/oauth/token` and
 (`token_endpoint_auth_methods_supported: ["none"]`), code responses and S256
 PKCE. Redirects are registered and matched. LI tokens are opaque and validated
 against trusted persisted records, resource, expiry and revocation. Do not add
+implicit permissions for an empty stored scope. Shared record validation rejects
+missing identity, missing/malformed/timezone-less expiry and revoked records.
+The SDK transport returns 403 for a valid record with no required scope.
+Do not add
 `jwks_uri` or pretend a Supabase website-session token is an LI MCP token.
 Do not advertise `li:assess` or other granular scopes until issuance and
 enforcement implement them. Current transport scope is `mcp`; ownership and

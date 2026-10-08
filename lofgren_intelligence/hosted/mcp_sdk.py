@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import functools
 import os
-from datetime import datetime
 from typing import Any, Callable
 
 from pydantic import AnyHttpUrl
@@ -21,7 +20,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from .auth import token_hash
+from .auth import AuthError, token_hash, validated_access_record
 from .service import PublicService, PublicServiceError
 from .store import SupabaseStore
 from .routing import AssessmentResult, DesiredOutput, RequestSummary, assess_request
@@ -48,26 +47,19 @@ class OpaqueTokenVerifier(TokenVerifier):
     async def verify_token(self, token: str) -> AccessToken | None:
         store = SupabaseStore()
         row = store.get_access_token(token_hash(token))
-        if not row:
+        try:
+            user_id, client_id, resource, scopes, expiry = validated_access_record(row)
+        except AuthError:
             return None
-        resource = str(row.get("resource") or "")
         if resource != self.resource_url:
             return None
-        expiry = row.get("expires_at")
-        expires_at: int | None = None
-        if expiry:
-            try:
-                dt = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
-                expires_at = int(dt.timestamp())
-            except ValueError:
-                return None
         return AccessToken(
             token=token,
-            client_id=str(row.get("client_id") or ""),
-            scopes=str(row.get("scope") or "mcp").split(),
-            expires_at=expires_at,
+            client_id=client_id,
+            scopes=list(scopes),
+            expires_at=int(expiry.timestamp()),
             resource=resource,
-            subject=str(row.get("user_id") or ""),
+            subject=user_id,
             claims={"iss": self.resource_url.rsplit("/mcp", 1)[0]},
         )
 

@@ -11,7 +11,7 @@ from lofgren_intelligence.hosted.mcp_sdk import build_mcp
 from lofgren_intelligence.hosted.routing import AssessmentResult, assess_request
 from tests.test_public_hosted import FakeStore
 from lofgren_intelligence.hosted import web_app
-from lofgren_intelligence.hosted.auth import token_hash
+from lofgren_intelligence.hosted.auth import AuthError, now, token_hash, validated_access_record
 
 
 class RoutingTests(unittest.TestCase):
@@ -54,6 +54,24 @@ class RoutingTests(unittest.TestCase):
                 AssessmentResult.model_validate({**data, key: True})
             with self.assertRaises(ValidationError):
                 AssessmentResult.model_validate({k: v for k, v in data.items() if k != key})
+
+
+class TokenRecordTests(unittest.TestCase):
+    def valid(self):
+        from datetime import timedelta
+        return {"user_id": "u1", "client_id": "c", "resource": "https://li.example/mcp",
+                "scope": "mcp", "expires_at": (now() + timedelta(hours=1)).isoformat()}
+
+    def test_empty_scope_never_grants_a_default_permission(self):
+        self.assertEqual(validated_access_record({**self.valid(), "scope": ""})[3], ())
+
+    def test_missing_identity_expiry_or_revoked_record_is_refused_even_from_faulty_storage(self):
+        for bad in (None, {}, {"user_id": ""}, {"client_id": None}, {"resource": ""}, {"scope": None},
+                    {"expires_at": None}, {"expires_at": "bad"}, {"expires_at": "2099-01-01"},
+                    {"revoked_at": "revoked"}):
+            row = None if bad is None else ({**self.valid(), **bad} if bad else {})
+            with self.subTest(change=bad), self.assertRaises(AuthError):
+                validated_access_record(row)
 
 
 class RoutingMCPTests(unittest.IsolatedAsyncioTestCase):
@@ -104,6 +122,10 @@ class OAuthHTTPBoundaryTests(unittest.TestCase):
             "wrong-resource": {"resource": "https://other.example/mcp", "scope": "mcp", "expires_at": expiry},
             "expired": {"resource": base + "/mcp", "scope": "mcp", "expires_at": "2000-01-01T00:00:00Z"},
             "wrong-scope": {"resource": base + "/mcp", "scope": "other", "expires_at": expiry},
+            "empty-scope": {"resource": base + "/mcp", "scope": "", "expires_at": expiry},
+            "missing-expiry": {"resource": base + "/mcp", "scope": "mcp"},
+            "malformed-expiry": {"resource": base + "/mcp", "scope": "mcp", "expires_at": "not-a-date"},
+            "naive-expiry": {"resource": base + "/mcp", "scope": "mcp", "expires_at": "2099-01-01T00:00:00"},
             "revoked": {"resource": base + "/mcp", "scope": "mcp", "expires_at": expiry, "revoked_at": expiry},
         }
         for token, row in rows.items():
@@ -121,7 +143,9 @@ class OAuthHTTPBoundaryTests(unittest.TestCase):
                 self.assertEqual(oauth["code_challenge_methods_supported"], ["S256"])
                 self.assertNotIn("jwks_uri", oauth)  # LI uses resource-bound opaque tokens, not JWTs.
                 for token, status in ((None, 401), ("invalid", 401), ("wrong-resource", 401),
-                                      ("expired", 401), ("revoked", 401), ("wrong-scope", 403)):
+                                      ("expired", 401), ("revoked", 401), ("wrong-scope", 403),
+                                      ("empty-scope", 403), ("missing-expiry", 401),
+                                      ("malformed-expiry", 401), ("naive-expiry", 401)):
                     headers = {"Accept": "application/json, text/event-stream"}
                     if token:
                         headers["Authorization"] = "Bearer " + token

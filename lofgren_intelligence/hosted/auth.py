@@ -106,6 +106,30 @@ class Principal:
     token_hash: str
 
 
+def validated_access_record(row: Any) -> tuple[str, str, str, tuple[str, ...], datetime]:
+    """Validate a persisted opaque-token record without granting default scopes.
+
+    Both the SDK verifier and legacy service authenticator use this boundary.
+    Storage filtering alone must not turn malformed records into valid tokens.
+    """
+    if not isinstance(row, dict) or row.get("revoked_at"):
+        raise AuthError("invalid access token")
+    for key in ("user_id", "client_id", "resource", "expires_at"):
+        if not isinstance(row.get(key), str) or not row[key].strip():
+            raise AuthError("invalid access token")
+    if not isinstance(row.get("scope"), str):
+        raise AuthError("invalid access token")
+    try:
+        expiry = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+    except ValueError:
+        raise AuthError("invalid access token") from None
+    if expiry.tzinfo is None:
+        raise AuthError("invalid access token")
+    if expiry <= now():
+        raise AuthError("access token expired")
+    return row["user_id"], row["client_id"], row["resource"], tuple(row["scope"].split()), expiry
+
+
 class OAuthService:
     def __init__(self, store: SupabaseStore) -> None:
         self.store = store
@@ -292,12 +316,5 @@ class OAuthService:
             raise AuthError("missing bearer token")
         digest = token_hash(bearer)
         row = self.store.get_access_token(digest)
-        if not row:
-            raise AuthError("invalid access token")
-        expiry = row.get("expires_at")
-        if expiry:
-            dt = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
-            if dt <= now():
-                raise AuthError("access token expired")
-        scopes = tuple(str(row.get("scope") or "mcp").split())
-        return Principal(str(row["user_id"]), scopes, digest)
+        user_id, _client_id, _resource, scopes, _expiry = validated_access_record(row)
+        return Principal(user_id, scopes, digest)
