@@ -12,11 +12,16 @@ from unittest.mock import patch
 from lofgren_intelligence.release.ci import (
     ArtifactManifestError,
     PACKAGE_STEP,
+    REQUIRED_RELEASE_JOBS,
+    ReleaseGateReceiptError,
     build_artifact_manifest,
+    build_release_gate_receipt,
     normalize_source_distribution,
     verify_artifact_manifest,
     verify_exact_ci,
+    verify_release_gate_receipt,
     write_artifact_manifest,
+    write_release_gate_receipt,
 )
 
 
@@ -208,6 +213,87 @@ class ReleaseArtifactManifestTests(unittest.TestCase):
         self._write_sdist("Lofgren-Intelligence", "0.7.0")
         normalize_source_distribution(self.dist, 1234567890)
         self.assertEqual(self.sdist.read_bytes(), normalized)
+
+
+class ReleaseGateReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.receipt_path = Path(self.temporary.name) / "release-gate-receipt.json"
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    @staticmethod
+    def _jobs(result="success"):
+        return [f"{name}={result}" for name in REQUIRED_RELEASE_JOBS]
+
+    def _receipt(self, jobs=None):
+        return build_release_gate_receipt(
+            source_sha="1" * 40,
+            source_tree="2" * 40,
+            run_id=456,
+            workflow="tests",
+            event="push",
+            ref_name="build/rc-candidate-3",
+            scope="release-candidate",
+            jobs=self._jobs() if jobs is None else jobs,
+        )
+
+    def test_exact_release_gate_receipt_passes(self):
+        receipt = self._receipt()
+        write_release_gate_receipt(receipt, self.receipt_path)
+        verified = verify_release_gate_receipt(
+            self.receipt_path,
+            expected_sha="1" * 40,
+            expected_tree="2" * 40,
+            expected_run_id=456,
+            expected_scope="release-candidate",
+        )
+        self.assertEqual(verified["conclusion"], "success")
+        self.assertEqual(tuple(verified["jobs"]), REQUIRED_RELEASE_JOBS)
+
+    def test_skipped_gate_is_retained_but_not_accepted(self):
+        jobs = self._jobs()
+        jobs[-1] = "v6-complete=skipped"
+        receipt = self._receipt(jobs)
+        self.assertEqual(receipt["conclusion"], "failure")
+        write_release_gate_receipt(receipt, self.receipt_path)
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "v6-complete=skipped"):
+            verify_release_gate_receipt(
+                self.receipt_path,
+                expected_sha="1" * 40,
+                expected_tree="2" * 40,
+                expected_run_id=456,
+                expected_scope="release-candidate",
+            )
+
+    def test_missing_gate_is_rejected(self):
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "missing v6-complete"):
+            self._receipt(self._jobs()[:-1])
+
+    def test_substituted_source_identity_is_rejected(self):
+        write_release_gate_receipt(self._receipt(), self.receipt_path)
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "expected SHA"):
+            verify_release_gate_receipt(
+                self.receipt_path,
+                expected_sha="3" * 40,
+                expected_tree="2" * 40,
+                expected_run_id=456,
+                expected_scope="release-candidate",
+            )
+
+    def test_tampered_conclusion_is_rejected(self):
+        receipt = self._receipt()
+        receipt["conclusion"] = "failure"
+        write_release_gate_receipt(receipt, self.receipt_path)
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "not canonical"):
+            verify_release_gate_receipt(
+                self.receipt_path,
+                expected_sha="1" * 40,
+                expected_tree="2" * 40,
+                expected_run_id=456,
+                expected_scope="release-candidate",
+            )
 
 
 if __name__ == "__main__":

@@ -22,11 +22,26 @@ from typing import Any, Iterable
 MATRIX = ("3.10", "3.11", "3.12")
 PACKAGE_STEP = "Package smoke test (clean wheel, installed and run outside the source tree)"
 ARTIFACT_MANIFEST_SCHEMA = "lofgren.release-artifact-manifest/1"
+GATE_RECEIPT_SCHEMA = "lofgren.release-gate-receipt/1"
+REQUIRED_RELEASE_JOBS = (
+    "test",
+    "v2-ready-for-v3",
+    "v3-ready-for-v4",
+    "v4-ready-for-v5",
+    "v5-ready-for-v6",
+    "v6-complete",
+)
+VALID_JOB_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
+VALID_GATE_SCOPES = frozenset({"integration-validation", "release-candidate"})
 HEX_OBJECT_ID = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ArtifactManifestError(ValueError):
     """Raised when release artifacts cannot be identified unambiguously."""
+
+
+class ReleaseGateReceiptError(ValueError):
+    """Raised when an exact-SHA release gate receipt is incomplete or invalid."""
 
 
 def _require_object_id(value: str, label: str) -> str:
@@ -166,6 +181,130 @@ def write_artifact_manifest(manifest: dict[str, Any], output: Path) -> None:
     temporary.replace(output)
 
 
+def build_release_gate_receipt(
+    *,
+    source_sha: str,
+    source_tree: str,
+    run_id: int,
+    workflow: str,
+    event: str,
+    ref_name: str,
+    scope: str,
+    jobs: Iterable[str],
+) -> dict[str, Any]:
+    """Build a deterministic receipt for the complete release-gate job set.
+
+    The receipt records failures and skips so that an unsuccessful run still
+    leaves inspectable evidence. Verification decides whether it is releasable.
+    """
+    if run_id <= 0:
+        raise ReleaseGateReceiptError("workflow run id must be a positive integer")
+    if not workflow.strip() or not event.strip() or not ref_name.strip():
+        raise ReleaseGateReceiptError("workflow, event and ref name must not be empty")
+    if scope not in VALID_GATE_SCOPES:
+        raise ReleaseGateReceiptError(f"unsupported release gate scope: {scope!r}")
+
+    recorded_jobs: dict[str, str] = {}
+    for item in jobs:
+        name, separator, result = item.partition("=")
+        name = name.strip()
+        result = result.strip().lower()
+        if not separator or not name or not result:
+            raise ReleaseGateReceiptError(f"job result must use name=result: {item!r}")
+        if name in recorded_jobs:
+            raise ReleaseGateReceiptError(f"duplicate release job result: {name}")
+        if result not in VALID_JOB_RESULTS:
+            raise ReleaseGateReceiptError(f"unsupported result for {name}: {result!r}")
+        recorded_jobs[name] = result
+
+    expected = set(REQUIRED_RELEASE_JOBS)
+    actual = set(recorded_jobs)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected {', '.join(unexpected)}")
+        raise ReleaseGateReceiptError("release job set is incomplete: " + "; ".join(details))
+
+    ordered_jobs = {name: recorded_jobs[name] for name in REQUIRED_RELEASE_JOBS}
+    conclusion = "success" if all(result == "success" for result in ordered_jobs.values()) else "failure"
+    return {
+        "conclusion": conclusion,
+        "jobs": ordered_jobs,
+        "schema": GATE_RECEIPT_SCHEMA,
+        "scope": scope,
+        "source": {
+            "commit": _require_object_id(source_sha, "source SHA"),
+            "tree": _require_object_id(source_tree, "source tree"),
+        },
+        "workflow": {
+            "event": event.strip(),
+            "name": workflow.strip(),
+            "ref_name": ref_name.strip(),
+            "run_id": run_id,
+        },
+    }
+
+
+def write_release_gate_receipt(receipt: dict[str, Any], output: Path) -> None:
+    output = output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(output)
+
+
+def verify_release_gate_receipt(
+    receipt_path: Path,
+    *,
+    expected_sha: str,
+    expected_tree: str,
+    expected_run_id: int,
+    expected_scope: str,
+) -> dict[str, Any]:
+    try:
+        recorded = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseGateReceiptError(f"cannot read release gate receipt: {receipt_path}") from exc
+    if not isinstance(recorded, dict) or recorded.get("schema") != GATE_RECEIPT_SCHEMA:
+        raise ReleaseGateReceiptError(f"release gate receipt schema must be {GATE_RECEIPT_SCHEMA}")
+    source = recorded.get("source")
+    workflow = recorded.get("workflow")
+    jobs = recorded.get("jobs")
+    if not isinstance(source, dict) or not isinstance(workflow, dict) or not isinstance(jobs, dict):
+        raise ReleaseGateReceiptError("release gate receipt structure is incomplete")
+
+    rebuilt = build_release_gate_receipt(
+        source_sha=str(source.get("commit", "")),
+        source_tree=str(source.get("tree", "")),
+        run_id=workflow.get("run_id") if isinstance(workflow.get("run_id"), int) else 0,
+        workflow=str(workflow.get("name", "")),
+        event=str(workflow.get("event", "")),
+        ref_name=str(workflow.get("ref_name", "")),
+        scope=str(recorded.get("scope", "")),
+        jobs=(f"{name}={result}" for name, result in jobs.items()),
+    )
+    if recorded != rebuilt:
+        raise ReleaseGateReceiptError("release gate receipt is not canonical")
+    if rebuilt["source"]["commit"] != _require_object_id(expected_sha, "expected SHA"):
+        raise ReleaseGateReceiptError("release gate receipt commit does not match the expected SHA")
+    if rebuilt["source"]["tree"] != _require_object_id(expected_tree, "expected tree"):
+        raise ReleaseGateReceiptError("release gate receipt tree does not match the expected tree")
+    if rebuilt["workflow"]["run_id"] != expected_run_id:
+        raise ReleaseGateReceiptError("release gate receipt run id does not match the expected run")
+    if rebuilt["workflow"]["name"] != "tests" or rebuilt["workflow"]["event"] != "push":
+        raise ReleaseGateReceiptError("release gate receipt must come from the tests push workflow")
+    if rebuilt["scope"] != expected_scope:
+        raise ReleaseGateReceiptError("release gate receipt scope does not match the expected scope")
+    if rebuilt["conclusion"] != "success":
+        failed = [f"{name}={result}" for name, result in rebuilt["jobs"].items() if result != "success"]
+        raise ReleaseGateReceiptError("release gates did not all pass: " + ", ".join(failed))
+    return rebuilt
+
+
 def verify_artifact_manifest(
     manifest_path: Path,
     dist_dir: Path,
@@ -285,6 +424,22 @@ def _artifact_parser() -> argparse.ArgumentParser:
     normalize = subparsers.add_parser("artifact-normalize-sdist")
     normalize.add_argument("--dist", type=Path, required=True)
     normalize.add_argument("--epoch", type=int, required=True)
+    gate_create = subparsers.add_parser("gate-receipt-create")
+    gate_create.add_argument("--source-sha", required=True)
+    gate_create.add_argument("--source-tree", required=True)
+    gate_create.add_argument("--run-id", type=int, required=True)
+    gate_create.add_argument("--workflow", required=True)
+    gate_create.add_argument("--event", required=True)
+    gate_create.add_argument("--ref-name", required=True)
+    gate_create.add_argument("--scope", choices=sorted(VALID_GATE_SCOPES), required=True)
+    gate_create.add_argument("--job", action="append", default=[], required=True)
+    gate_create.add_argument("--output", type=Path, required=True)
+    gate_verify = subparsers.add_parser("gate-receipt-verify")
+    gate_verify.add_argument("--receipt", type=Path, required=True)
+    gate_verify.add_argument("--expected-sha", required=True)
+    gate_verify.add_argument("--expected-tree", required=True)
+    gate_verify.add_argument("--expected-run-id", type=int, required=True)
+    gate_verify.add_argument("--expected-scope", choices=sorted(VALID_GATE_SCOPES), required=True)
     return parser
 
 
@@ -301,11 +456,31 @@ def main(argv: list[str] | None = None) -> int:
                 expected_sha=args.expected_sha,
                 expected_tree=args.expected_tree,
             )
-        else:
+        elif args.command == "artifact-normalize-sdist":
             normalized = normalize_source_distribution(args.dist, args.epoch)
             manifest = {"normalized_sdist": normalized.name, "source_date_epoch": args.epoch}
-    except ArtifactManifestError as exc:
-        print(f"release artifact identity failed: {exc}", file=sys.stderr)
+        elif args.command == "gate-receipt-create":
+            manifest = build_release_gate_receipt(
+                source_sha=args.source_sha,
+                source_tree=args.source_tree,
+                run_id=args.run_id,
+                workflow=args.workflow,
+                event=args.event,
+                ref_name=args.ref_name,
+                scope=args.scope,
+                jobs=args.job,
+            )
+            write_release_gate_receipt(manifest, args.output)
+        else:
+            manifest = verify_release_gate_receipt(
+                args.receipt,
+                expected_sha=args.expected_sha,
+                expected_tree=args.expected_tree,
+                expected_run_id=args.expected_run_id,
+                expected_scope=args.expected_scope,
+            )
+    except (ArtifactManifestError, ReleaseGateReceiptError) as exc:
+        print(f"release evidence failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(manifest, sort_keys=True))
     return 0
