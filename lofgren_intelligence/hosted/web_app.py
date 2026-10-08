@@ -523,6 +523,7 @@ async def workspace_page(request: Request) -> Response:
 <label for="jobid">Saved job ID</label><input id="jobid" maxlength="100">
 <button id="jobstatus" disabled>Check job status and saved result</button>
 <button id="cancel" disabled>Request cancellation</button><pre id="job"></pre>
+<h3>Saved jobs</h3><p id="jobliststatus">Sign in to recover your saved jobs.</p><ul id="savedjobs"></ul>
 <h2>Inspect saved research</h2><p>A saved result can exist even when a job failed during settlement. Receipt integrity records provenance; it does not prove a source is truthful.</p>
 <button id="inspect" disabled>Load report, evidence and receipt</button>
 <div id="resultstatus" role="status"></div><pre id="report"></pre>
@@ -534,15 +535,16 @@ const sb=supabase.createClient({safe_url},{safe_key});let session=null,currentCa
 const status=document.querySelector('#status'),list=document.querySelector('#cases');
 async function request(method,body,path='/workspace/cases'){{const r=await fetch(path,{{method,headers:{{authorization:'Bearer '+session.access_token,'content-type':'application/json'}},body:body?JSON.stringify(body):undefined}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'Request failed');return d}}
 async function load(){{if(!session)return;status.textContent='Loading saved cases…';const d=await request('GET');list.replaceChildren();for(const c of d.cases){{const li=document.createElement('li'),a=document.createElement('a');a.href='/cases/'+encodeURIComponent(c.id);a.textContent=(c.objective||c.id)+' — '+c.status;li.append(a);const resume=document.createElement('button');resume.textContent='Continue clarification';resume.onclick=async()=>{{try{{show(await request('GET',null,'/cases/'+encodeURIComponent(c.id)+'/charter'))}}catch(e){{status.textContent=e.message}}}};li.append(resume);list.append(li)}}status.textContent=d.cases.length?(d.truncated?'First 100 saved cases shown.':'Saved cases loaded.'):'No saved cases yet.'}}
-async function recover(){{const x=await sb.auth.getSession();session=x.data.session;for(const id of ['create','refresh','jobstatus','cancel','inspect'])document.querySelector('#'+id).disabled=!session;if(session)await load()}}
+async function loadJobs(){{const d=await request('GET',null,'/workspace/jobs');const ul=document.querySelector('#savedjobs');ul.replaceChildren();for(const j of d.jobs){{const li=document.createElement('li'),button=document.createElement('button');button.textContent=(j.case_id?'Case '+j.case_id:'Research')+' — '+j.status+' — '+(j.created_at||'');button.onclick=()=>jobView(j);li.append(button);ul.append(li)}}document.querySelector('#jobliststatus').textContent=d.jobs.length?(d.truncated?'First 100 saved jobs shown.':'Select a saved job, then load its result.'):'No saved jobs yet.'}}
+async function recover(){{const x=await sb.auth.getSession();session=x.data.session;for(const id of ['create','refresh','jobstatus','cancel','inspect'])document.querySelector('#'+id).disabled=!session;if(session){{await load();await loadJobs()}}}}
 document.querySelector('#signin').onclick=async()=>{{try{{const x=await sb.auth.signInWithPassword({{email:document.querySelector('#email').value,password:document.querySelector('#password').value}});if(x.error)throw x.error;await recover()}}catch(e){{status.textContent=e.message}}}};
 document.querySelector('#refresh').onclick=()=>recover().catch(e=>status.textContent=e.message);
 function show(d){{currentCase=d;document.querySelector('#start').disabled=!(d.approval&&d.approval.state==='live');document.querySelector('#objective').value=d.objective;document.querySelector('#questions').textContent=JSON.stringify({{status:d.status,budget:d.budget,critical_unknowns:d.critical_unknowns,safety_notice:d.safety_notice}},null,2);const fields=document.querySelector('#answers');fields.replaceChildren();for(const q of d.questions){{const label=document.createElement('label'),input=document.createElement('textarea'),why=document.createElement('p');input.id='answer-'+q.key;input.dataset.answerKey=q.key;input.maxLength=3000;label.htmlFor=input.id;label.textContent=q.prompt;why.textContent=q.why;fields.append(label,why,input)}}document.querySelector('#revise').disabled=!d.questions.length;const a=document.querySelector('#review');a.href='/cases/'+encodeURIComponent(d.case_id);a.hidden=false}}
 function clearResult(){{for(const id of ['report','findings','traces','receipt'])document.querySelector('#'+id).textContent=''}}
 function jobView(d){{clearResult();document.querySelector('#resultstatus').textContent='Load the saved result to inspect its evidence.';document.querySelector('#jobid').value=d.job_id;document.querySelector('#job').textContent=JSON.stringify(d,null,2)}}
 document.querySelector('#jobid').oninput=()=>{{clearResult();document.querySelector('#resultstatus').textContent=''}};
-document.querySelector('#inspect').onclick=async()=>{{clearResult();try{{const d=await request('GET',null,'/workspace/jobs/'+encodeURIComponent(document.querySelector('#jobid').value)+'/result');document.querySelector('#resultstatus').textContent=d.result_available?'Saved result — job '+d.status+'. Research '+(d.completed?'completed':'stopped')+'. Receipt integrity: '+(d.receipt.intact?'intact':'FAILED'):'No saved result yet — job '+d.status;if(!d.result_available)return;document.querySelector('#report').textContent=d.report;document.querySelector('#findings').textContent=JSON.stringify({{findings:d.findings,contradictions:d.contradictions,unknowns:d.unknowns,stopped_reason:d.stopped_reason}},null,2);document.querySelector('#traces').textContent=JSON.stringify(d.traces,null,2);document.querySelector('#receipt').textContent=JSON.stringify(d.receipt,null,2)}}catch(e){{document.querySelector('#resultstatus').textContent=e.message}}}};
-document.querySelector('#start').onclick=async()=>{{const button=document.querySelector('#start');try{{button.disabled=true;jobView(await request('POST',{{}},'/workspace/cases/'+encodeURIComponent(currentCase.case_id)+'/research'));await load()}}catch(e){{status.textContent=e.message;button.disabled=false}}}};
+document.querySelector('#inspect').onclick=async()=>{{clearResult();const jobId=document.querySelector('#jobid').value;try{{const d=await request('GET',null,'/workspace/jobs/'+encodeURIComponent(jobId)+'/result');if(jobId!==document.querySelector('#jobid').value)return;document.querySelector('#resultstatus').textContent=d.result_available?'Saved result — job '+d.status+'. Research '+(d.completed?'completed':'stopped')+'. Receipt integrity: '+(d.receipt.intact?'intact':'FAILED'):'No saved result yet — job '+d.status;if(!d.result_available)return;document.querySelector('#report').textContent=d.report;document.querySelector('#findings').textContent=JSON.stringify({{findings:d.findings,contradictions:d.contradictions,unknowns:d.unknowns,stopped_reason:d.stopped_reason}},null,2);document.querySelector('#traces').textContent=JSON.stringify(d.traces,null,2);document.querySelector('#receipt').textContent=JSON.stringify(d.receipt,null,2)}}catch(e){{document.querySelector('#resultstatus').textContent=e.message}}}};
+document.querySelector('#start').onclick=async()=>{{const button=document.querySelector('#start');try{{button.disabled=true;jobView(await request('POST',{{}},'/workspace/cases/'+encodeURIComponent(currentCase.case_id)+'/research'));await load();await loadJobs()}}catch(e){{status.textContent=e.message;button.disabled=false}}}};
 document.querySelector('#jobstatus').onclick=async()=>{{try{{jobView(await request('GET',null,'/workspace/jobs/'+encodeURIComponent(document.querySelector('#jobid').value)))}}catch(e){{status.textContent=e.message}}}};
 document.querySelector('#cancel').onclick=async()=>{{try{{jobView(await request('POST',{{}},'/workspace/jobs/'+encodeURIComponent(document.querySelector('#jobid').value)+'/cancel'))}}catch(e){{status.textContent=e.message}}}};
 document.querySelector('#revise').onclick=async()=>{{const button=document.querySelector('#revise');try{{button.disabled=true;const answers={{}};for(const input of document.querySelectorAll('[data-answer-key]'))answers[input.dataset.answerKey]=input.value;show(await request('POST',{{case_id:currentCase.case_id,expected_version:currentCase.charter_version,objective:document.querySelector('#objective').value,answers}}));await load()}}catch(e){{status.textContent=e.message;button.disabled=false}}}};
@@ -587,6 +589,16 @@ async def workspace_job_result(request: Request) -> Response:
         user = store.verify_supabase_user(_supabase_session_token(request))
         result = PublicService(store).get_job_result(
             str(user["id"]), {"job_id": str(request.path_params["job_id"])})
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _case_error(exc)
+
+
+async def workspace_jobs(request: Request) -> Response:
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).list_owned_jobs(str(user["id"]))
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (StoreError, PublicServiceError) as exc:
         return _case_error(exc)
@@ -828,6 +840,7 @@ def build_app():
         Route("/workspace/cases", rate_limited("cases", workspace_cases), methods=["GET", "POST"]),
         Route("/workspace/cases/{case_id:str}/research", rate_limited("cases", workspace_start_research), methods=["POST"]),
         Route("/workspace/jobs/{job_id:str}", rate_limited("cases", workspace_job), methods=["GET"]),
+        Route("/workspace/jobs", rate_limited("cases", workspace_jobs), methods=["GET"]),
         Route("/workspace/jobs/{job_id:str}/cancel", rate_limited("cases", workspace_job), methods=["POST"]),
         Route("/workspace/jobs/{job_id:str}/result", rate_limited("cases", workspace_job_result), methods=["GET"]),
         Route("/cases/{case_id:str}/charter", rate_limited("cases", case_details), methods=["GET"]),
