@@ -49,7 +49,7 @@ journey has not been proven.
 | Tenant isolation | `hosted/store.py`, ownership checks | case, jobs and hosted tests | Foreign IDs, export and result paths | SQL grants/RLS PASS for inspected configuration; end-to-end NOT RUN |
 | Evidence and upstream integrity | V1–V6 modules, receipts | certification commands and boundary tests | One hosted six-stage case with safe synthetic action | Local code terms PASS; hosted chain NOT RUN |
 | Real customer inspection | charter page and details handler | `tests/test_case_approval.py` | Sign in; inspect persisted charter and history | This increment adds history and `/workspace` case intake/list/resume; hosted candidate NOT RUN |
-| Real workspace lifecycle | `hosted/console.py` | shell tests | Create, run, cancel, retrieve actual results | PARTIAL: `/workspace` saves objectives and answers, lists owned cases and links approval/history; research progress/results/cancellation remain absent. `/app` stays isolated demo |
+| Real workspace lifecycle | `hosted/console.py` | shell tests | Create, run, cancel, retrieve actual results | PARTIAL: `/workspace` saves objectives and answers, lists owned cases and links approval/history; approved durable submission, job status/saved summary and cancellation are implemented; full result/receipt views remain absent. `/app` stays isolated demo |
 | MCP/OAuth lifecycle | hosted MCP and OAuth handlers | hosted auth/protocol tests | Actual ChatGPT, Claude and Codex sessions | Discovery endpoints PASS; authenticated client lifecycle NOT RUN |
 | Economic limits and billing | plan catalog, entitlements, reservations, Stripe | billing/quota tests | Measured costs and sandbox lifecycle | BLOCKED: owner decisions; excluded from current authorized work |
 | Owner operations and recovery | worker CLI, deployment preparation, operational tooling | operational tests | Restore and rollback rehearsal; restricted diagnostics | NOT RUN; full owner console incomplete |
@@ -65,7 +65,7 @@ latest 200 events and explicitly reports truncation. Internal payloads and
 approval tokens are excluded. This does not provide a complete audit export,
 stage status dashboard, result viewer or job submission interface.
 
-Proof command: `python -m unittest tests.test_case_approval tests.test_web_shell -q`: 80 tests pass locally. Generated workspace JavaScript passes `node --check`. Browser interaction proof remains NOT RUN.
+Proof command: `python -m unittest tests.test_case_approval tests.test_web_shell -q`: 102 focused security, approval, workspace and shell tests pass locally. Generated workspace JavaScript passes `node --check`. Browser interaction proof remains NOT RUN.
 Negative cases include missing/forged sessions, another user's case, wrong
 tenant/case rows returned by a faulty store, and private fields on event rows.
 
@@ -86,3 +86,5 @@ No universal AI-client compatibility, scientific validation, measured customer
 performance or live revenue is established by this record.
 
 The workspace calls PublicService for objective/answer persistence and a bounded owned-case index. It never executes research during case creation. Server identity overrides client-supplied owner fields; revisions use expected charter versions. GET results are no-store. Signing in recovers cases; saved charters reopen clarification forms. No migrated SQL or billing change is required.
+
+Workspace job controls reuse PublicService durable submission/status/cancellation. Starting uses only the route case ID; caller-supplied source, budget, objective or owner cannot replace the server-approved charter. Duplicate starts replay the same persisted job. Synthetic tests prove queueing, replay, foreign-session refusals and queued cancellation; actual hosted worker execution and authenticated browser journey are NOT RUN.
