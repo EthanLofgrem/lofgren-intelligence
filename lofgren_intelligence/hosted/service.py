@@ -1250,6 +1250,13 @@ class PublicService:
                     "receipt": self.get_receipt(user_id, {"run_id": view["run_id"]})})
         return out
 
+    def list_owned_jobs(self, user_id: str) -> dict[str, Any]:
+        """Bounded reconnect index; never expose frozen inputs or lease state."""
+        rows = self.store.list_research_jobs(user_id, limit=101)
+        owned = [row for row in rows if str(row.get("user_id")) == str(user_id)]
+        return {"jobs": [job_model.public_job_view(row) for row in owned[:100]],
+                "truncated": len(owned) > 100, "limit": 100}
+
     def cancel_research(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         """Cancel the tenant's own job: queued -> cancelled now; running -> stops at its next stage."""
         job = self._job(user_id, a.get("job_id"))
