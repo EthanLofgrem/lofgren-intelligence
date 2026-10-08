@@ -564,6 +564,8 @@ class ApprovalPageTests(CaseTestBase):
         details = self._call(web_app.case_details, case["case_id"], "tok-u1")
         self.assertEqual(details.status_code, 200)
         shown = json.loads(details.body)
+        self.assertEqual(shown["history"]["events"][0]["kind"], "case_created")
+        self.assertEqual(details.headers["cache-control"], "no-store")
         self.assertEqual(shown["content_hash"], case["content_hash"])
         self.assertEqual(shown["charter"]["objective"], OBJECTIVE)
         stale = self._call(web_app.case_approve, case["case_id"], "tok-u1", "POST",
@@ -675,6 +677,34 @@ class MigrationTests(unittest.TestCase):
         for column in ("user_id uuid not null", "content_hash", "budget_usd", "budget_units", "expires_at",
                        "consumed_at", "token_hash", "charter_version"):
             self.assertIn(column, sql)
+
+
+class PersistedHistoryTests(CaseTestBase):
+    def test_history_reopens_saved_events_without_internal_payloads(self):
+        case = self.open_ready_case()
+        self.approve(case)
+        self.store.case_events[0]["token_hash"] = "private-test-token"
+        self.store.case_events[0]["payload"] = {"internal": "private-test-data"}
+        reopened = PublicService(self.store, clock=self.clock).case_charter_details("u1", case["case_id"])
+        self.assertEqual([e["kind"] for e in reopened["history"]["events"]],
+                         ["case_created", "charter_approved"])
+        self.assertNotIn("private-test", json.dumps(reopened["history"]))
+        self.assertFalse(reopened["history"]["truncated"])
+        with self.assertRaises(CaseNotFound):
+            self.service.case_charter_details("u2", case["case_id"])
+
+    def test_history_defends_against_cross_tenant_rows_and_reports_bounds(self):
+        case = self.open_ready_case()
+        rows = [{"case_id": case["case_id"], "user_id": "u1", "kind": f"event-{i}"}
+                for i in range(205)]
+        rows.append({"case_id": case["case_id"], "user_id": "u2", "kind": "other-user"})
+        rows.append({"case_id": "other-case", "user_id": "u1", "kind": "other-case"})
+        with patch.object(self.store, "list_case_events", return_value=rows):
+            history = self.service.case_charter_details("u1", case["case_id"])["history"]
+        self.assertTrue(history["truncated"])
+        self.assertEqual(len(history["events"]), 200)
+        self.assertEqual(history["events"][0]["kind"], "event-5")
+        self.assertEqual(history["events"][-1]["kind"], "event-204")
 
 
 if __name__ == "__main__":
