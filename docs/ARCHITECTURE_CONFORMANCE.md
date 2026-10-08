@@ -92,3 +92,5 @@ Workspace job controls reuse PublicService durable submission/status/cancellatio
 ## Saved result inspection increment
 
 The workspace composes existing persisted research through PublicService: report, findings, contradictions, unknowns, claim traces and receipt. A queued job returns result_available=false; saved results retain the actual failed/succeeded job status. Receipt integrity is recomputed on read instead of trusting a cached flag. Shared run reads independently check row ownership and run/snapshot identity, including MCP report, receipt and state exports. The browser renders source text with textContent, never HTML. No schema, billing or public-access change. Tests cover pending results, retained results after job failure, tampered receipts, unauthorized sessions and faulty-store identity mismatches. Hosted signed-in journey remains NOT RUN.
+
+Saved jobs can be recovered after sign-in from an owned, bounded index (first 100, with truncation reported), without remembering job IDs. Frozen inputs, worker identity and internal checkpoint payloads are excluded. A result fetch is ignored if the selected job changed while it was in flight.
