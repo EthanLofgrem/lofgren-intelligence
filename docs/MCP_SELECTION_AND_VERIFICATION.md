@@ -76,6 +76,8 @@ against trusted persisted records, resource, expiry and revocation. Do not add
 implicit permissions for an empty stored scope. Shared record validation rejects
 missing identity, missing/malformed/timezone-less expiry and revoked records.
 The SDK transport returns 403 for a valid record with no required scope.
+Synchronous token-store lookup is offloaded through the SDK dependency's bounded
+thread pool; an event-loop responsiveness regression verifies this boundary.
 Do not add
 `jwks_uri` or pretend a Supabase website-session token is an LI MCP token.
 Do not advertise `li:assess` or other granular scopes until issuance and

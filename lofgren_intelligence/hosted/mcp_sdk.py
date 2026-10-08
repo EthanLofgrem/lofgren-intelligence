@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import os
+import anyio
 from typing import Any, Callable
 
 from pydantic import AnyHttpUrl
@@ -46,7 +47,9 @@ class OpaqueTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
         store = SupabaseStore()
-        row = store.get_access_token(token_hash(token))
+        # PostgREST is synchronous. Keep the ASGI event loop responsive while
+        # the SDK's bounded thread pool performs this identity lookup.
+        row = await anyio.to_thread.run_sync(store.get_access_token, token_hash(token))
         try:
             user_id, client_id, resource, scopes, expiry = validated_access_record(row)
         except AuthError:

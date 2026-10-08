@@ -7,7 +7,7 @@ from mcp import Client
 from mcp.server.auth.provider import AccessToken
 from pydantic import ValidationError
 
-from lofgren_intelligence.hosted.mcp_sdk import build_mcp
+from lofgren_intelligence.hosted.mcp_sdk import OpaqueTokenVerifier, build_mcp
 from lofgren_intelligence.hosted.routing import AssessmentResult, assess_request
 from tests.test_public_hosted import FakeStore
 from lofgren_intelligence.hosted import web_app
@@ -75,6 +75,31 @@ class TokenRecordTests(unittest.TestCase):
 
 
 class RoutingMCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_token_lookup_does_not_block_the_event_loop(self):
+        import asyncio
+        import threading
+        from datetime import timedelta
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        responsive = []
+        store = FakeStore()
+
+        def lookup(_digest):
+            loop.call_soon_threadsafe(started.set)
+            responsive.append(release.wait(timeout=5))
+            return {"user_id": "u1", "client_id": "c", "resource": "https://li.example/mcp",
+                    "scope": "mcp", "expires_at": (now() + timedelta(hours=1)).isoformat()}
+
+        with patch("lofgren_intelligence.hosted.mcp_sdk.SupabaseStore", return_value=store), \
+             patch.object(store, "get_access_token", side_effect=lookup):
+            task = asyncio.create_task(OpaqueTokenVerifier("https://li.example/mcp").verify_token("synthetic"))
+            await asyncio.wait_for(started.wait(), timeout=10)
+            release.set()
+            token = await task
+        self.assertEqual(token.subject, "u1")
+        self.assertEqual(responsive, [True])
+
     async def test_tool_schema_structured_result_and_no_domain_writes(self):
         store = FakeStore()
         before = copy.deepcopy(store.__dict__)
