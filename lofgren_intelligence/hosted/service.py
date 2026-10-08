@@ -1471,6 +1471,10 @@ class PublicService:
         snap = row.get("snapshot")
         if isinstance(snap, dict) and str(snap.get("run_id")) != str(run_id):
             raise PublicServiceError("stored run snapshot identity is invalid")
+        if isinstance(snap, dict):
+            receipt = snap.get("receipt")
+            if not isinstance(receipt, dict) or str(receipt.get("research_id")) != str(run_id):
+                raise PublicServiceError("stored receipt identity is invalid")
 
     def _snapshot(self, user_id: str, run_id: str) -> dict[str, Any]:
         row = self.store.get_run(user_id, run_id)

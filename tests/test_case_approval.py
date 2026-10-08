@@ -634,8 +634,16 @@ class ApprovalPageTests(CaseTestBase):
             "objective": "Is industrial construction increasing?",
             "texts": {"fictional note": "Industrial construction increased in 2026."}}, BASE)
         row = self.store.runs[("u1", run["run_id"])]
+        other = self.service.investigate("u1", {
+            "objective": "Did industrial construction decrease?",
+            "texts": {"another fictional note": "Industrial construction decreased in 2026."}}, BASE)
+        borrowed_receipt = self.store.runs[("u1", other["run_id"])]["snapshot"]["receipt"]
+        self.assertTrue(self.service.get_receipt("u1", {"run_id": other["run_id"]})["intact"])
+        self.assertNotEqual(other["run_id"], run["run_id"])
         for replacement in ({**row, "user_id": "u2"}, {**row, "run_id": "RR-other"},
-                            {**row, "snapshot": {**row["snapshot"], "run_id": "RR-other"}}):
+                            {**row, "snapshot": {**row["snapshot"], "run_id": "RR-other"}},
+                            {**row, "snapshot": {**row["snapshot"], "receipt": borrowed_receipt}},
+                            {**row, "snapshot": {**row["snapshot"], "receipt": None}}):
             with patch.object(self.store, "get_run", return_value=replacement):
                 for method in (self.service.get_receipt, self.service.render_report,
                                self.service.export_state, self.service.export_knowledge_map2):
