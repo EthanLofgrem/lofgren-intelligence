@@ -642,6 +642,25 @@ class ApprovalPageTests(CaseTestBase):
                     with self.assertRaises(service_module.PublicServiceError):
                         method("u1", {"run_id": run["run_id"]})
 
+    def test_workspace_recovers_only_owned_jobs_with_a_bounded_redacted_index(self):
+        from lofgren_intelligence.hosted import web_app
+        rows = [{"id": str(i), "user_id": "u1", "status": "queued",
+                 "input": {"secret": "private-input"}, "lease_owner": "private-worker"}
+                for i in range(101)]
+        rows.append({"id": "foreign", "user_id": "u2", "status": "succeeded"})
+        with patch.object(self.store, "list_research_jobs", return_value=rows) as listing:
+            response = self._call(web_app.workspace_jobs, "unused", "tok-u1")
+        listing.assert_called_once_with("u1", limit=101)
+        data = json.loads(response.body)
+        self.assertEqual(len(data["jobs"]), 100)
+        self.assertTrue(data["truncated"])
+        self.assertNotIn(b"private-input", response.body)
+        self.assertNotIn(b"private-worker", response.body)
+        self.assertNotIn(b"foreign", response.body)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        for token in (None, "forged-token"):
+            self.assertEqual(self._call(web_app.workspace_jobs, "unused", token).status_code, 401)
+
     def test_unauthenticated_and_wrong_user_requests_are_refused(self):
         from lofgren_intelligence.hosted import web_app
         case = self.open_ready_case()
