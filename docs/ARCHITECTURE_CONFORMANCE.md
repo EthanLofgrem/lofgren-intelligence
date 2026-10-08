@@ -63,9 +63,9 @@ browser handler returns it with `Cache-Control: no-store`. The charter page
 renders it using `textContent`, never HTML injection. The response shows the
 latest 200 events and explicitly reports truncation. Internal payloads and
 approval tokens are excluded. This does not provide a complete audit export,
-stage status dashboard, result viewer or job submission interface.
+stage status dashboard or full result/receipt viewer. The workspace separately provides approved durable job submission, status and cancellation.
 
-Proof command: `python -m unittest tests.test_case_approval tests.test_web_shell -q`: 102 focused security, approval, workspace and shell tests pass locally. Generated workspace JavaScript passes `node --check`. Browser interaction proof remains NOT RUN.
+Proof command: `python -m unittest tests.test_vendor_supabase tests.test_account_deletion.AccountPageScriptTests tests.test_case_approval tests.test_web_shell -q`: 102 focused security, approval, workspace and shell tests pass locally. Generated workspace JavaScript passes `node --check`. Browser interaction proof remains NOT RUN.
 Negative cases include missing/forged sessions, another user's case, wrong
 tenant/case rows returned by a faulty store, and private fields on event rows.
 
@@ -74,7 +74,7 @@ tenant/case rows returned by a faulty store, and private fields on event rows.
 1. Verify this increment's CI and dedicated gates on an integrated exact SHA.
 2. Provision the portable worker on an approved always-on host; verify restart,
    cancellation, recovery and settlement against the staging database.
-3. Complete real workspace creation/status/result/receipt inspection through
+3. Complete full result/receipt inspection through
    PublicService; retain isolated demo pages.
 4. Test an authenticated real-client case and full OAuth lifecycle. Platform
    deployment protection currently blocks ordinary external MCP clients.
