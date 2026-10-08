@@ -528,6 +528,7 @@ and is void as soon as the charter is edited. It does not approve any external a
 <label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
 <button id="signin">Sign in to review</button>
 <h2>Charter</h2><pre id="details">Sign in to load the exact charter.</pre>
+<h2>Persisted case history</h2><pre id="history">Sign in to inspect saved events. A saved event is not proof that every stage completed.</pre>
 <button id="approve" disabled>Approve this exact charter version</button>
 <div id="status" role="status" aria-live="polite"></div>
 <script nonce="{nonce}">
@@ -542,6 +543,7 @@ async function load(){{
   const d=await r.json(); if(!r.ok)throw new Error(d.error_description||d.error||'Could not load the case');
   shown={{charter_version:d.charter_version,content_hash:d.content_hash}};
   details.textContent=JSON.stringify({{case_id:d.case_id,charter_version:d.charter_version,content_hash:d.content_hash,status:d.status,objective:d.objective,budget:d.budget,accepted_answers:d.accepted_answers,critical_unknowns:d.critical_unknowns,open_questions:d.questions,charter:d.case_charter,approval:d.approval}},null,2);
+  document.querySelector('#history').textContent=JSON.stringify(d.history,null,2);
   approve.disabled=d.status!=='READY_FOR_SCOPE_APPROVAL'||(d.approval&&d.approval.state==='live');
 }}
 document.querySelector('#signin').onclick=async()=>{{try{{status.textContent='Signing in…';const x=await sb.auth.signInWithPassword({{email:email.value,password:password.value}});if(x.error)throw x.error;session=x.data.session;status.textContent='Review the exact charter before approving.';await load()}}catch(e){{status.textContent=e.message}}}};
