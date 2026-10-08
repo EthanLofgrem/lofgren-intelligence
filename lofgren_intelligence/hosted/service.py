@@ -586,6 +586,14 @@ class PublicService:
             "run_status": approval.get("run_status"),
         }
 
+    def list_owned_cases(self, user_id: str) -> dict[str, Any]:
+        """Bounded workspace index; ownership never comes from request parameters."""
+        rows = self.store.list_cases(user_id, limit=101)
+        owned = [row for row in rows if str(row.get("user_id")) == str(user_id)]
+        return {"cases": [{key: row[key] for key in ("id", "objective", "status", "created_at")
+                           if key in row} for row in owned[:100]],
+                "truncated": len(owned) > 100, "limit": 100}
+
     def case_status(self, user_id: str, a: dict[str, Any], base_url: str = "") -> dict[str, Any]:
         case = self._case(user_id, a.get("case_id"))
         row = self._latest_charter(user_id, case["id"])
