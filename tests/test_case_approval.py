@@ -534,7 +534,7 @@ class ApprovalPageTests(CaseTestBase):
         raw = json.dumps(body or {}).encode()
         scope = {"type": "http", "method": method, "path": f"/cases/{case_id}", "raw_path": b"/cases/x",
                  "query_string": b"", "headers": headers, "scheme": "https", "server": ("li.example", 443),
-                 "client": ("203.0.113.9", 1), "root_path": "", "path_params": {"case_id": case_id}}
+                 "client": ("203.0.113.9", 1), "root_path": "", "path_params": {"case_id": case_id, "job_id": case_id}}
 
         async def receive():
             return {"type": "http.request", "body": raw, "more_body": False}
@@ -561,6 +561,29 @@ class ApprovalPageTests(CaseTestBase):
         listing.assert_called_once_with("u1", limit=101)
         self.assertEqual(json.loads(response.body)["cases"], [{"id": "own", "status": "clarifying"}])
         self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_workspace_durable_start_replay_status_and_cancellation(self):
+        from lofgren_intelligence.hosted import web_app
+        case = self.open_ready_case()
+        refused = self._call(web_app.workspace_start_research, case["case_id"], "tok-u1", "POST")
+        self.assertNotEqual(refused.status_code, 200)
+        self.approve(case)
+        started = self._call(web_app.workspace_start_research, case["case_id"], "tok-u1", "POST",
+                             {"objective": "client replacement", "user_id": "u2"})
+        self.assertEqual(started.status_code, 200, started.body)
+        job = json.loads(started.body)
+        self.assertEqual(job["status"], "queued")
+        replay = self._call(web_app.workspace_start_research, case["case_id"], "tok-u1", "POST")
+        self.assertEqual(json.loads(replay.body)["job_id"], job["job_id"])
+        self.assertEqual(len(self.store.jobs), 1)
+        status = self._call(web_app.workspace_job, job["job_id"], "tok-u1")
+        self.assertEqual(json.loads(status.body)["status"], "queued")
+        for token in (None, "forged-token", "tok-u2"):
+            self.assertNotEqual(self._call(web_app.workspace_job, job["job_id"], token).status_code, 200)
+            self.assertNotEqual(self._call(web_app.workspace_job, job["job_id"], token, "POST").status_code, 200)
+        cancelled = self._call(web_app.workspace_job, job["job_id"], "tok-u1", "POST")
+        self.assertEqual(json.loads(cancelled.body)["status"], "cancelled")
+        self.assertEqual(self.store.runs, {})
 
     def test_workspace_page_does_not_embed_private_records(self):
         from lofgren_intelligence.hosted import web_app
