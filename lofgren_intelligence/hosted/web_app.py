@@ -477,6 +477,66 @@ async def case_details(request: Request) -> Response:
         return _case_error(exc)
 
 
+async def workspace_cases(request: Request) -> Response:
+    try:
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        service = PublicService(store)
+        if request.method == "POST":
+            try:
+                body = await _json_body(request, 10_000)
+            except (ValueError, UnicodeDecodeError):
+                return _error(400, "invalid_request", "a bounded JSON objective is required")
+            result = service.clarify_objective(str(user["id"]), body, public_base())
+        else:
+            result = service.list_owned_cases(str(user["id"]))
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _case_error(exc)
+
+
+async def workspace_page(request: Request) -> Response:
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+    if not url or not key:
+        return _error(503, "workspace_not_configured")
+    nonce = secrets.token_urlsafe(18)
+    origin = urllib.parse.urlsplit(url)
+    safe_url = json.dumps(url).replace("<", "\\u003c")
+    safe_key = json.dumps(key).replace("<", "\\u003c")
+    page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved cases · Lofgren Intelligence</title>
+{site.supabase_script_tag(nonce)}
+<style nonce="{nonce}">body{{font-family:system-ui;max-width:780px;margin:40px auto;padding:20px}}input,button,textarea{{display:block;padding:12px;margin:8px 0;box-sizing:border-box;max-width:100%;width:100%}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}li{{margin:16px 0}}</style>
+</head><body><main><h1>Your saved Intelligence Cases</h1>
+<p>Real persisted cases. <a href="/app">Open the separate illustrative demo</a>.</p>
+<label for="email">Email</label><input id="email" type="email" autocomplete="email">
+<label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
+<button id="signin">Sign in</button><button id="refresh" disabled>Refresh saved cases</button>
+<div id="status" role="status" aria-live="polite">Sign in to load your cases.</div><ul id="cases"></ul>
+<h2>Create or clarify a case</h2><p>This saves scope only. It does not start research or authorize external actions.</p>
+<label for="objective">Research objective</label><textarea id="objective" maxlength="3000"></textarea>
+<button id="create" disabled>Save objective and ask clarification questions</button>
+<pre id="questions"></pre><div id="answers"></div><button id="revise" disabled>Save clarification answers</button><a id="review" hidden>Review saved charter and history</a>
+</main><script nonce="{nonce}">
+const sb=supabase.createClient({safe_url},{safe_key});let session=null,currentCase=null;
+const status=document.querySelector('#status'),list=document.querySelector('#cases');
+async function request(method,body,path='/workspace/cases'){{const r=await fetch(path,{{method,headers:{{authorization:'Bearer '+session.access_token,'content-type':'application/json'}},body:body?JSON.stringify(body):undefined}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'Request failed');return d}}
+async function load(){{if(!session)return;status.textContent='Loading saved cases…';const d=await request('GET');list.replaceChildren();for(const c of d.cases){{const li=document.createElement('li'),a=document.createElement('a');a.href='/cases/'+encodeURIComponent(c.id);a.textContent=(c.objective||c.id)+' — '+c.status;li.append(a);const resume=document.createElement('button');resume.textContent='Continue clarification';resume.onclick=async()=>{{try{{show(await request('GET',null,'/cases/'+encodeURIComponent(c.id)+'/charter'))}}catch(e){{status.textContent=e.message}}}};li.append(resume);list.append(li)}}status.textContent=d.cases.length?(d.truncated?'First 100 saved cases shown.':'Saved cases loaded.'):'No saved cases yet.'}}
+async function recover(){{const x=await sb.auth.getSession();session=x.data.session;document.querySelector('#create').disabled=!session;document.querySelector('#refresh').disabled=!session;if(session)await load()}}
+document.querySelector('#signin').onclick=async()=>{{try{{const x=await sb.auth.signInWithPassword({{email:document.querySelector('#email').value,password:document.querySelector('#password').value}});if(x.error)throw x.error;await recover()}}catch(e){{status.textContent=e.message}}}};
+document.querySelector('#refresh').onclick=()=>recover().catch(e=>status.textContent=e.message);
+function show(d){{currentCase=d;document.querySelector('#objective').value=d.objective;document.querySelector('#questions').textContent=JSON.stringify({{status:d.status,budget:d.budget,critical_unknowns:d.critical_unknowns,safety_notice:d.safety_notice}},null,2);const fields=document.querySelector('#answers');fields.replaceChildren();for(const q of d.questions){{const label=document.createElement('label'),input=document.createElement('textarea'),why=document.createElement('p');input.id='answer-'+q.key;input.dataset.answerKey=q.key;input.maxLength=3000;label.htmlFor=input.id;label.textContent=q.prompt;why.textContent=q.why;fields.append(label,why,input)}}document.querySelector('#revise').disabled=!d.questions.length;const a=document.querySelector('#review');a.href='/cases/'+encodeURIComponent(d.case_id);a.hidden=false}}
+document.querySelector('#revise').onclick=async()=>{{const button=document.querySelector('#revise');try{{button.disabled=true;const answers={{}};for(const input of document.querySelectorAll('[data-answer-key]'))answers[input.dataset.answerKey]=input.value;show(await request('POST',{{case_id:currentCase.case_id,expected_version:currentCase.charter_version,objective:document.querySelector('#objective').value,answers}}));await load()}}catch(e){{status.textContent=e.message;button.disabled=false}}}};
+document.querySelector('#create').onclick=async()=>{{const button=document.querySelector('#create');try{{button.disabled=true;const d=await request('POST',{{objective:document.querySelector('#objective').value}});show(d);await load()}}catch(e){{status.textContent=e.message}}finally{{button.disabled=!session}}}};
+recover().catch(e=>status.textContent=e.message);
+</script></body></html>'''
+    csp = ("default-src 'none'; " + f"script-src 'self' 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
+           + f"connect-src 'self' {origin.scheme}://{origin.netloc}; "
+           + "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+    return HTMLResponse(page, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
+
+
 async def case_approve(request: Request) -> Response:
     try:
         body = await _json_body(request, 10_000)
@@ -709,6 +769,8 @@ def build_app():
         Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
         Route("/actions/{action_id:str}/approve", rate_limited("actions", action_approve), methods=["POST"]),
         Route("/cases/{case_id:str}", case_page, methods=["GET"]),
+        Route("/workspace", workspace_page, methods=["GET"]),
+        Route("/workspace/cases", rate_limited("cases", workspace_cases), methods=["GET", "POST"]),
         Route("/cases/{case_id:str}/charter", rate_limited("cases", case_details), methods=["GET"]),
         Route("/cases/{case_id:str}/approve", rate_limited("cases", case_approve), methods=["POST"]),
         Route("/account", account_page, methods=["GET"]),
