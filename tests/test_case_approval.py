@@ -635,7 +635,10 @@ class ApprovalPageTests(CaseTestBase):
             "texts": {"fictional note": "Industrial construction increased in 2026."}}, BASE)
         row = self.store.runs[("u1", run["run_id"])]
         for replacement in ({**row, "user_id": "u2"}, {**row, "run_id": "RR-other"},
-                            {**row, "snapshot": {**row["snapshot"], "run_id": "RR-other"}}):
+                            {**row, "snapshot": {**row["snapshot"], "run_id": "RR-other"}},
+                            {**row, "snapshot": {**row["snapshot"], "receipt": {
+                                **row["snapshot"]["receipt"], "research_id": "RR-other"}}},
+                            {**row, "snapshot": {**row["snapshot"], "receipt": None}}):
             with patch.object(self.store, "get_run", return_value=replacement):
                 for method in (self.service.get_receipt, self.service.render_report,
                                self.service.export_state, self.service.export_knowledge_map2):
