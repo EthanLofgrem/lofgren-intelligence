@@ -595,6 +595,53 @@ class ApprovalPageTests(CaseTestBase):
         self.assertNotIn("service-role", text)
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
+    def test_workspace_result_is_pending_until_saved_and_keeps_failed_job_state(self):
+        from lofgren_intelligence.hosted import web_app
+        case = self.open_ready_case()
+        self.approve(case)
+        job = self.service.start_research("u1", {"case_id": case["case_id"]}, BASE)
+        jid = job["job_id"]
+        pending = self._call(web_app.workspace_job_result, jid, "tok-u1")
+        self.assertEqual(pending.status_code, 200)
+        self.assertFalse(json.loads(pending.body)["result_available"])
+        self.assertEqual(self.store.runs, {})
+        # Generate a real synthetic persisted snapshot through the existing engine.
+        run = self.service.investigate("u1", {
+            "objective": "Is industrial construction increasing?",
+            "texts": {"fictional note": "Industrial construction increased in 2026."}}, BASE)
+        self.store.jobs[jid].update({"result_run_id": run["run_id"], "status": "failed"})
+        result = self._call(web_app.workspace_job_result, jid, "tok-u1")
+        data = json.loads(result.body)
+        self.assertEqual(data["status"], "failed")
+        self.assertTrue(data["result_available"])
+        self.assertTrue(data["receipt"]["intact"])
+        self.assertIn("report", data)
+        self.assertIn("traces", data)
+        self.assertNotIn("checkpoint", data)
+        self.assertEqual(result.headers["cache-control"], "no-store")
+        for token in (None, "forged-token", "tok-u2"):
+            denied = self._call(web_app.workspace_job_result, jid, token)
+            self.assertNotEqual(denied.status_code, 200)
+            self.assertNotIn(run["run_id"].encode(), denied.body)
+        stored = self.store.runs[("u1", run["run_id"])]
+        stored["snapshot"]["receipt"]["objective"] = "tampered"
+        self.assertTrue(stored["snapshot"]["receipt_intact"])
+        tampered = self._call(web_app.workspace_job_result, jid, "tok-u1")
+        self.assertFalse(json.loads(tampered.body)["receipt"]["intact"])
+
+    def test_result_paths_refuse_mismatched_rows_even_from_a_faulty_store(self):
+        run = self.service.investigate("u1", {
+            "objective": "Is industrial construction increasing?",
+            "texts": {"fictional note": "Industrial construction increased in 2026."}}, BASE)
+        row = self.store.runs[("u1", run["run_id"])]
+        for replacement in ({**row, "user_id": "u2"}, {**row, "run_id": "RR-other"},
+                            {**row, "snapshot": {**row["snapshot"], "run_id": "RR-other"}}):
+            with patch.object(self.store, "get_run", return_value=replacement):
+                for method in (self.service.get_receipt, self.service.render_report,
+                               self.service.export_state, self.service.export_knowledge_map2):
+                    with self.assertRaises(service_module.PublicServiceError):
+                        method("u1", {"run_id": run["run_id"]})
+
     def test_unauthenticated_and_wrong_user_requests_are_refused(self):
         from lofgren_intelligence.hosted import web_app
         case = self.open_ready_case()
