@@ -49,7 +49,7 @@ journey has not been proven.
 | Tenant isolation | `hosted/store.py`, ownership checks | case, jobs and hosted tests | Foreign IDs, export and result paths | SQL grants/RLS PASS for inspected configuration; end-to-end NOT RUN |
 | Evidence and upstream integrity | V1–V6 modules, receipts | certification commands and boundary tests | One hosted six-stage case with safe synthetic action | Local code terms PASS; hosted chain NOT RUN |
 | Real customer inspection | charter page and details handler | `tests/test_case_approval.py` | Sign in; inspect persisted charter and history | This increment adds history and `/workspace` case intake/list/resume; hosted candidate NOT RUN |
-| Real workspace lifecycle | `hosted/console.py` | shell tests | Create, run, cancel, retrieve actual results | PARTIAL: `/workspace` saves objectives and answers, lists owned cases and links approval/history; approved durable submission, job status/saved summary and cancellation are implemented; full result/receipt views remain absent. `/app` stays isolated demo |
+| Real workspace lifecycle | `hosted/web_app.py`, `hosted/service.py` | approval, job and shell tests | Create, run, cancel, retrieve actual results | PARTIAL: `/workspace` saves objectives and answers, lists owned cases and links approval/history; approved durable submission, job status/saved summary and cancellation are implemented; saved V1 reports, findings, source traces and receipt inspection are implemented. Hosted execution remains NOT RUN. `/app` stays isolated demo |
 | MCP/OAuth lifecycle | hosted MCP and OAuth handlers | hosted auth/protocol tests | Actual ChatGPT, Claude and Codex sessions | Discovery endpoints PASS; authenticated client lifecycle NOT RUN |
 | Economic limits and billing | plan catalog, entitlements, reservations, Stripe | billing/quota tests | Measured costs and sandbox lifecycle | BLOCKED: owner decisions; excluded from current authorized work |
 | Owner operations and recovery | worker CLI, deployment preparation, operational tooling | operational tests | Restore and rollback rehearsal; restricted diagnostics | NOT RUN; full owner console incomplete |
@@ -63,7 +63,7 @@ browser handler returns it with `Cache-Control: no-store`. The charter page
 renders it using `textContent`, never HTML injection. The response shows the
 latest 200 events and explicitly reports truncation. Internal payloads and
 approval tokens are excluded. This does not provide a complete audit export,
-stage status dashboard or full result/receipt viewer. The workspace separately provides approved durable job submission, status and cancellation.
+full multi-stage dashboard. The workspace separately provides approved durable job submission, status, cancellation and saved V1 result/receipt inspection.
 
 Proof command: `python -m unittest tests.test_vendor_supabase tests.test_account_deletion.AccountPageScriptTests tests.test_case_approval tests.test_web_shell -q`: 102 focused security, approval, workspace and shell tests pass locally. Generated workspace JavaScript passes `node --check`. Browser interaction proof remains NOT RUN.
 Negative cases include missing/forged sessions, another user's case, wrong
@@ -74,8 +74,8 @@ tenant/case rows returned by a faulty store, and private fields on event rows.
 1. Verify this increment's CI and dedicated gates on an integrated exact SHA.
 2. Provision the portable worker on an approved always-on host; verify restart,
    cancellation, recovery and settlement against the staging database.
-3. Complete full result/receipt inspection through
-   PublicService; retain isolated demo pages.
+3. Verify saved result/receipt inspection in an authenticated hosted journey;
+   complete multi-stage artifact inspection only through PublicService.
 4. Test an authenticated real-client case and full OAuth lifecycle. Platform
    deployment protection currently blocks ordinary external MCP clients.
 5. Produce full recovery and release evidence before owner-approved public
@@ -88,3 +88,9 @@ performance or live revenue is established by this record.
 The workspace calls PublicService for objective/answer persistence and a bounded owned-case index. It never executes research during case creation. Server identity overrides client-supplied owner fields; revisions use expected charter versions. GET results are no-store. Signing in recovers cases; saved charters reopen clarification forms. No migrated SQL or billing change is required.
 
 Workspace job controls reuse PublicService durable submission/status/cancellation. Starting uses only the route case ID; caller-supplied source, budget, objective or owner cannot replace the server-approved charter. Duplicate starts replay the same persisted job. Synthetic tests prove queueing, replay, foreign-session refusals and queued cancellation; actual hosted worker execution and authenticated browser journey are NOT RUN.
+
+## Saved result inspection increment
+
+The workspace composes existing persisted research through PublicService: report, findings, contradictions, unknowns, claim traces and receipt. A queued job returns result_available=false; saved results retain the actual failed/succeeded job status. Receipt integrity is recomputed on read instead of trusting a cached flag. Shared run reads independently check row ownership and run/snapshot identity, including MCP report, receipt and state exports. The browser renders source text with textContent, never HTML. No schema, billing or public-access change. Tests cover pending results, retained results after job failure, tampered receipts, unauthorized sessions and faulty-store identity mismatches. Hosted signed-in journey remains NOT RUN.
+
+Saved jobs can be recovered after sign-in from an owned, bounded index (first 100, with truncation reported), without remembering job IDs. Frozen inputs, worker identity and internal checkpoint payloads are excluded. A result fetch is ignored if the selected job changed while it was in flight.

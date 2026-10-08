@@ -27,6 +27,7 @@ from ..discovery.prior_art import assess_prior_art
 from ..intent.compiler import compile_intent
 from ..intent.clarification import clarify_objective as clarify_case_objective, requires_clarification, to_dict as clarification_to_dict
 from ..kernel.ledger import CostLedger
+from ..kernel.receipt import verify_receipt
 from ..kernel.pipeline import estimate_run, run_investigation
 from ..models.provider import default_provider
 from ..orbital.catalog import IMAGING_SATELLITES, fetch_tles
@@ -1224,6 +1225,7 @@ class PublicService:
         if view["run_id"]:
             stored = self.store.get_run(user_id, str(view["run_id"]))
             if stored and isinstance(stored.get("snapshot"), dict):
+                self._validate_run_owner(stored, user_id, str(view["run_id"]))
                 result = summary(stored["snapshot"])
                 unpriced = list(stored.get("unpriced_components") or [])
                 result["known_cost_usd"] = float(stored.get("known_cost_usd") or 0.0)
@@ -1231,6 +1233,29 @@ class PublicService:
                 result["unpriced_cost_components"] = unpriced
                 view["result"] = result
         return view
+
+    def get_job_result(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
+        """Inspect persisted research without asserting that job settlement succeeded."""
+        job = self._job(user_id, a.get("job_id"))
+        view = job_model.public_job_view(job)
+        out = {"job_id": view["job_id"], "status": view["status"],
+               "run_id": view["run_id"], "result_available": False}
+        if not view["run_id"]:
+            return out
+        snap = self._snapshot(user_id, str(view["run_id"]))
+        out.update({"result_available": True, "completed": snap["completed"],
+                    "stopped_reason": snap["stopped_reason"], "report": snap["report"],
+                    "findings": snap["findings"], "contradictions": snap["contradictions"],
+                    "unknowns": snap["unknowns"], "traces": snap["traces"],
+                    "receipt": self.get_receipt(user_id, {"run_id": view["run_id"]})})
+        return out
+
+    def list_owned_jobs(self, user_id: str) -> dict[str, Any]:
+        """Bounded reconnect index; never expose frozen inputs or lease state."""
+        rows = self.store.list_research_jobs(user_id, limit=101)
+        owned = [row for row in rows if str(row.get("user_id")) == str(user_id)]
+        return {"jobs": [job_model.public_job_view(row) for row in owned[:100]],
+                "truncated": len(owned) > 100, "limit": 100}
 
     def cancel_research(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         """Cancel the tenant's own job: queued -> cancelled now; running -> stops at its next stage."""
@@ -1439,10 +1464,19 @@ class PublicService:
     def verify_claim(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         return self._run(user_id, f"Verify the claim: {a['claim']}", a)
 
+    @staticmethod
+    def _validate_run_owner(row: dict[str, Any], user_id: str, run_id: str) -> None:
+        if str(row.get("user_id")) != str(user_id) or str(row.get("run_id")) != str(run_id):
+            raise PublicServiceError("unknown run_id")
+        snap = row.get("snapshot")
+        if isinstance(snap, dict) and str(snap.get("run_id")) != str(run_id):
+            raise PublicServiceError("stored run snapshot identity is invalid")
+
     def _snapshot(self, user_id: str, run_id: str) -> dict[str, Any]:
         row = self.store.get_run(user_id, run_id)
         if not row:
             raise PublicServiceError("unknown run_id")
+        self._validate_run_owner(row, user_id, run_id)
         snap = row.get("snapshot")
         if not isinstance(snap, dict):
             raise PublicServiceError("stored run snapshot is invalid")
@@ -1474,7 +1508,7 @@ class PublicService:
 
     def get_receipt(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         snap = self._snapshot(user_id, a["run_id"])
-        return {"intact": snap["receipt_intact"], "receipt": snap["receipt"]}
+        return {"intact": verify_receipt(snap["receipt"]), "receipt": snap["receipt"]}
 
     def export_state(self, user_id: str, a: dict[str, Any]) -> dict[str, Any]:
         return self._snapshot(user_id, a["run_id"])["state"]
