@@ -75,9 +75,23 @@ def check(base, sha, request=fetch):
     headers = {k.lower(): v for k, v in headers.items()}
     record('unauthenticated_mcp_rejected', status == 401)
     challenge = headers.get('www-authenticate', '')
-    record('oauth_challenge_discovery', challenge.lower().startswith('bearer')
-           and 'resource_metadata' in challenge
-           and base + '/.well-known/oauth-protected-resource' in challenge)
+    # Only fetch exact, same-origin LI metadata routes. A substring match can
+    # accept a hostile suffix or a URL hidden in another challenge parameter.
+    values = re.findall(r'(?:^|[,\s])resource_metadata\s*=\s*"([^"]+)"', challenge, re.I)
+    allowed = {base + '/.well-known/oauth-protected-resource',
+               base + '/.well-known/oauth-protected-resource/mcp'}
+    valid_challenge = (bool(re.match(r'^Bearer\s', challenge, re.I))
+                       and len(values) == 1 and values[0] in allowed)
+    record('oauth_challenge_discovery', valid_challenge)
+    advertised_ok = False
+    if valid_challenge:
+        metadata_status, _, metadata = request(values[0])
+        advertised_ok = (metadata_status == 200 and isinstance(metadata, dict)
+                         and metadata.get('resource') == base + '/mcp'
+                         and isinstance(metadata.get('authorization_servers'), list)
+                         and base in metadata['authorization_servers'])
+    record('advertised_resource_metadata', advertised_ok)
+    record('mcp_response_not_cached', headers.get('cache-control', '').lower() == 'no-store')
     return {'schema': 'li.mcp-preflight/1', 'expected_sha': sha, 'origin': base,
             'passed': all(c['passed'] for c in checks), 'checks': checks,
             'not_proven': ['Authenticated MCP negotiation and tools', 'Real AI client compatibility',
