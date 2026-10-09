@@ -33,6 +33,7 @@ REQUIRED_RELEASE_JOBS = (
 )
 VALID_JOB_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
 VALID_GATE_SCOPES = frozenset({"integration-validation", "release-candidate"})
+RELEASE_CANDIDATE_REF = "build/rc-candidate-3"
 HEX_OBJECT_ID = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -203,6 +204,15 @@ def build_release_gate_receipt(
         raise ReleaseGateReceiptError("workflow, event and ref name must not be empty")
     if scope not in VALID_GATE_SCOPES:
         raise ReleaseGateReceiptError(f"unsupported release gate scope: {scope!r}")
+    normalized_ref = ref_name.strip()
+    if scope == "release-candidate" and normalized_ref != RELEASE_CANDIDATE_REF:
+        raise ReleaseGateReceiptError(
+            f"release-candidate receipts must come from {RELEASE_CANDIDATE_REF}"
+        )
+    if scope == "integration-validation" and normalized_ref == RELEASE_CANDIDATE_REF:
+        raise ReleaseGateReceiptError(
+            f"{RELEASE_CANDIDATE_REF} receipts must use release-candidate scope"
+        )
 
     recorded_jobs: dict[str, str] = {}
     for item in jobs:
@@ -243,7 +253,7 @@ def build_release_gate_receipt(
         "workflow": {
             "event": event.strip(),
             "name": workflow.strip(),
-            "ref_name": ref_name.strip(),
+            "ref_name": normalized_ref,
             "run_id": run_id,
         },
     }

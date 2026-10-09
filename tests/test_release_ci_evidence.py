@@ -282,6 +282,32 @@ class ReleaseGateReceiptTests(unittest.TestCase):
                 expected_scope="release-candidate",
             )
 
+    def test_release_candidate_scope_rejects_another_branch(self):
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "must come from build/rc-candidate-3"):
+            build_release_gate_receipt(
+                source_sha="1" * 40,
+                source_tree="2" * 40,
+                run_id=456,
+                workflow="tests",
+                event="push",
+                ref_name="task/li-integration-release-gate-receipt",
+                scope="release-candidate",
+                jobs=self._jobs(),
+            )
+
+    def test_candidate_branch_rejects_integration_scope(self):
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "must use release-candidate scope"):
+            build_release_gate_receipt(
+                source_sha="1" * 40,
+                source_tree="2" * 40,
+                run_id=456,
+                workflow="tests",
+                event="push",
+                ref_name="build/rc-candidate-3",
+                scope="integration-validation",
+                jobs=self._jobs(),
+            )
+
     def test_tampered_conclusion_is_rejected(self):
         receipt = self._receipt()
         receipt["conclusion"] = "failure"

@@ -15,7 +15,7 @@ class PreflightTests(unittest.TestCase):
             return 200, {}, {'service': 'lofgren-intelligence', 'status': 'ok'}
         if url.endswith('/readyz'):
             return 200, {}, {'ready': True, 'release_sha': SHA}
-        if url.endswith('/oauth-protected-resource'):
+        if url.endswith('/oauth-protected-resource') or url.endswith('/oauth-protected-resource/mcp'):
             return 200, {}, {'resource': BASE + '/mcp', 'authorization_servers': [BASE],
                              'scopes_supported': ['mcp'], 'bearer_methods_supported': ['header']}
         if url.endswith('/oauth-authorization-server'):
@@ -23,10 +23,51 @@ class PreflightTests(unittest.TestCase):
                              'token_endpoint': BASE + '/oauth/token', 'registration_endpoint': BASE + '/oauth/register',
                              'code_challenge_methods_supported': ['S256'],
                              'grant_types_supported': ['authorization_code', 'refresh_token']}
-        return 401, {'WWW-Authenticate': 'Bearer resource_metadata="' + BASE + '/.well-known/oauth-protected-resource"'}, {}
+        return 401, {'Cache-Control': 'no-store', 'WWW-Authenticate': 'Bearer resource_metadata="' + BASE + '/.well-known/oauth-protected-resource"'}, {}
 
     def test_expected_contract(self):
         self.assertTrue(m.check(BASE, SHA, self.request)['passed'])
+
+    def test_sdk_advertised_path_is_fetched(self):
+        calls = []
+        target = BASE + '/.well-known/oauth-protected-resource/mcp'
+        def request(url, method='GET', body=None):
+            calls.append((url, method))
+            if method == 'POST':
+                return 401, {'Cache-Control': 'no-store', 'WWW-Authenticate':
+                             'Bearer resource_metadata="' + target + '"'}, {}
+            return self.request(url, method, body)
+        self.assertTrue(m.check(BASE, SHA, request)['passed'])
+        self.assertIn((target, 'GET'), calls)
+
+    def test_misleading_challenges_do_not_trigger_external_fetch(self):
+        root = BASE + '/.well-known/oauth-protected-resource'
+        for challenge in ('Bearer resource_metadata="' + root + '.attacker.test"',
+                          'Bearer error_description="' + root + '"',
+                          'Bearer resource_metadata="' + root + '", resource_metadata="' + root + '"',
+                          'Basic resource_metadata="' + root + '"'):
+            calls = []
+            def request(url, method='GET', body=None):
+                calls.append(url)
+                if method == 'POST':
+                    return 401, {'Cache-Control': 'no-store', 'WWW-Authenticate': challenge}, {}
+                return self.request(url, method, body)
+            with self.subTest(challenge=challenge):
+                self.assertFalse(m.check(BASE, SHA, request)['passed'])
+                self.assertEqual(len(calls), 5)
+
+    def test_advertised_failure_and_cacheable_denial_fail(self):
+        target = BASE + '/.well-known/oauth-protected-resource/mcp'
+        def request(url, method='GET', body=None):
+            if method == 'POST':
+                return 401, {'Cache-Control': 'public', 'WWW-Authenticate':
+                             'Bearer resource_metadata="' + target + '"'}, {}
+            if url == target:
+                return 404, {}, {}
+            return self.request(url, method, body)
+        checks = {x['check']: x['passed'] for x in m.check(BASE, SHA, request)['checks']}
+        self.assertFalse(checks['advertised_resource_metadata'])
+        self.assertFalse(checks['mcp_response_not_cached'])
 
     def test_wrong_sha_fails(self):
         self.assertFalse(m.check(BASE, 'b' * 40, self.request)['passed'])
