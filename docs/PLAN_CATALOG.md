@@ -70,10 +70,11 @@ entries); the paid webhook no longer grants `LI_PAID_WEEKLY_UNITS` (default
   a paid entitlement whose plan is unknown or undecided is refused.
 - Checkout (`service.checkout`, `stripe.create_checkout`): allowlist =
   available + subscription + decided allowance + configured price; only
-  `plan_id` is accepted from clients.
+  `plan_id` is accepted from clients. A Price ID must identify exactly one
+  available plan; duplicate mappings make every affected plan unsellable.
 - Webhook (`stripe.apply_webhook`): subscription price id -> catalog plan ->
   catalog allowance; an unknown price, planned plan or undecided allowance
-  grants nothing.
+  grants nothing. An ambiguously configured price also grants nothing.
 - Economic gate (`economics.certify_paid_plan(samples, plan)`): adds
   plan-not-available, undecided-allowance and price/allowance-mismatch refusals.
 - `pricing` MCP tool returns the catalog.

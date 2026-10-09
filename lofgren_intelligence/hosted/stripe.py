@@ -336,7 +336,8 @@ def apply_webhook(
         seen_prices[:] = _price_ids(obj) if str(obj.get("id") or "") == sub_id else []
         return str(result)
 
-    user_id: str | None = _user_id(obj)
+    event_user_id: str | None = _user_id(obj)
+    user_id: str | None = event_user_id
     customer_id: str | None = obj.get("customer")
     subscription_id: str | None = None
     mutate = False
@@ -363,7 +364,17 @@ def apply_webhook(
 
     elif kind in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
         subscription_id = str(obj.get("id") or "") or None
-        user_id = user_id or _lookup_user_for_subscription(store, subscription_id)
+        stored_user_id = _lookup_user_for_subscription(store, subscription_id)
+        if stored_user_id:
+            if event_user_id and str(event_user_id) != stored_user_id:
+                raise StripeError("subscription metadata conflicts with the stored LI owner")
+            user_id = stored_user_id
+        else:
+            # A created event can precede checkout.session.completed. The
+            # server-authored subscription metadata is therefore an explicit
+            # bootstrap fallback only; established subscriptions are always
+            # resolved through LI's stored Stripe subscription mapping.
+            user_id = event_user_id
         if not user_id:
             raise StripeError("subscription event cannot be mapped to an LI user")
         active = bool(subscription_id) and status_of(str(subscription_id)) in _ACTIVE

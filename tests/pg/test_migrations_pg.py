@@ -1326,6 +1326,19 @@ class OAuthAndBillingTest(PgCase):
                                (user,))
         self.assertEqual((kind, float(quota)), ("paid", 5000.0))
 
+    def test_stripe_event_id_payload_collision_is_rejected(self):
+        user = self.new_user()
+        event_id = f"evt_{uuid.uuid4().hex}"
+        args = dict(event_id=event_id, event_type="customer.subscription.updated",
+                    payload_hash=sha("original"), user_id=user, customer_id="cus_test",
+                    subscription_id="sub_test", active=True, plan_id="researcher",
+                    quota_units_per_week=5000)
+        self.assertTrue(self.store.apply_stripe_entitlement_event(**args))
+        with self.assertRaisesRegex(StoreError, "different payload"):
+            self.store.apply_stripe_entitlement_event(**{**args, "payload_hash": sha("changed")})
+        self.assertEqual(self.one("select payload_hash from public.li_billing_events where stripe_event_id = %s",
+                                  (event_id,))[0], sha("original"))
+
 
 
 # ---------------------------------------------------------------------------

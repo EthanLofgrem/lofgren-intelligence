@@ -242,6 +242,19 @@ retries it. Account deletion cancels an attached subscription first; a
 subscription that has already ended (or no longer exists) does not block
 deletion, any other Stripe failure stops it before data is removed.
 
+Established subscription lifecycle events resolve ownership through LI's
+stored Stripe subscription mapping. Stripe metadata is only a bootstrap
+fallback when a subscription has not yet been recorded; conflicting metadata
+is rejected without an entitlement change or event receipt. An explicit event
+`livemode` that conflicts with `LI_STRIPE_MODE` cannot grant paid access.
+
+Webhook idempotency is content-bound. A repeated event id with the same
+canonical payload is an ordinary duplicate and changes nothing; reusing an
+event id with a different payload is rejected by the database transaction and
+does not overwrite the retained receipt or entitlement. A Stripe Price ID must
+map to exactly one available catalog plan. Duplicate configuration makes every
+affected plan unsellable and ungrantable rather than selecting one by order.
+
 The economic gate that unlocks checkout also needs `LI_PAID_MONTHLY_USD`,
 `LI_PAYMENT_FEE_PERCENT`, `LI_PAYMENT_FEE_FIXED_USD` (optional
 `LI_ECON_MIN_SAMPLES`, default and minimum 100: it can raise the sample floor
