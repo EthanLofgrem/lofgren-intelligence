@@ -188,3 +188,68 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/v6_gate.py --sha "${{ github.sha }}" --ci-run-id "${{ github.run_id }}"
+
+  release-gate-receipt:
+    if: ${{ always() && github.event_name == 'push' && github.ref_name == 'build/rc-candidate-3' }}
+    needs:
+      - test
+      - v2-ready-for-v3
+      - v3-ready-for-v4
+      - v4-ready-for-v5
+      - v5-ready-for-v6
+      - v6-complete
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record exact-SHA release gate outcomes
+        shell: bash
+        run: |
+          set -euo pipefail
+          scope="integration-validation"
+          if [[ "$GITHUB_REF_NAME" == "build/rc-candidate-3" ]]; then
+            scope="release-candidate"
+          fi
+          echo "RELEASE_GATE_SCOPE=$scope" >> "$GITHUB_ENV"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          echo "RELEASE_GATE_TREE=$source_tree" >> "$GITHUB_ENV"
+          python -m lofgren_intelligence.release.ci gate-receipt-create \
+            --source-sha "$GITHUB_SHA" \
+            --source-tree "$source_tree" \
+            --run-id "$GITHUB_RUN_ID" \
+            --workflow "$GITHUB_WORKFLOW" \
+            --event "$GITHUB_EVENT_NAME" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --scope "$scope" \
+            --job "test=${{ needs.test.result }}" \
+            --job "v2-ready-for-v3=${{ needs.v2-ready-for-v3.result }}" \
+            --job "v3-ready-for-v4=${{ needs.v3-ready-for-v4.result }}" \
+            --job "v4-ready-for-v5=${{ needs.v4-ready-for-v5.result }}" \
+            --job "v5-ready-for-v6=${{ needs.v5-ready-for-v6.result }}" \
+            --job "v6-complete=${{ needs.v6-complete.result }}" \
+            --output release-gate-receipt.json
+      - name: Retain exact-SHA release gate receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-${{ github.sha }}
+          path: release-gate-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Enforce complete release gate success
+        if: ${{ always() }}
+        run: |
+          python -m lofgren_intelligence.release.ci gate-receipt-verify \
+            --receipt release-gate-receipt.json \
+            --expected-sha "$GITHUB_SHA" \
+            --expected-tree "$RELEASE_GATE_TREE" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-scope "$RELEASE_GATE_SCOPE"
