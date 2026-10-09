@@ -233,6 +233,34 @@ class CheckoutAllowlistTests(unittest.TestCase):
         with _env(**STRIPE_TEST_ENV):
             self.assertEqual(checkout_plans(undecided), {})
 
+    def test_duplicate_price_ids_make_every_ambiguous_plan_unsellable(self):
+        catalog = open_researcher_catalog()
+        catalog = catalog.replace_plan(
+            "good_idea",
+            status=AVAILABLE,
+            allowance=cat.Allowance(units=3000, window=cat.QUOTA_WINDOW),
+            checkout_mode="subscription",
+        )
+        env = {**STRIPE_TEST_ENV, "LI_STRIPE_PRICE_ID_GOOD_IDEA_TEST": TEST_PRICE_ID}
+        with _env(**env):
+            self.assertEqual(checkout_plans(catalog), {})
+            self.assertIsNone(plan_for_price(TEST_PRICE_ID, catalog))
+
+    def test_duplicate_price_id_cannot_create_checkout(self):
+        catalog = open_researcher_catalog()
+        catalog = catalog.replace_plan(
+            "good_idea",
+            status=AVAILABLE,
+            allowance=cat.Allowance(units=3000, window=cat.QUOTA_WINDOW),
+            checkout_mode="subscription",
+        )
+        with _env(**STRIPE_TEST_ENV, LI_STRIPE_PRICE_ID_GOOD_IDEA_TEST=TEST_PRICE_ID,
+                  STRIPE_SECRET_KEY="sk_test_dummy"), patch.object(li_stripe, "stripe_post") as post:
+            for plan_id in ("researcher", "good_idea"):
+                with self.subTest(plan=plan_id), self.assertRaisesRegex(StripeError, "not available"):
+                    create_checkout("u1", plan_id=plan_id, success_url="s", cancel_url="c", catalog=catalog)
+        post.assert_not_called()
+
     def test_create_checkout_uses_the_server_price_and_never_takes_one(self):
         sent = {}
         with _env(**STRIPE_TEST_ENV, STRIPE_SECRET_KEY="sk_test_dummy"), \
@@ -344,6 +372,18 @@ class WebhookCatalogTests(unittest.TestCase):
         sub = {"id": "sub_x", "status": "active", "items": {"data": [{"price": {"id": "price_a"}}]}}
         with patch.object(li_stripe, "stripe_get", return_value=sub):
             self.assertEqual(li_stripe.current_subscription("sub_x"), {"status": "active", "price_ids": ["price_a"]})
+
+    def test_existing_subscription_owner_wins_and_conflicting_metadata_is_rejected(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({"plan_id": "researcher", "stripe_subscription_id": "sub_t", "active": True})
+        event = {"id": "evt_owner", "type": "customer.subscription.updated", "livemode": False,
+                 "data": {"object": {"id": "sub_t", "customer": "cus_t", "status": "active",
+                                     "metadata": {"li_user_id": "u2"}}}}
+        with _env(**STRIPE_TEST_ENV), self.assertRaisesRegex(StripeError, "stored LI owner"):
+            apply_webhook(store, event, subscription_status=active_researcher,
+                          catalog=open_researcher_catalog())
+        self.assertNotIn("evt_owner", store.billing_events)
+        self.assertEqual(store.entitlement["user_id"], "u1")
 
 
 class EconomicGatePlanTests(unittest.TestCase):
