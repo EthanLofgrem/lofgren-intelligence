@@ -12,7 +12,7 @@ from lofgren_intelligence.hosted.costing import actual_run_cost
 from lofgren_intelligence.hosted.economics import certify_paid_plan
 from lofgren_intelligence.kernel.ledger import CostLedger
 from lofgren_intelligence.hosted.security import PublicInputError, validate_remote_args
-from lofgren_intelligence.hosted.service import DiscoveryStateInvalid, PaymentRequired, PublicService
+from lofgren_intelligence.hosted.service import DiscoveryStateInvalid, PaymentRequired, PublicService, QuotaExceeded
 from lofgren_intelligence.hosted.stripe import apply_webhook, verify_webhook
 from lofgren_intelligence.discovery.fixtures import warehouse_design
 
@@ -1141,6 +1141,37 @@ class PublicSecurityTests(unittest.TestCase):
         for url in ("http://127.0.0.1/x", "http://169.254.169.254/latest/meta-data", "http://[::1]/"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 validate_remote_args({"objective": "x", "urls": [url]})
+
+    def test_non_finite_or_malformed_spend_caps_are_refused(self):
+        for value in (float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", object()):
+            with self.subTest(value=repr(value)), self.assertRaisesRegex(
+                PublicInputError, "finite non-negative"
+            ):
+                validate_remote_args({"objective": "x", "max_spend_usd": value})
+        self.assertEqual(
+            validate_remote_args({"objective": "x", "max_spend_usd": "4.25"})["max_spend_usd"],
+            4.25,
+        )
+
+    def test_invalid_operator_cost_ceiling_fails_closed_before_work(self):
+        store = FakeStore()
+        service = PublicService(store)
+        for value in ("not-a-number", "NaN", "Infinity", "-1"):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {
+                    "LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN": value,
+                    "LOFGREN_PROVIDER": "heuristic",
+                    "LI_INFRA_USD_PER_RUN": "0",
+                    "LI_RETRIEVAL_USD_PER_CALL": "0",
+                },
+                clear=False,
+            ), self.assertRaises(QuotaExceeded):
+                service.investigate("u1", {"objective": OBJECTIVE, "texts": TEXTS})
+        self.assertEqual(store.runs, {})
+        self.assertEqual(store.usage, [])
+        self.assertTrue(store.reservations)
+        self.assertEqual({row["status"] for row in store.reservations.values()}, {"released"})
 
 
 class StripeWebhookTests(unittest.TestCase):

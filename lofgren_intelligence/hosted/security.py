@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from ..adapters.net import validate_public_url
@@ -58,6 +59,15 @@ def validate_remote_args(args: dict[str, Any]) -> dict[str, Any]:
         validate_public_url(str(url))
     if a.get("search") not in (None, "brave"):
         raise PublicInputError("unsupported search provider")
-    if float(a.get("max_spend_usd", 5.0)) < 0:
-        raise PublicInputError("max_spend_usd must be non-negative")
+    try:
+        max_spend_usd = float(a.get("max_spend_usd", 5.0))
+    except (TypeError, ValueError, OverflowError):
+        raise PublicInputError("max_spend_usd must be a finite non-negative number") from None
+    if not math.isfinite(max_spend_usd) or max_spend_usd < 0:
+        raise PublicInputError("max_spend_usd must be a finite non-negative number")
+    # Freeze an explicitly supplied value. When omitted, preserve omission so
+    # source manifests and other validated argument subsets remain unchanged;
+    # downstream callers already apply the documented 5.0 default.
+    if "max_spend_usd" in a:
+        a["max_spend_usd"] = max_spend_usd
     return a
