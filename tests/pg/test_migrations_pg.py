@@ -478,7 +478,8 @@ class PrivilegeTest(PgCase):
 
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
-        self.assertEqual(len(expected), 23, sorted(expected))
+        self.assertIn("li_save_research_job_result", expected)
+        self.assertEqual(len(expected), 24, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
