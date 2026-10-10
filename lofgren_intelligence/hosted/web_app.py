@@ -160,8 +160,13 @@ async def oauth_token(request: Request) -> Response:
     raw = await request.body()
     if len(raw) > 100_000:
         return _error(413, "invalid_request", "request body too large")
-    form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
-    get = lambda key, default="": (form.get(key) or [default])[-1]
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed token request")
+    if any(len(values) != 1 for values in form.values()):
+        return _error(400, "invalid_request", "duplicate token parameters")
+    get = lambda key, default="": (form.get(key) or [default])[0]
     try:
         oauth = OAuthService(SupabaseStore())
         grant = get("grant_type")
@@ -813,7 +818,16 @@ class SecurityHeaders:
         await self.app(scope, receive, wrapped)
 
 
+async def mcp_service_description(request: Request) -> Response:
+    return JSONResponse({"service": "Lofgren Intelligence", "interface": "MCP",
+                         "resource": public_base() + "/mcp", "authentication": "OAuth 2.1 with PKCE S256"},
+                        headers={"Cache-Control": "no-store"})
+
+
 def build_app():
+    surface = os.environ.get("LI_DEPLOYMENT_SURFACE", "full")
+    if surface not in {"full", "mcp"}:
+        raise RuntimeError("LI_DEPLOYMENT_SURFACE must be full or mcp")
     base = public_base()
     parsed = urllib.parse.urlsplit(base)
     hostname = (parsed.hostname or "").lower()
@@ -859,6 +873,20 @@ def build_app():
     routes.extend(
         Route(path, _site_page(render, needs_base), methods=["GET"]) for path, render, needs_base in SITE_ROUTES
     )
+
+    if surface == "mcp":
+        # Explicit allowlist: new customer/admin routes remain excluded by default.
+        allowed = {
+            "/healthz", "/readyz", "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
+            "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
+            "/actions/{action_id:str}", "/actions/{action_id:str}/details", "/actions/{action_id:str}/approve",
+            "/cases/{case_id:str}", "/cases/{case_id:str}/charter", "/cases/{case_id:str}/approve",
+            "/static/vendor/{name:str}",
+        }
+        routes = [Route("/", mcp_service_description, methods=["GET"])] + [
+            route for route in routes if route.path in allowed
+        ]
 
     mcp = build_mcp(base)
     # Register the routes through MCPServer.custom_route, the public API in every supported mcp 2.x release.

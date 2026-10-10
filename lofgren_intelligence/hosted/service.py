@@ -878,27 +878,28 @@ class PublicService:
         attempt.snap = durable_snapshot(result)
         attempt.cost = actual_run_cost(result.provider_info, result.ledger)
 
-    def _persist_run(self, user_id: str, objective: str, attempt: _ResearchAttempt) -> None:
+    def _run_record(self, user_id: str, objective: str, attempt: _ResearchAttempt) -> dict[str, Any]:
         snap, cost = attempt.snap, attempt.cost
         if snap is None or cost is None:
             raise PublicServiceError("the research produced no result to save")
-        self.store.save_run(
-            {
-                "run_id": snap["run_id"],
-                "user_id": user_id,
-                "objective": objective,
-                "status": "complete" if attempt.result.completed else "stopped",
-                "summary": summary(snap),
-                "snapshot": snap,
-                "receipt": snap["receipt"],
-                "knowledge_state": snap["knowledge_map2"],
-                "report": snap["report"],
-                "usage_units": snap["usage_units"],
-                "known_cost_usd": cost.known_cost_usd,
-                "unpriced_components": list(cost.unpriced_components),
-                "created_at": utcnow(),
-            }
-        )
+        return {
+            "run_id": snap["run_id"],
+            "user_id": user_id,
+            "objective": objective,
+            "status": "complete" if attempt.result.completed else "stopped",
+            "summary": summary(snap),
+            "snapshot": snap,
+            "receipt": snap["receipt"],
+            "knowledge_state": snap["knowledge_map2"],
+            "report": snap["report"],
+            "usage_units": snap["usage_units"],
+            "known_cost_usd": cost.known_cost_usd,
+            "unpriced_components": list(cost.unpriced_components),
+            "created_at": utcnow(),
+        }
+
+    def _persist_run(self, user_id: str, objective: str, attempt: _ResearchAttempt) -> None:
+        self.store.save_run(self._run_record(user_id, objective, attempt))
 
     @staticmethod
     def _run_output(snap: dict[str, Any], cost: Any) -> dict[str, Any]:
@@ -1396,19 +1397,22 @@ class PublicService:
         assert snap is not None and cost is not None
         total_units = base_units + float(snap["usage_units"])
         total_known = base_cost + float(cost.known_cost_usd)
-        try:
-            self._persist_run(str(job["user_id"]), objective, attempt)
-        except Exception:
-            # The work ran but its result was not stored: charge it and fail (M1 semantics).
-            return ending("RESULT_NOT_SAVED", total_units, total_known,
-                          sorted(set(cost.unpriced_components) | {"partial_run"}))
         saved = {
             "phase": "result_saved", "run_id": snap["run_id"], "units": total_units,
             "known_cost_usd": total_known, "unpriced": list(cost.unpriced_components), "attempt": attempts,
         }
         try:
-            lease.beat(saved, total_units)
-        except job_model.LeaseLost:
+            row = self.store.save_research_job_result(
+                str(job["id"]), lease.worker_id,
+                self._run_record(str(job["user_id"]), objective, attempt), saved,
+                settings.lease_seconds, settings.hold_grace_seconds,
+            )
+        except Exception:
+            # The transaction may have committed but its response was lost. Do not
+            # finalize a failure: lease reclaim inspects the persisted checkpoint.
+            _LOG.warning("research job %s result persistence outcome unknown; awaiting lease recovery", job["id"])
+            return {"status": "persistence_unknown"}
+        if row is None:
             return {"status": "lease_lost"}
         return self._complete_job(job, lease, saved)
 
@@ -1937,6 +1941,14 @@ class PublicService:
                 "receipt_intact": verify_action_receipt(row["receipt"]),
                 "receipt": row["receipt"],
             }
+        # An arbitrary webhook may ignore Idempotency-Key. Until action
+        # claiming and ambiguous-result recovery are durable, public hosted
+        # execution must be disabled independently of user approval.
+        if os.environ.get("LI_EXTERNAL_EXECUTION_ENABLED") != "true":
+            raise PublicServiceError(
+                "EXTERNAL_EXECUTION_DISABLED: hosted external execution is disabled; "
+                "action proposals and receipt inspection remain available"
+            )
         if row["status"] != "approved" or not row.get("grant_record") or not row.get("approval_record"):
             raise PublicServiceError("action requires explicit browser approval")
         artifact = self.store.get_artifact(user_id, row["artifact_id"])
