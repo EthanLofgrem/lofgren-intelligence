@@ -63,7 +63,7 @@ class OpaqueTokenVerifier(TokenVerifier):
             expires_at=int(expiry.timestamp()),
             resource=resource,
             subject=user_id,
-            claims={"iss": self.resource_url.rsplit("/mcp", 1)[0]},
+            claims={"iss": self.resource_url.rsplit("/mcp", 1)[0] + "/"},
         )
 
 

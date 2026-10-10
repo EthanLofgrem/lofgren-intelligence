@@ -96,7 +96,7 @@ async def oauth_resource_root(request: Request) -> Response:
     base = public_base()
     return JSONResponse({
         "resource": base + "/mcp",
-        "authorization_servers": [base],
+        "authorization_servers": [base + "/"],
         "scopes_supported": ["mcp"],
         "bearer_methods_supported": ["header"],
     })
@@ -105,7 +105,7 @@ async def oauth_resource_root(request: Request) -> Response:
 async def oauth_server_metadata(request: Request) -> Response:
     base = public_base()
     return JSONResponse({
-        "issuer": base,
+        "issuer": base + "/",
         "authorization_endpoint": base + "/oauth/authorize",
         "token_endpoint": base + "/oauth/token",
         "registration_endpoint": base + "/oauth/register",

@@ -24,3 +24,13 @@ redirects in the relevant provider settings. Both deployments and the hosted
 worker must align to the reviewed release and staging schema. Excluding account
 pages does not remove account deletion capability from the product; retain the
 protected customer deployment and customer support path.
+
+## OAuth issuer identity
+
+The authorization server issuer is the HTTPS origin with its root slash, for
+example `https://lofgren-intelligence-mcp.vercel.app/`. Both protected-resource
+metadata routes advertise that exact identity and the authorization-server
+metadata returns it unchanged. This matches the MCP SDK's canonical HTTP URL
+serialization. The MCP resource remains the exact origin plus `/mcp`; OAuth
+endpoint paths are unchanged. Preflight compares these identities exactly
+rather than treating distinct issuer strings as interchangeable.

@@ -56,12 +56,12 @@ def check(base, sha, request=fetch):
     status, _, resource = request(base + '/.well-known/oauth-protected-resource')
     record('resource_discovery', status == 200 and isinstance(resource, dict)
            and resource.get('resource') == base + '/mcp'
-           and base in resource.get('authorization_servers', [])
+           and base + '/' in resource.get('authorization_servers', [])
            and 'mcp' in resource.get('scopes_supported', [])
            and 'header' in resource.get('bearer_methods_supported', []))
     status, _, auth = request(base + '/.well-known/oauth-authorization-server')
     record('oauth_discovery_pkce', status == 200 and isinstance(auth, dict)
-           and auth.get('issuer') == base
+           and auth.get('issuer') == base + '/'
            and auth.get('authorization_endpoint') == base + '/oauth/authorize'
            and auth.get('token_endpoint') == base + '/oauth/token'
            and auth.get('registration_endpoint') == base + '/oauth/register'
@@ -89,7 +89,7 @@ def check(base, sha, request=fetch):
         advertised_ok = (metadata_status == 200 and isinstance(metadata, dict)
                          and metadata.get('resource') == base + '/mcp'
                          and isinstance(metadata.get('authorization_servers'), list)
-                         and base in metadata['authorization_servers'])
+                         and base + '/' in metadata['authorization_servers'])
     record('advertised_resource_metadata', advertised_ok)
     record('mcp_response_not_cached', headers.get('cache-control', '').lower() == 'no-store')
     return {'schema': 'li.mcp-preflight/1', 'expected_sha': sha, 'origin': base,

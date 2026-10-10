@@ -51,7 +51,7 @@ same rules. This covers a queued job that is cancelled, a lease that expires
 with no attempts left, and a job that waits past the queue TTL.
 
 The worker stores its run and `result_saved` checkpoint atomically using
-`li_save_research_job_result` (migration `20261010130000_li_atomic_job_result`).
+`li_save_research_job_result` (migration `20261010200818_li_atomic_job_result`).
 The RPC locks the job, checks its live lease and user identity, and writes both
 records in the same transaction. Expired or foreign leases cannot persist results.
 A lost RPC response leaves the worker waiting for lease recovery rather than
