@@ -86,6 +86,7 @@ TOOL_LEVELS: dict[str, str] = {
 # enables them. They are listed (the registry serves them) with the gate named.
 GATED: dict[str, str] = {
     "create_checkout": "LI_BILLING_ENABLED and the P95 economic certification gate",
+    "execute_action": "LI_EXTERNAL_EXECUTION_ENABLED == true (disabled by default) and explicit browser approval; existing receipts remain readable",
 }
 
 # Tools that reserve usage before running (units decided per call).

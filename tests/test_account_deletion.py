@@ -553,10 +553,14 @@ class DeletionVersusWorkerTests(DeletionTestBase):
 
     def _end_the_job_under_the_worker_then_delete(self, job_id, seen):
         self.clock.advance(SETTINGS.lease_seconds + 1)
+        saved = self.store.jobs[job_id]["checkpoint"].get("phase") == "result_saved"
+        if saved:
+            self.store.jobs[job_id]["finalize_reclaims"] = 3
         reclaimed = self.store.reclaim_research_jobs(100, SETTINGS.queue_ttl_seconds, 3)
         self.assertIn(job_id, reclaimed)
         job = self.store.jobs[job_id]
-        self.assertEqual((job["status"], job["error_code"]), ("failed", "LEASE_EXPIRED"))
+        self.assertEqual((job["status"], job["error_code"]),
+                         ("failed", "SETTLEMENT_ABANDONED" if saved else "LEASE_EXPIRED"))
         with patch.object(service_module, "cancel_subscription") as cancel:
             seen["deleted"] = self.delete()
         cancel.assert_not_called()  # u1 has no subscription in this fixture
@@ -594,19 +598,20 @@ class DeletionVersusWorkerTests(DeletionTestBase):
                 raise
 
         self.store.save_run = save_run
-        original_persist = PublicService._persist_run
+        original_persist = self.store.save_research_job_result
 
-        def persist(service, user_id, objective, attempt):
+        def persist(job_id, worker, run, checkpoint, lease_seconds, hold_grace_seconds):
             if moment == "before_save":
                 self._end_the_job_under_the_worker_then_delete(job_id, seen)
-            out = original_persist(service, user_id, objective, attempt)
-            seen["saved_run_id"] = attempt.snap["run_id"]
+            out = original_persist(job_id, worker, run, checkpoint, lease_seconds, hold_grace_seconds)
+            if out is not None:
+                seen["saved_run_id"] = run["run_id"]
             if moment == "after_save":
-                self.assertIsNotNone(self.store.get_run("u1", attempt.snap["run_id"]))
+                self.assertIsNotNone(self.store.get_run("u1", run["run_id"]))
                 self._end_the_job_under_the_worker_then_delete(job_id, seen)
             return out
 
-        with patch.object(PublicService, "_persist_run", persist):
+        with patch.object(self.store, "save_research_job_result", persist):
             if moment == "mid_research":
                 with at_stage("verify", lambda _ledger: self._end_the_job_under_the_worker_then_delete(job_id, seen)):
                     results = self.drain()
@@ -636,9 +641,8 @@ class DeletionVersusWorkerTests(DeletionTestBase):
     def test_a_worker_about_to_save_its_result_recreates_nothing(self):
         job_id, seen, results = self._run_zombie("before_save")
         self._assert_nothing_recreated(job_id, seen, results)
-        # It did try to save: the foreign key refused the write for the deleted user.
-        self.assertEqual(len(seen["refused_writes"]), 1)
-        self.assertEqual(seen["refused_writes"][0][1], "u1")
+        # The atomic RPC finds no job and refuses before attempting a run insert.
+        self.assertEqual(seen["refused_writes"], [])
         self.assertNotIn("saved_run_id", seen)
 
     def test_a_worker_that_saved_before_deletion_has_its_result_cascaded_and_cannot_complete(self):

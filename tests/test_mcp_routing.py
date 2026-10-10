@@ -161,10 +161,10 @@ class OAuthHTTPBoundaryTests(unittest.TestCase):
             with TestClient(web_app.build_app(), base_url=base) as client:
                 metadata = client.get("/.well-known/oauth-protected-resource").json()
                 self.assertEqual(metadata["resource"], base + "/mcp")
-                self.assertEqual(metadata["authorization_servers"], [base])
+                self.assertEqual(metadata["authorization_servers"], [base + "/"])
                 self.assertEqual(metadata["scopes_supported"], ["mcp"])
                 oauth = client.get("/.well-known/oauth-authorization-server").json()
-                self.assertEqual(oauth["issuer"], base)
+                self.assertEqual(oauth["issuer"], base + "/")
                 self.assertEqual(oauth["code_challenge_methods_supported"], ["S256"])
                 self.assertNotIn("jwks_uri", oauth)  # LI uses resource-bound opaque tokens, not JWTs.
                 for token, status in ((None, 401), ("invalid", 401), ("wrong-resource", 401),
@@ -183,6 +183,7 @@ class OAuthHTTPBoundaryTests(unittest.TestCase):
                         advertised = re.search(r'resource_metadata="([^"]+)"', response.headers["www-authenticate"]).group(1)
                         discovered = client.get(advertised)
                         self.assertEqual(discovered.status_code, 200)
+                        self.assertEqual(discovered.json()["authorization_servers"], [oauth["issuer"]])
                         self.assertEqual(discovered.json()["resource"], base + "/mcp")
                         if status == 403:
                             self.assertIn("insufficient_scope", response.headers["www-authenticate"])

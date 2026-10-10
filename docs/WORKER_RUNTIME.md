@@ -50,6 +50,14 @@ A job that ends with no worker present is accounted inside the database by the
 same rules. This covers a queued job that is cancelled, a lease that expires
 with no attempts left, and a job that waits past the queue TTL.
 
+The worker stores its run and `result_saved` checkpoint atomically using
+`li_save_research_job_result` (migration `20261010200818_li_atomic_job_result`).
+The RPC locks the job, checks its live lease and user identity, and writes both
+records in the same transaction. Expired or foreign leases cannot persist results.
+A lost RPC response leaves the worker waiting for lease recovery rather than
+charging a failure: reclaim observes the committed checkpoint, or retries research
+if neither record committed. Deploy this migration before deploying this worker.
+
 Checkpoint phases `result_saved` and `finalizing` make finishing idempotent. A
 worker that resumes a reclaimed job in one of these phases settles and
 finishes it without running the research again. Such a requeue uses no
@@ -110,6 +118,20 @@ subprocess with a timeout. That subprocess is **not** a security sandbox for
 untrusted code, and research jobs do not run it.
 
 ## Deployment options
+
+Hosted external action execution is disabled by default. Keep
+`LI_EXTERNAL_EXECUTION_ENABLED=false` on public API deployments. Action
+proposals, review, and existing receipt inspection remain available. A user
+approval does not override this operator restriction.
+
+The exact value `true` is an operator opt-in for an explicitly approved
+contained environment, not evidence of public readiness. The present action
+path lacks a durable atomic execution claim and ambiguous-result recovery.
+Concurrent calls or a crash after a webhook POST can repeat an external
+effect; sending an `Idempotency-Key` cannot guarantee an arbitrary recipient
+honors it. Do not enable public external execution until these boundaries are
+implemented and demonstrated. Local V4 certification uses bounded adapters
+and remains separately available.
 
 Any always-on container or VM host that can run
 `python -m lofgren_intelligence.hosted.worker` and reach the Supabase database

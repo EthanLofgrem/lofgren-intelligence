@@ -620,3 +620,15 @@ class BuildAppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OAuthTokenInputTests(unittest.TestCase):
+    def test_malformed_inputs_are_refused_before_database_initialization(self):
+        inputs = (b"\xff", b"grant_type=authorization_code&grant_type=refresh_token",
+                  b"&".join(b"field%d=x" % i for i in range(33)))
+        for body in inputs:
+            with self.subTest(body=body), patch.object(web_app, "SupabaseStore") as store:
+                response = _call(web_app.oauth_token, "/oauth/token", method="POST", body=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(json.loads(response.body)["error"], "invalid_request")
+                store.assert_not_called()

@@ -63,7 +63,7 @@ class OpaqueTokenVerifier(TokenVerifier):
             expires_at=int(expiry.timestamp()),
             resource=resource,
             subject=user_id,
-            claims={"iss": self.resource_url.rsplit("/mcp", 1)[0]},
+            claims={"iss": self.resource_url.rsplit("/mcp", 1)[0] + "/"},
         )
 
 
@@ -612,7 +612,7 @@ def build_mcp(base_url: str) -> MCPServer:
 
     @tool()
     def execute_action(action_id: str) -> dict[str, Any]:
-        """Execute an already browser-approved V4 action and return its action receipt."""
+        """Execute a browser-approved V4 action only when operator-enabled; public hosted execution is disabled by default. Existing receipts remain readable."""
         user_id, service = _caller()
         return service.execute_action(user_id, {"action_id": action_id})
 

@@ -101,7 +101,7 @@ def main() -> int:
 
             metadata = client.get("/.well-known/oauth-authorization-server")
             _require(metadata.status_code == 200, "OAuth metadata is not served")
-            _require(metadata.json().get("issuer") == safe_environment["LI_PUBLIC_BASE_URL"],
+            _require(metadata.json().get("issuer") == safe_environment["LI_PUBLIC_BASE_URL"] + "/",
                      "OAuth issuer does not match the configured public base")
 
             static_root = resources.files("lofgren_intelligence.hosted").joinpath("static")

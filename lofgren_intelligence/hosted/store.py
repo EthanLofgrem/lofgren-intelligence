@@ -443,6 +443,16 @@ class SupabaseStore:
             "p_cost_so_far": None if cost_so_far is None else float(cost_so_far),
         }), "li_heartbeat_research_job")
 
+    def save_research_job_result(
+        self, job_id: str, worker: str, run: dict[str, Any], checkpoint: dict[str, Any],
+        lease_seconds: int, hold_grace_seconds: int,
+    ) -> dict[str, Any] | None:
+        """Atomically save a result and recovery checkpoint under a live worker lease."""
+        return self._rpc_row(self.rpc("li_save_research_job_result", {
+            "p_id": job_id, "p_worker": worker, "p_run": run, "p_checkpoint": checkpoint,
+            "p_lease_seconds": int(lease_seconds), "p_hold_grace_seconds": int(hold_grace_seconds),
+        }), "li_save_research_job_result")
+
     def complete_research_job(self, job_id: str, worker: str, run_id: str, cost_so_far: float) -> dict[str, Any] | None:
         return self._rpc_row(self.rpc("li_complete_research_job", {
             "p_id": job_id, "p_worker": worker, "p_run_id": run_id, "p_cost_so_far": float(cost_so_far),

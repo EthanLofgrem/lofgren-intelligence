@@ -269,6 +269,70 @@ class LifecycleTests(JobTestBase):
         self.assertEqual(len(self.store.runs), 1)
         self.assertEqual(len(self.store.usage), 1)
 
+    def test_result_transaction_committed_but_response_lost_never_reruns(self):
+        job_id = self.start("atomic-lost-response")["job_id"]
+        original = self.store.save_research_job_result
+
+        def committed_then_lost(*args):
+            original(*args)
+            raise ConnectionError("response lost after commit")
+
+        with patch.object(self.store, "save_research_job_result", committed_then_lost):
+            result = self.worker("w1").run_once()["jobs"][0]
+        self.assertEqual(result["status"], "persistence_unknown")
+        self.assertEqual(self.job(job_id)["checkpoint"]["phase"], "result_saved")
+        self.assertEqual(len(self.store.runs), 1)
+        self.assertEqual(len(self.store.usage), 0)
+        self.clock.advance(SETTINGS.lease_seconds + 1)
+        with patch.object(service_module, "run_investigation", side_effect=AssertionError("reran research")):
+            results = self.drain(self.worker("w2"))
+        self.assertEqual([r["status"] for r in results], ["succeeded"])
+        self.assertEqual(len(self.store.runs), 1)
+        self.assertEqual(len(self.store.usage), 1)
+
+    def test_result_transaction_did_not_commit_recovers_and_accounts_attempts(self):
+        job_id = self.start("atomic-uncommitted")["job_id"]
+        with patch.object(self.store, "save_research_job_result", side_effect=ConnectionError("no commit")):
+            result = self.worker("w1").run_once()["jobs"][0]
+        self.assertEqual(result["status"], "persistence_unknown")
+        self.assertEqual(self.store.runs, {})
+        self.assertEqual(self.store.usage, [])
+        checkpointed_units = self.job(job_id)["cost_so_far"]
+        self.assertGreater(checkpointed_units, 0)
+        self.clock.advance(SETTINGS.lease_seconds + 1)
+        results = self.drain(self.worker("w2"))
+        self.assertEqual([r["status"] for r in results], ["succeeded"])
+        self.assertEqual(len(self.store.runs), 1)
+        self.assertEqual(len(self.store.usage), 1)
+        self.assertGreater(self.store.usage[0]["units"], checkpointed_units)
+        self.assertAlmostEqual(self.store.usage[0]["units"], self.job(job_id)["cost_so_far"])
+
+    def test_absent_worker_or_lease_cannot_persist_a_result(self):
+        job_id = self.start("atomic-missing-lease")["job_id"]
+        self.store.claim_research_job("w1", 120, 300)
+        record = {"user_id": "u1", "run_id": "test-run"}
+        checkpoint = {"phase": "result_saved", "run_id": "test-run", "units": 1}
+        self.assertIsNone(self.store.save_research_job_result(job_id, None, record, checkpoint, 120, 300))
+        self.store.jobs[job_id]["lease_expires_at"] = None
+        self.assertIsNone(self.store.save_research_job_result(job_id, "w1", record, checkpoint, 120, 300))
+        self.assertEqual(self.store.runs, {})
+        self.assertEqual(self.store.usage, [])
+
+    def test_expired_lease_cannot_persist_a_result(self):
+        job_id = self.start("atomic-expired")["job_id"]
+        original = self.store.save_research_job_result
+
+        def expire_before_save(*args):
+            self.clock.advance(SETTINGS.lease_seconds + 1)
+            return original(*args)
+
+        with patch.object(self.store, "save_research_job_result", expire_before_save):
+            result = self.worker("w1").run_once()["jobs"][0]
+        self.assertEqual(result["status"], "lease_lost")
+        self.assertEqual(self.store.runs, {})
+        self.assertEqual(self.store.usage, [])
+        self.assertEqual(self.job(job_id)["checkpoint"]["phase"], "running")
+
     def _crash_every_settlement(self, job_id, settings, cycles):
         """Let `cycles` workers die while settling the job; each lease then expires."""
         for n in range(cycles):

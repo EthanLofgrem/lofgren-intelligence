@@ -478,7 +478,8 @@ class PrivilegeTest(PgCase):
 
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
-        self.assertEqual(len(expected), 23, sorted(expected))
+        self.assertIn("li_save_research_job_result", expected)
+        self.assertEqual(len(expected), 24, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -886,6 +887,59 @@ class JobsTest(PgCase):
     def job(self, job_id):
         return self.one("select status, attempts, lease_owner, lease_expires_at, error_code, result_run_id, "
                         "finalize_reclaims, cost_so_far from public.li_research_jobs where id = %s", (job_id,))
+
+    def atomic_result(self, user, run_id="atomic-run"):
+        return {"user_id": user, "run_id": run_id, "objective": "x", "status": "complete",
+                "summary": {}, "snapshot": {"run_id": run_id}, "receipt": {"research_id": run_id},
+                "knowledge_state": {}, "report": "synthetic result", "usage_units": 4,
+                "known_cost_usd": 0, "unpriced_components": [], "created_at": "2026-10-10T00:00:00Z"}
+
+    def test_atomic_result_concurrent_replays_preserve_checkpoint_and_one_run(self):
+        user = self.new_user()
+        job = self.enqueue(user, self.reserve(user))
+        self.store.claim_research_job("atomic-worker", 120, 300)
+        stores = [self.new_store(), self.new_store()]
+        record = self.atomic_result(user)
+        checkpoint = {"phase": "result_saved", "run_id": record["run_id"], "units": 4}
+        rows = run_concurrently([
+            lambda: stores[0].save_research_job_result(job["id"], "atomic-worker", record, checkpoint, 120, 300),
+            lambda: stores[1].save_research_job_result(job["id"], "atomic-worker", record, checkpoint, 120, 300),
+        ])
+        self.assertTrue(all(row["checkpoint"]["phase"] == "result_saved" for row in rows))
+        self.assertEqual(self.one("select count(*) from public.li_runs where user_id=%s", (user,))[0], 1)
+        self.assertEqual(self.one("select checkpoint->>'phase',cost_so_far from public.li_research_jobs where id=%s",
+                                  (job["id"],)), ("result_saved", 4))
+
+    def test_atomic_result_denies_wrong_owner_and_expired_lease_without_writes(self):
+        user, foreign = self.new_user(), self.new_user()
+        job = self.enqueue(user, self.reserve(user))
+        self.store.claim_research_job("atomic-worker", 120, 300)
+        record = self.atomic_result(foreign)
+        checkpoint = {"phase": "result_saved", "run_id": record["run_id"], "units": 4}
+        self.assertIsNone(self.store.save_research_job_result(job["id"], "atomic-worker", record, checkpoint, 120, 300))
+        record["user_id"] = user
+        self.assertIsNone(self.store.save_research_job_result(job["id"], None, record, checkpoint, 120, 300))
+        self.admin.execute("update public.li_research_jobs set lease_expires_at=null where id=%s", (job["id"],))
+        self.assertIsNone(self.store.save_research_job_result(job["id"], "atomic-worker", record, checkpoint, 120, 300))
+        self.admin.execute("update public.li_research_jobs set lease_expires_at=now()-interval '1 second' where id=%s",
+                           (job["id"],))
+        self.assertIsNone(self.store.save_research_job_result(job["id"], "atomic-worker", record, checkpoint, 120, 300))
+        self.assertEqual(self.one("select count(*) from public.li_runs where user_id in (%s,%s)", (user, foreign))[0], 0)
+        self.assertEqual(self.one("select checkpoint from public.li_research_jobs where id=%s", (job["id"],))[0], {})
+
+    def test_atomic_result_insert_failure_rolls_back_checkpoint_and_run(self):
+        user = self.new_user()
+        job = self.enqueue(user, self.reserve(user))
+        self.store.claim_research_job("atomic-worker", 120, 300)
+        record = self.atomic_result(user)
+        record["report"] = None  # real table NOT NULL failure inside the transaction
+        checkpoint = {"phase": "result_saved", "run_id": record["run_id"], "units": 4}
+        with self.assertRaises(StoreError) as caught:
+            self.store.save_research_job_result(job["id"], "atomic-worker", record, checkpoint, 120, 300)
+        self.assertIsInstance(caught.exception.__cause__, pg_errors.NotNullViolation)
+        self.assertEqual(self.one("select count(*) from public.li_runs where user_id=%s", (user,))[0], 0)
+        self.assertEqual(self.one("select checkpoint,cost_so_far from public.li_research_jobs where id=%s",
+                                  (job["id"],)), ({}, 0))
 
     def test_enqueue_is_idempotent_and_binds_only_a_usable_reservation(self):
         user, other = self.new_user(), self.new_user()
