@@ -215,7 +215,7 @@
       "name": "execute_action",
       "level": "V4",
       "public": true,
-      "gated_by": null,
+      "gated_by": "LI_EXTERNAL_EXECUTION_ENABLED == true (disabled by default) and explicit browser approval; existing receipts remain readable",
       "metering": {
         "kind": "none"
       }

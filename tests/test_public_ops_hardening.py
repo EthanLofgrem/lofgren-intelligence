@@ -849,6 +849,16 @@ class CapabilityManifestTests(unittest.TestCase):
     def test_checked_in_manifest_is_current(self):
         self.assertEqual(json.loads(self._doc("docs/CAPABILITIES.json")), self.manifest)
 
+    def test_execution_gate_is_advertised_without_gating_proposals_or_receipt_reads(self):
+        by_name = {t["name"]: t for t in self.manifest["tools"]}
+        gate = by_name["execute_action"]["gated_by"]
+        self.assertIn("LI_EXTERNAL_EXECUTION_ENABLED == true", gate)
+        self.assertIn("disabled by default", gate)
+        self.assertIn("explicit browser approval", gate)
+        self.assertIn("existing receipts remain readable", gate)
+        self.assertIsNone(by_name["propose_action"]["gated_by"])
+        self.assertIsNone(by_name["action_status"]["gated_by"])
+
     def test_metering_matches_the_service(self):
         from lofgren_intelligence.hosted.service import ADHOC_UNIT_COSTS
         by_name = {t["name"]: t for t in self.manifest["tools"]}
