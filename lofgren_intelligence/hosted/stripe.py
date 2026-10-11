@@ -41,10 +41,18 @@ class StripeError(RuntimeError):
     pass
 
 
+class StripeNotConfigured(StripeError):
+    """Billing configuration is missing or inconsistent (a server misconfiguration; log only)."""
+
+
+class StripeUnavailable(StripeError):
+    """The Stripe API could not be reached (a transient upstream fault)."""
+
+
 def _secret() -> str:
     value = os.environ.get("STRIPE_SECRET_KEY", "")
     if not value:
-        raise StripeError("STRIPE_SECRET_KEY is not configured")
+        raise StripeNotConfigured("STRIPE_SECRET_KEY is not configured")
     return value
 
 
@@ -52,11 +60,11 @@ def _require_mode_matches_key() -> str:
     """The configured LI_STRIPE_MODE; refuses when it is unset or contradicts the secret key's mode."""
     mode = stripe_mode()
     if mode is None:
-        raise StripeError("LI_STRIPE_MODE must be 'test' or 'live'")
+        raise StripeNotConfigured("LI_STRIPE_MODE must be 'test' or 'live'")
     key = os.environ.get("STRIPE_SECRET_KEY", "")
     other = "live" if mode == "test" else "test"
     if key.startswith((f"sk_{other}_", f"rk_{other}_")):
-        raise StripeError("LI_STRIPE_MODE does not match the configured Stripe key")
+        raise StripeNotConfigured("LI_STRIPE_MODE does not match the configured Stripe key")
     return mode
 
 
@@ -82,7 +90,7 @@ def _stripe_call(req: urllib.request.Request) -> dict[str, Any]:
             pass
         raise StripeAPIError(int(exc.code), code, message) from None
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise StripeError("Stripe API is unreachable") from exc
+        raise StripeUnavailable("Stripe API is unreachable") from exc
 
 
 def stripe_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -199,7 +207,7 @@ def verify_webhook(
 ) -> dict[str, Any]:
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
     if not secret:
-        raise StripeError("STRIPE_WEBHOOK_SECRET is not configured")
+        raise StripeNotConfigured("STRIPE_WEBHOOK_SECRET is not configured")
     parts: dict[str, list[str]] = {}
     for chunk in signature.split(","):
         if "=" not in chunk:

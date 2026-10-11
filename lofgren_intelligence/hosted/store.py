@@ -20,14 +20,26 @@ class StoreError(RuntimeError):
     pass
 
 
+class StoreUnavailable(StoreError):
+    """A server-side store fault: unreachable, failed or answered incorrectly.
+
+    Never the caller's fault. Public endpoints answer 503 with a generic
+    description; the message is for server-side logs only.
+    """
+
+
+class StoreNotConfigured(StoreUnavailable):
+    """The deployment is missing store configuration (a server misconfiguration)."""
+
+
 def _db(url: str, method: str, **kw: Any) -> Any:
     """Call Supabase without leaking PostgREST/schema details to public callers."""
     try:
         return json_request(url, method, **kw).body
     except HTTPError as exc:
-        raise StoreError(f"database request failed (HTTP {exc.status})") from None
+        raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
     except (urllib.error.URLError, OSError, ValueError):
-        raise StoreError("database is unreachable") from None
+        raise StoreUnavailable("database is unreachable") from None
 
 
 def utcnow() -> str:
@@ -45,9 +57,9 @@ class SupabaseStore:
         self.service_key = service_key or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
         self.publishable_key = publishable_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
         if not self.url:
-            raise StoreError("SUPABASE_URL is required")
+            raise StoreNotConfigured("SUPABASE_URL is required")
         if not self.service_key:
-            raise StoreError("SUPABASE_SERVICE_ROLE_KEY is required")
+            raise StoreNotConfigured("SUPABASE_SERVICE_ROLE_KEY is required")
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -90,7 +102,11 @@ class SupabaseStore:
                 headers={"apikey": key, "authorization": f"Bearer {access_token}"},
             )
         except HTTPError as exc:
+            if exc.status >= 500:
+                raise StoreUnavailable(f"identity provider failed (HTTP {exc.status})") from None
             raise StoreError("invalid Supabase user session") from exc
+        except (urllib.error.URLError, OSError, ValueError):
+            raise StoreUnavailable("identity provider is unreachable") from None
         if not isinstance(response.body, dict) or not response.body.get("id"):
             raise StoreError("invalid Supabase user session")
         return response.body
@@ -99,10 +115,10 @@ class SupabaseStore:
         rows = self.rpc("li_activate_account", {"p_user_id": user_id, "p_email": email})
         if isinstance(rows, list):
             if not rows:
-                raise StoreError("activation returned no account")
+                raise StoreUnavailable("activation returned no account")
             return rows[0]
         if not isinstance(rows, dict):
-            raise StoreError("activation returned invalid account")
+            raise StoreUnavailable("activation returned invalid account")
         return rows
 
     def get_account(self, user_id: str) -> dict[str, Any] | None:
@@ -287,7 +303,7 @@ class SupabaseStore:
         if isinstance(result, dict) and len(result) == 1:
             result = next(iter(result.values()))
         if result not in ("settled", "already_settled", "not_unsettled", "missing"):
-            raise StoreError("usage settlement returned an invalid answer")
+            raise StoreUnavailable("usage settlement returned an invalid answer")
         return str(result)
 
     def list_unsettled_usage(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -306,7 +322,7 @@ class SupabaseStore:
         if isinstance(result, dict) and len(result) == 1:
             result = next(iter(result.values()))
         if isinstance(result, bool) or not isinstance(result, (int, float)):
-            raise StoreError("case store returned an invalid answer")
+            raise StoreUnavailable("case store returned an invalid answer")
         return int(result)
 
     def create_case(
@@ -411,7 +427,7 @@ class SupabaseStore:
         if result is None:
             return None
         if not isinstance(result, dict) or not result.get("id"):
-            raise StoreError("job store returned an invalid answer")
+            raise StoreUnavailable("job store returned an invalid answer")
         return result
 
     def enqueue_research_job(
@@ -483,7 +499,7 @@ class SupabaseStore:
         if result is None:
             return []
         if not isinstance(result, list) or not all(isinstance(x, str) for x in result):
-            raise StoreError("job store returned an invalid answer")
+            raise StoreUnavailable("job store returned an invalid answer")
         return list(result)
 
     def get_research_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
@@ -543,7 +559,7 @@ class SupabaseStore:
         if isinstance(result, dict) and len(result) == 1:
             result = next(iter(result.values()))
         if isinstance(result, bool) or not isinstance(result, (int, float)) or result < 0:
-            raise StoreError("rate limiter returned an invalid answer")
+            raise StoreUnavailable("rate limiter returned an invalid answer")
         return int(result)
 
     def list_runs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
@@ -598,9 +614,9 @@ class SupabaseStore:
         except HTTPError as exc:
             if exc.status == 404:
                 return False
-            raise StoreError(f"database request failed (HTTP {exc.status})") from None
+            raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
         except (urllib.error.URLError, OSError, ValueError):
-            raise StoreError("database is unreachable") from None
+            raise StoreUnavailable("database is unreachable") from None
         return True
 
     def save_discovery(self, row: dict[str, Any]) -> None:
