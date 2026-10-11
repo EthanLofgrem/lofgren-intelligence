@@ -21,7 +21,7 @@ from starlette.routing import Route
 from .. import __version__
 from .auth import ActivationRefused, AuthError, OAuthService
 from .mcp_sdk import build_mcp
-from . import console, site
+from . import console, site, trial
 from .journey import checkout_return_html, consent_intro_html, landing_html
 from .ratelimit import client_ip, rate_limited
 from .service import AccountDeletionPending, PublicService, PublicServiceError
@@ -777,7 +777,7 @@ class RequestTelemetry:
             if message["type"] == "http.response.start":
                 status = int(message["status"])
                 headers = list(message.get("headers", []))
-                if scope.get("path", "").rstrip("/") == "/mcp":
+                if scope.get("path", "").rstrip("/") in ("/mcp", "/mcp-trial"):
                     headers = [(key, value) for key, value in headers if key.lower() != b"cache-control"]
                     headers.append((b"cache-control", b"no-store"))
                 headers.append((b"x-request-id", request_id.encode("ascii")))
@@ -819,15 +819,20 @@ class SecurityHeaders:
 
 
 async def mcp_service_description(request: Request) -> Response:
-    return JSONResponse({"service": "Lofgren Intelligence", "interface": "MCP",
-                         "resource": public_base() + "/mcp", "authentication": "OAuth 2.1 with PKCE S256"},
-                        headers={"Cache-Control": "no-store"})
+    body: dict[str, Any] = {"service": "Lofgren Intelligence", "interface": "MCP",
+                            "resource": public_base() + "/mcp", "authentication": "OAuth 2.1 with PKCE S256"}
+    if trial.trial_enabled():
+        body["trial"] = {"endpoint": public_base() + trial.TRIAL_PATH, "authentication": "none",
+                         "tools": list(trial.TRIAL_TOOLS), "persists": False}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 def build_app():
     surface = os.environ.get("LI_DEPLOYMENT_SURFACE", "full")
     if surface not in {"full", "mcp"}:
         raise RuntimeError("LI_DEPLOYMENT_SURFACE must be full or mcp")
+    # Unknown LI_TRIAL_ENABLED values fail startup; the trial is mounted only on the dedicated MCP surface.
+    trial_on = trial.trial_enabled() and surface == "mcp"
     base = public_base()
     parsed = urllib.parse.urlsplit(base)
     hostname = (parsed.hostname or "").lower()
@@ -894,8 +899,7 @@ def build_app():
     # routes registered this way are served without MCP bearer auth, exactly as before.
     for route in routes:
         mcp.custom_route(route.path, methods=sorted(route.methods - {"HEAD"}), name=route.name)(route.endpoint)
-    app = mcp.streamable_http_app(
-        streamable_http_path="/mcp",
+    http_settings: dict[str, Any] = dict(
         json_response=True,
         stateless_http=True,
         max_request_body_size=MAX_MCP_BODY_BYTES,
@@ -906,6 +910,10 @@ def build_app():
         ),
         host=hostname,
     )
+    app = mcp.streamable_http_app(streamable_http_path="/mcp", **http_settings)
+    if trial_on:
+        # A separate anonymous MCP server with its own allowlist; /mcp and its bearer auth are unchanged.
+        app = trial.mount_trial(app, base, **http_settings)
     app = CORSMiddleware(
         app,
         allow_origins=origin_entries,
