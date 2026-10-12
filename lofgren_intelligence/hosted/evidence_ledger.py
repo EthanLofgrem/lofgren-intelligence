@@ -7,7 +7,9 @@ check.  Missing or malformed timestamps are UNKNOWN, therefore not proven.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,8 +71,17 @@ def _parse_utc(value: Any) -> datetime | None:
 
 
 def _artifact_payload(entry: dict[str, Any], root: Path) -> dict[str, Any] | None:
+    """Re-read an artifact only if its bytes still match the manifest digest.
+
+    The gate authenticates the signed bytes bound to ``entry["sha256"]``.
+    Freshness must be read from those same bytes; otherwise a file replaced
+    after gate evaluation could supply an unsigned ``issued_at``.
+    """
     rel = entry.get("path")
-    if not isinstance(rel, str):
+    digest = entry.get("sha256")
+    if not isinstance(rel, str) or not isinstance(digest, str):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
         return None
     path = (root / rel).resolve()
     try:
@@ -78,8 +89,14 @@ def _artifact_payload(entry: dict[str, Any], root: Path) -> dict[str, Any] | Non
     except ValueError:
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != digest:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -95,6 +112,8 @@ def assemble_evidence_ledger(
     """Build a deterministic ledger; freshness can only reduce proof status."""
     if max_age_seconds <= 0:
         raise ValueError("max_age_seconds must be positive")
+    if evaluated_at is not None and evaluated_at.tzinfo is None:
+        raise ValueError("evaluated_at must be timezone-aware")
     now = (evaluated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     entries = manifest.get("artifacts")
     by_term: dict[str, list[dict[str, Any]]] = {}
@@ -124,6 +143,8 @@ def assemble_evidence_ledger(
             blocker = "missing evidence" if not matches else "duplicate evidence"
         elif not authenticated:
             blocker = gate.reasons.get(term, "gate rejected evidence")
+        elif payload is None:
+            blocker = "artifact bytes do not match the authenticated manifest digest"
         elif issued is None:
             blocker = "signed artifact issued_at missing or malformed"
         elif age_seconds is not None and age_seconds < 0:
