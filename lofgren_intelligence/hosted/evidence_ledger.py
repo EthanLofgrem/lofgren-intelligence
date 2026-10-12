@@ -162,7 +162,7 @@ def render_markdown(ledger: dict[str, Any]) -> str:
     lines = [
         "# Public release evidence ledger",
         "",
-        f"- Candidate SHA: \`{ledger['candidate_sha']}\`",
+        f"- Candidate SHA: `{ledger['candidate_sha']}`",
         f"- Evaluated: {ledger['evaluated_at']}",
         f"- Proven: {ledger['proven']}/{ledger['total']}",
         f"- PublicMCPReady: {'TRUE' if ledger['PublicMCPReady'] else 'FALSE'}",
