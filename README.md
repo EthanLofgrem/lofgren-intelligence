@@ -61,7 +61,7 @@ Requires Python 3.10 or later. The default branch may lag the current candidate;
 ```bash
 git clone https://github.com/EthanLofgrem/lofgren-intelligence.git
 cd lofgren-intelligence
-git checkout e232ced165a31ab66124decb1f0fe9ea4b9057ac
+git checkout b3204f00ba84d8133743fa1e9398a89225190dad
 python -m venv .venv
 # Linux/macOS:
 source .venv/bin/activate
@@ -100,6 +100,11 @@ Current release work focuses on hosted-worker delivery, real OAuth/client accept
 **Not proven:** complete customer deployment, real clients, hosted recovery, backup/restore and `PublicMCPReady`. These require retained operational evidence; code certification alone is insufficient.
 
 ## New evidence and updates
+
+The current hosted application is `b3204f`. Its matrix, lifecycle, PostgreSQL and operational checks passed, alongside eight endpoint preflight checks. A numeric evidence-verification defect found by an independent alternate-model review is corrected. Full hosted case and ordinary-client acceptance remain unfinished.
+
+An [explicit source-watch CLI](https://github.com/EthanLofgrem/lofgren-intelligence/blob/build/li-release-hardening-oct11/docs/SOURCE_WATCH.md) now compares bounded watched public sources and flags changes for review. It is offline by default and does not automatically interpret laws or install releases. See the [six-step acceptance report](https://github.com/EthanLofgrem/lofgren-intelligence/blob/build/li-release-hardening-oct11/docs/RELEASE_CONFORMANCE_CURRENT.md) and [Claude construction prompt](https://github.com/EthanLofgrem/lofgren-intelligence/blob/build/li-release-hardening-oct11/docs/CLAUDE_PRE_WORKER_MASTER_PROMPT.md).
+
 
 LI is designed to reassess findings when sources, scope or assumptions change while preserving earlier records. It does not promise continuous monitoring of every law, rule or publication. Legal changes require jurisdiction, effective date, authoritative sources and reviewed interpretation. Code and policy releases should pass review and testing before deployment; LI does not silently update its own production code.
 
