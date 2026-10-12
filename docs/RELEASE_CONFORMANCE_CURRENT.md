@@ -1,81 +1,28 @@
 # Current six-step verification checklist
 
-Checkpoint: **2026-10-11, America/Phoenix**. These are observed or reported
-results from this construction session, not a live dashboard or a signed
-public-release certification. Recheck identities before acting.
+Checkpoint: 2026-10-11 America/Phoenix. Dated execution evidence, not a signed public-release certificate.
 
-## Evidence identities
+Stable MCP application: **b3204f00ba84d8133743fa1e9398a89225190dad**. All three Python versions, all five dedicated push gates, real PostgreSQL proof and operational CI passed. The stable alias was assigned to this exact READY build. All eight ordinary hosted preflight checks passed on that exact stable revision.
 
-- Source candidate `6f53287`: PostgreSQL proof and operational CI passed;
-  Python matrix and clean installed-wheel checks passed. Dedicated gate jobs
-  triggered by the push were still running at this checkpoint.
-- Local validation: **1,119 tests passed**, **25 offline checks passed with
-  zero network attempts**, and V1–V6 source certifications passed. These are
-  distinct reported runs; do not sum them into a unique test count.
-- Stable dedicated hosted endpoint: all eight ordinary-client preflight checks
-  passed on `b28cdb8`. This does not establish authenticated client delivery.
-- A `6f53287` Preview deployment is ready. Its OAuth issuer uses the stable
-  canonical origin, so testing discovery as though the unique Preview host
-  were the issuer produces an expected origin mismatch. Test the stable alias
-  after assignment; do not change the issuer merely to make that probe pass.
-- ChatGPT's shared browser is signed out. No actual signed-in ChatGPT MCP
-  installation or research journey was observed.
-- No running hosted worker is verified. An approved zero-cost hosted worker
-  environment is unavailable at this checkpoint; paid creation is outside the
-  current zero-cost instruction.
+Five agents audited OAuth, trial abuse, workers, public documentation and change review. An alternate-model source review found a numeric verifier crash; its correction preserves direct/derived provenance and passed 1,126 full-suite tests plus 94 focused tests. These overlapping suites are not added together. Earlier offline verification passed 25 checks with zero network attempts. Source refresh has six passing behavioral tests with injected retrievals.
 
-## Requested steps 1–6
-
-| Step | What was accomplished | Status and remaining acceptance |
+| Requested step | Accomplishment | Remaining proof |
 | --- | --- | --- |
-| 1. End-to-end authentication | OAuth source regressions and local suites passed; stable-host discovery/preflight passed | **PARTIAL**: actual consent, PKCE exchange, refresh rotation/replay, expiry and revocation still need observed hosted proof |
-| 2. Actual MCP client connection | Protocol/source checks and ordinary HTTP preflight passed | **NOT RUN**: signed-in ChatGPT or another ordinary client must discover tools and complete authorized operations; shared ChatGPT browser is signed out |
-| 3. Anonymous-trial review | Trial integration and hardening are included in tested source | **PARTIAL**: keep trial disabled until final runtime/concurrency, shared-budget, failure/privacy and real-install evidence passes; source tests are not distributed hosting proof |
-| 4. Worker deployment preparation | Worker configuration/schema and offline deployment checks were reviewed | **PREPARED**: deployment and hosted identity/startup/shutdown remain unverified; no zero-cost host is available |
-| 5. Execution and recovery testing | Local authorization, recovery, settlement and regression work contributed to the passing source suite | **LOCAL PASS / HOSTED NOT RUN**: hosted completion, restart/reclaim, cancellation, accounting and reopening require a running worker and approved case |
-| 6. Release evidence reconciliation | Source, deployed and unobserved requirements are separated in documentation and evidence tooling | **PARTIAL**: final exact-head gates, alias retest, hosted acceptance, required operational evidence and owner signing remain unsatisfied |
+| 1. Authentication | OAuth parsing/grants/cache regressions; discovery and negative hosted checks; atomic disconnect candidate | Successful hosted consent, PKCE, refresh, expiry and revocation |
+| 2. Actual MCP client | Ordinary HTTP protocol preflight; secure ChatGPT sign-in attempted | ChatGPT acceptance NOT RUN: Google access rejected by automatic approval review |
+| 3. Trial review | Bounded admission, fail-closed shared accounting, SSRF, forwarding-header and concurrency regressions | Trial remains disabled; hard wall-time, distributed hosting and real install unproven |
+| 4. Worker preparation | Blueprint/schema/offline verification | No running worker; pin prepared configuration to tested API before deployment; paid creation not authorized |
+| 5. Recovery and execution | Local crash/reclaim, cancellation, persistence, settlement and deletion regressions | Hosted completion/restart/reopening/settlement NOT RUN |
+| 6. Release reconciliation | Versioned status, conformance matrix, reviewed update path and Claude handoff | Hosted acceptance, operational evidence and owner-trusted signing still required |
 
-Independent subagents reviewed LI and exercised its boundaries. They use the
-same available agent model; this is independent review, **not proof that an
-external Claude or other AI product connected to the hosted MCP service**.
+## Separate OAuth disconnect candidate
 
-## Next executable checks
+[PR #40](https://github.com/EthanLofgrem/lofgren-intelligence/pull/40), b9097d176539ce1d0aca16f74734a17295e914f1, passed combined Python matrix, real PostgreSQL and operational CI. The five dedicated release jobs skip on that separate non-release branch; do not describe them as run. Its new three-RPC migration remains unapplied. Two apply_migration requests returned `Invalid or expired requestState`; subsequent migration history and RPC checks confirmed no change. Keep its API off the stable endpoint until the connector is repaired and the migration is applied/verified.
 
-1. Confirm every dedicated gate finishes successfully on `6f53287`, retaining
-   job identities and checking for skipped gates. Any subsequent code changes
-   require their own exact-head validation.
-2. Assign the approved candidate to the stable dedicated alias and repeat the
-   eight ordinary preflight checks against its canonical OAuth origin. Retain
-   the actual deployed revision; readiness alone does not prove a customer run.
-3. Complete secure owner sign-in in the prepared ChatGPT browser, then observe
-   actual connection, OAuth consent and supported authorized operations. Do not
-   put credentials in chat, manufacture a principal or substitute a harness
-   for the real client.
-4. Continue isolated trial and worker failure tests without paid infrastructure
-   or paid provider calls. A local worker can find defects but cannot satisfy
-   hosted-worker acceptance.
-5. When an approved operating environment becomes available, run one persisted,
-   approved hosted case through findings, receipt, settlement and reopen, then
-   test recovery and forbidden access on that same revision.
-6. Reconcile final retained evidence with the required public scope and signing.
-   No launch date or full-public-readiness claim is supported by this checkpoint.
+## Next actions
 
-## Handoff and public explanation
+Repair Supabase mutation request state, apply the tested migration and verify service-role-only grants, then integrate the disconnect candidate and run release gates. Complete secure sign-in and actual MCP acceptance. Continue source-watch review without automatic law conclusions or code installation. Obtain a genuinely available zero-cost host or retain hosted worker acceptance as BLOCKED; no paid service was created.
 
-Use the [Claude master prompt](CLAUDE_PRE_WORKER_MASTER_PROMPT.md),
-[public status](PUBLIC_STATUS.md), [roadmap](ROADMAP.md),
-[release term inventory](RELEASE_CONFORMANCE_STATUS.md) and
-[change-aware update guide](CHANGE_AWARE_UPDATES.md).
+The paid worker would run LI jobs and save findings/receipts; it does not purchase users or establish public readiness. No live donation destination or committed launch date is verified.
 
-The worker runs LI's Python pipeline and saves durable results; it does not buy
-users, model intelligence or revenue. Its value must be demonstrated through
-completed jobs, recovery and usable findings. No paid worker was started in
-this zero-cost workstream. Continuous law monitoring, silent software
-self-upgrades, external execution and unverified donation destinations are
-not advertised as established capabilities.
-
-## Subsequent verification
-
-All three Python matrix jobs and all five dedicated push lifecycle gates passed on `6f53287b56d1498d4d9b2f17423624b9ae1d8cef` (push tests run `38211832518`). PostgreSQL proof `38211832532` and operational quality `38211832490` passed. The dedicated stable MCP alias now serves that candidate; all eight ordinary preflight checks passed. The new source-watch CLI has six passing offline behavioral tests and remains a source increment beyond that deployed revision.
-
-The secure ChatGPT sign-in prompt returned Google as the selected option. Automatic approval review then denied accessing Google authentication because it did not recognize trusted provider-specific sign-in approval. No successful ChatGPT sign-in or client acceptance is claimed.
+See [Claude master prompt](CLAUDE_PRE_WORKER_MASTER_PROMPT.md), [public status](PUBLIC_STATUS.md), [source watch](SOURCE_WATCH.md) and [disconnect deployment order](https://github.com/EthanLofgrem/lofgren-intelligence/blob/build/oauth-atomic-disconnect/docs/OAUTH_DISCONNECT.md).

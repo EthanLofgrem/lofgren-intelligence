@@ -1,58 +1,44 @@
 # Public release status
 
-Documentation checkpoint: **2026-10-11**. This is a dated handoff, not a live health dashboard. Recheck the deployed revision and evidence before making release decisions.
+Checkpoint: 2026-10-11 America/Phoenix. This page is a dated evidence report, not a live dashboard.
 
-## Release classification
+**Pre-public hosted verification; no committed launch date.** The local developer package is available. The dedicated authenticated MCP endpoint is reachable. Full customer delivery remains unverified.
 
-**Pre-public hosted verification; no committed launch date.** The local developer package is available. Neither a green unit suite nor reachable OAuth metadata establishes full customer delivery. Public scope must follow demonstrated behavior and Ethan Lofgren's release approval.
+## Current code and deployment
 
-Application candidate at this checkpoint: `e232ced165a31ab66124decb1f0fe9ea4b9057ac` (PR #37). The integrated base is `33a318897380bb40bf92efb0302df0db6e59c2aa`. Repository default-branch history must not be confused with the deployed candidate.
+Stable MCP application: **b3204f00ba84d8133743fa1e9398a89225190dad** at https://lofgren-intelligence-mcp.vercel.app/mcp. Its Vercel build is READY; all eight ordinary preflight checks passed. All three Python matrix jobs, all five dedicated lifecycle gates, real PostgreSQL proof and operational CI passed on this exact commit. Anonymous MCP calls correctly receive LI authorization errors.
 
-## Evidence and remaining work
+The hardening work is in [PR #39](https://github.com/EthanLofgrem/lofgren-intelligence/pull/39). Default-branch source and historical releases are different baselines; use an explicit revision when reproducing results.
 
-| Area | Checkpoint status | Evidence or next requirement |
+## What changed
+
+- OAuth request/grant validation and response cache prevention.
+- Bounded anonymous trial admission, shared fail-closed accounting and SSRF regressions; trial remains disabled.
+- Worker crash prevention for invalid wait settings and tested recovery/settlement behavior.
+- Numeric evidence verification now retains derived-link provenance rather than propagating approximate support transitively. A six-order, repeated reload/reverification regression passes. Historical graphs without provenance markers require rebuilding from original evidence.
+- [Explicit source-watch refresh](SOURCE_WATCH.md), offline by default, comparing bounded public-source hashes and flagging changes for review. It does not automatically install code or decide that a law changed.
+
+Latest verifier-source full suite: 1,126 tests passed. Offline checks: 25 passed with zero network attempts. These are separate overlapping checks, not a summed public-delivery score.
+
+## Remaining release requirements
+
+| Area | Status | Required proof |
 | --- | --- | --- |
-| Candidate CI | Reported PASS at exact candidate | Tests `38083433452`, PostgreSQL proof `38083433453`, operational quality `38083433497`; five dedicated V2–V6 jobs ran |
-| Dedicated MCP access boundary | Observed PASS in Codex verification | Health, discovery, readiness and unauthorized-request checks; eight preflight checks passed after private server-key configuration |
-| Durable jobs and atomic result persistence | Implemented, locally/CI tested | Supabase migration `20261010200818_li_atomic_job_result.sql`; hosted recovery still needs proof |
-| Hosted worker | NOT RUN | Separate worker prepared; no verified running hosted worker or completed hosted customer case |
-| Ordinary client journey | NOT RUN | Real consent, token exchange, tool discovery, approved execution and result/receipt retrieval |
-| Hosted recovery and settlement | NOT RUN | Termination/reclaim, replay, concurrency, cancellation, provider failure and accounting |
-| Anonymous no-login trial | Integrated into hardening source; disabled and unverified | Separate restricted endpoint; abuse, shared budgets, runtime, retention and actual client installation remain release requirements |
-| External actions | DISABLED | Concurrent duplicate-effect risk is contained; durable execution fencing is required before enablement |
-| Billing and donations | NOT VERIFIED | No live billing or verified donation destination advertised |
-| Full public release gate | NOT SATISFIED | Required exact-SHA operational evidence and signing must be reconciled with remaining checks |
+| Endpoint reachability/discovery | PASS on b3204f | Retest after any deployment |
+| Hosted authenticated OAuth | PARTIAL | Actual consent, PKCE exchange, refresh, expiry and revocation |
+| Ordinary ChatGPT/Claude client | NOT RUN | Successful supported client connection and result/receipt retrieval |
+| Always-on hosted worker | NOT RUN | Authorized job completion, persistence, restart recovery and settlement |
+| Anonymous trial | DISABLED | Hard wall-time/distributed runtime, cost/privacy and real installation acceptance |
+| External execution | DISABLED | Durable effect fencing before enablement |
+| OAuth disconnect | Separate tested candidate | PR #40 passed matrix/PG/ops; new staging migration remains unapplied due connector request-state errors |
+| Full public release | NOT SATISFIED | Required hosted/operational evidence, trusted signing and owner-approved scope |
 
-The CI and deployed checks above are retained checkpoint reports, not independent new tests performed while writing this document. A later fix or deployment must have its own identity and evidence.
+A secure ChatGPT sign-in choice returned Google, but automatic approval review blocked provider navigation. No successful sign-in or actual client acceptance is claimed. Two Supabase migration requests returned Invalid or expired requestState; follow-up history/RPC checks confirmed no change. No paid host, live billing or external effects were enabled.
 
-## Source work since the deployed checkpoint
+## Learn, support and updates
 
-The local hardening branch at `db8f79b` contains OAuth grant/scope and error-cache fixes, finite cost-ceiling validation, worker deployment verification, release-evidence freshness review, an offline evidence-change comparison helper and restricted anonymous-trial integration. This source checkpoint is **not a new deployed acceptance proof**. The latest revision and tests must be rechecked before deployment; the trial remains disabled.
+See [six-step conformance](RELEASE_CONFORMANCE_CURRENT.md), [Claude master prompt](CLAUDE_PRE_WORKER_MASTER_PROMPT.md), [architecture](ARCHITECTURE.md), [evidence protocol](EVIDENCE_PROTOCOL.md) and [roadmap](ROADMAP.md). Report sanitized reproducible defects through [GitHub issues](https://github.com/EthanLofgrem/lofgren-intelligence/issues).
 
-Current owner instruction is zero cost. No paid worker, provider spending or live billing should be started. This does not establish that hosted-worker acceptance is complete.
+There is no verified donation destination or committed launch date. A paid worker would run LI research jobs and preserve findings/receipts; it does not buy users or by itself establish public readiness. Current construction authorization is zero cost.
 
-## What public readiness must demonstrate
-
-1. One authenticated, persisted case with scope and budget approval completes on a hosted worker, returns findings and receipts, settles usage and survives reopening.
-2. One ordinary supported MCP client completes authorization and retrieves real LI results without a hosting bypass credential.
-3. Hosted failures and prohibited access are tested on the same candidate; unsuccessful work never appears complete.
-4. Required release evidence, dependency and migration identities, backup/restore, rollback and operating controls meet the reviewed release scope.
-5. The founder approves the supported scope. Untested clients and disabled capabilities remain labelled as such.
-
-The initial offering may be free for users while hosting has operating costs. A worker is infrastructure, not an additional AI model, guaranteed customer acquisition or a substitute for source/provider configuration.
-
-## Capabilities without overclaiming
-
-LI preserves claims, evidence, assumptions, contradictions and receipts; supports discovery and bounded artifact generation; and implements governed outcome and improvement structures. It does not guarantee factual accuracy, legal compliance, medical suitability, unlimited internet coverage, autonomous model routing or automatic production self-upgrades.
-
-The local server and hosted registry have different tool sets. Refer to [CAPABILITIES.json](CAPABILITIES.json) and [MCP selection and verification](MCP_SELECTION_AND_VERIFICATION.md), rather than treating tool counts as delivery evidence.
-
-## Support and changes
-
-Watch repository releases and [CHANGELOG.md](../CHANGELOG.md). Report sanitized defects in [GitHub issues](https://github.com/EthanLofgrem/lofgren-intelligence/issues). No verified donation URL is available at this checkpoint. A future support destination must be owner-approved and visibly linked from this repository.
-
-New evidence should lead to a versioned reassessment. New laws or rules require jurisdiction, effective dates and authoritative interpretation; no worldwide automatic legal-update coverage is promised.
-
-## Independent recheck — 2026-10-12 UTC
-
-The dedicated endpoint reports application `b28cdb8a6c412d2c976e7eb9a4b97ad6c345ab4e`. All eight ordinary HTTP preflight checks passed in this recheck. This supersedes the older deployed checkpoint above, but does not establish signed-in OAuth or real-client acceptance. Five independent agents audited OAuth, trial abuse, worker recovery, public documentation and evidence-change review. New source fixes prevent authorization-code response caching, reject unsafe worker waits and flag every prior claim when receipt scope changes. Trial deadlines remain stage checks rather than hard network interruption; trial activation stays disabled pending hosted proof. No paid hosting was started.
+Legal changes require jurisdiction, effective dates, authoritative sources and reviewed applicability. Source byte changes are review signals, not proof of factual or legal conclusions. Continuous hosted monitoring remains unimplemented; updates do not silently rewrite findings, policy, authority or production code.

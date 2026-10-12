@@ -20,7 +20,7 @@ data merely to fill the loop.
 
 Repository: https://github.com/EthanLofgrem/lofgren-intelligence
 Integration branch: build/li-release-hardening-oct11.
-Public source checkpoint: `9583917`, including source-watch and conformance work.
+Public source checkpoint: `b3204f`, including source-watch, conformance and verifier work.
 Fetch current refs, inspect AGENTS.md and working-tree changes, and review all
 commits after that checkpoint. Coordinate with Codex; use isolated worktrees
 and preserve other agents' changes.
@@ -28,28 +28,32 @@ and preserve other agents' changes.
 Stable authenticated MCP endpoint:
 https://lofgren-intelligence-mcp.vercel.app/mcp
 
-Deployed application checkpoint: `6f53287`.
+Deployed application checkpoint: `b3204f`.
 - All three Python matrix jobs and all five dedicated push gates passed.
 - Real PostgreSQL proof and operational CI passed.
 - Clean installed-wheel checks passed.
 - All eight ordinary hosted preflight checks passed on the stable alias.
 - The private backend key is configured; it is no longer a missing-key blocker.
 
-Local checkpoint: 1,119 tests passed, 25 offline checks passed with zero network
+Latest verifier-source checkpoint: 1,126 tests passed, 25 offline checks passed with zero network
 attempts, and V1–V6 source certifications passed. These are distinct reported
 runs; do not add them into a unique total. New source-watch work has six tests.
-Newer source still needs its own exact-head CI and deployment acceptance.
+All b3204f matrix, dedicated lifecycle, PostgreSQL and operational checks passed.
 
-An atomic OAuth disconnect fix is separate work in progress. Its migration
-and hosted behavior are NOT deployed-proven. Inspect its actual branch,
-patch, database grants and regressions before integrating or applying anything.
+Atomic OAuth disconnect is PR #40 at b9097d, on build/oauth-atomic-disconnect.
+Its combined matrix, PostgreSQL and operational CI passed; dedicated release jobs
+are not enabled on that separate branch. Its migration is NOT applied: two
+Supabase apply_migration attempts returned Invalid or expired requestState.
+Follow-up migration history and RPC inventory confirmed no change. Repair the
+connector request state before applying; do not deploy its API first.
 
 ChatGPT client acceptance is NOT proven. The secure sign-in choice returned
 Google, but automatic approval review blocked navigation to that provider.
 Do not bypass that review or retry the same blocked route. Use an available
 supported secure sign-in alternative or report the exact required owner action.
-Independent same-model subagents are reviewers, not external Claude/ChatGPT
-product connection proof.
+Five independent subagents and an alternate-model source reviewer contributed.
+The alternate model found the numeric verifier defect; none of these reviews
+counts as external Claude/ChatGPT product connection proof.
 
 ## Priority 1 — finish authentication and a real client connection
 
