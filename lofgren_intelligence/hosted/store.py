@@ -138,6 +138,17 @@ class SupabaseStore:
             return rows[0] if rows else None
         return rows if isinstance(rows, dict) else None
 
+    def issue_oauth_tokens(self, grant_kind: str, grant_hash: str, access: dict[str, Any], refresh: dict[str, Any]) -> bool:
+        result = self.rpc("li_issue_oauth_tokens", {"p_grant_kind": grant_kind, "p_grant_hash": grant_hash,
+                          "p_access": access, "p_refresh": refresh})
+        return result is True
+
+    def disconnect_oauth_client(self, user_id: str, client_id: str) -> None:
+        self.rpc("li_disconnect_oauth_client", {"p_user_id": user_id, "p_client_id": client_id})
+
+    def revoke_oauth_token(self, digest: str, client_id: str) -> None:
+        self.rpc("li_revoke_oauth_token", {"p_token_hash": digest, "p_client_id": client_id})
+
     def put_access_token(self, row: dict[str, Any]) -> None:
         self._table("li_access_tokens", "POST", body=row, prefer="return=minimal")
 

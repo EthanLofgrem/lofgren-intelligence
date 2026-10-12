@@ -251,13 +251,12 @@ class OAuthService:
                     429, max(1, math.ceil(wait)),
                 )
 
-    def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str) -> dict[str, Any]:
+    def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str, *, grant_kind: str, grant_hash: str) -> dict[str, Any]:
         access = new_opaque("lit_")
         refresh = new_opaque("lir_")
         access_lifetime = timedelta(hours=1)
         refresh_lifetime = timedelta(days=90)
-        self.store.put_access_token(
-            {
+        access_row = {
                 "token_hash": token_hash(access),
                 "user_id": user_id,
                 "client_id": client_id,
@@ -265,9 +264,7 @@ class OAuthService:
                 "resource": resource,
                 "expires_at": (now() + access_lifetime).isoformat(),
             }
-        )
-        self.store.put_refresh_token(
-            {
+        refresh_row = {
                 "token_hash": token_hash(refresh),
                 "user_id": user_id,
                 "client_id": client_id,
@@ -275,7 +272,8 @@ class OAuthService:
                 "resource": resource,
                 "expires_at": (now() + refresh_lifetime).isoformat(),
             }
-        )
+        if not self.store.issue_oauth_tokens(grant_kind, grant_hash, access_row, refresh_row):
+            raise AuthError("OAuth grant was revoked or already issued")
         return {
             "access_token": access,
             "refresh_token": refresh,
@@ -314,7 +312,8 @@ class OAuthService:
         if not hmac.compare_digest(code_challenge_s256(code_verifier), expected):
             raise AuthError("PKCE verification failed")
         user_id, scope, resource = self._grant_identity(row)
-        return self._issue_tokens(user_id, client_id, scope, resource)
+        return self._issue_tokens(user_id, client_id, scope, resource,
+                                  grant_kind="authorization_code", grant_hash=token_hash(code))
 
     def refresh(self, *, refresh_token: str, client_id: str) -> dict[str, Any]:
         self._client(client_id)
@@ -324,7 +323,8 @@ class OAuthService:
         if row.get("client_id") != client_id:
             raise AuthError("refresh token client mismatch")
         user_id, scope, resource = self._grant_identity(row)
-        return self._issue_tokens(user_id, client_id, scope, resource)
+        return self._issue_tokens(user_id, client_id, scope, resource,
+                                  grant_kind="refresh_token", grant_hash=token_hash(refresh_token))
 
     def authenticate(self, bearer: str) -> Principal:
         if not bearer:
@@ -333,3 +333,7 @@ class OAuthService:
         row = self.store.get_access_token(digest)
         user_id, _client_id, _resource, scopes, _expiry = validated_access_record(row)
         return Principal(user_id, scopes, digest)
+
+    def revoke(self, *, token: str, client_id: str) -> None:
+        self._client(client_id)
+        self.store.revoke_oauth_token(token_hash(token), client_id)

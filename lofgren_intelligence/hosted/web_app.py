@@ -110,6 +110,8 @@ async def oauth_server_metadata(request: Request) -> Response:
         "authorization_endpoint": base + "/oauth/authorize",
         "token_endpoint": base + "/oauth/token",
         "registration_endpoint": base + "/oauth/register",
+        "revocation_endpoint": base + "/oauth/revoke",
+        "revocation_endpoint_auth_methods_supported": ["none"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
@@ -186,6 +188,55 @@ async def oauth_token(request: Request) -> Response:
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except (AuthError, StoreError) as exc:
         return _error(400, "invalid_grant", str(exc))
+
+
+async def oauth_revoke(request: Request) -> Response:
+    """RFC 7009 public-client revocation; unknown tokens still return success."""
+    raw = await request.body()
+    if len(raw) > 100_000:
+        return _error(413, "invalid_request", "request body too large")
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+        if any(len(values) != 1 for values in form.values()):
+            raise ValueError("duplicate revocation parameters")
+        token = (form.get("token") or [""])[0]
+        client = (form.get("client_id") or [""])[0]
+        if not token or not client:
+            return _error(400, "invalid_request", "token and client_id are required")
+        OAuthService(SupabaseStore()).revoke(token=token, client_id=client)
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed revocation request")
+    except AuthError:
+        return _error(400, "invalid_client")
+    except StoreError:
+        return _error(503, "temporarily_unavailable")
+
+
+async def oauth_disconnect(request: Request) -> Response:
+    """Disconnect only the caller's named client using a verified Supabase session."""
+    try:
+        body = await _json_body(request, 100_000)
+        client = body.get("client_id")
+        if not isinstance(client, str) or not client or len(client) > 200:
+            return _error(400, "invalid_request", "client_id is required")
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer ") or not auth.split(" ", 1)[1].strip():
+            return _error(401, "unauthorized")
+        session = auth.split(" ", 1)[1].strip()
+        store = SupabaseStore()
+        try:
+            user = store.verify_supabase_user(session)
+        except StoreError:
+            return _error(401, "unauthorized")
+        store.disconnect_oauth_client(str(user["id"]), client)
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except AuthError:
+        return _error(401, "unauthorized")
+    except (ValueError, KeyError):
+        return _error(400, "invalid_request")
+    except StoreError:
+        return _error(503, "temporarily_unavailable")
 
 
 async def oauth_authorize(request: Request) -> Response:
@@ -855,6 +906,8 @@ def build_app():
         Route("/oauth/authorize", rate_limited("oauth_authorize", oauth_authorize), methods=["GET"]),
         Route("/oauth/authorize/complete", rate_limited("oauth_complete", oauth_complete), methods=["POST"]),
         Route("/oauth/token", rate_limited("oauth_token", oauth_token), methods=["POST"]),
+        Route("/oauth/revoke", rate_limited("oauth_token", oauth_revoke), methods=["POST"]),
+        Route("/oauth/disconnect", rate_limited("oauth_complete", oauth_disconnect), methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
         Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
@@ -887,6 +940,7 @@ def build_app():
             "/healthz", "/readyz", "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
             "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
+            "/oauth/revoke", "/oauth/disconnect",
             "/actions/{action_id:str}", "/actions/{action_id:str}/details", "/actions/{action_id:str}/approve",
             "/cases/{case_id:str}", "/cases/{case_id:str}/charter", "/cases/{case_id:str}/approve",
             "/static/vendor/{name:str}",

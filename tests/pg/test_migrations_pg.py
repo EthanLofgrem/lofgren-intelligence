@@ -31,7 +31,7 @@ import threading
 import time
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DSN = os.environ.get("LI_PG_DSN", "").strip()
@@ -479,7 +479,7 @@ class PrivilegeTest(PgCase):
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
         self.assertIn("li_save_research_job_result", expected)
-        self.assertEqual(len(expected), 24, sorted(expected))
+        self.assertEqual(len(expected), 27, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -1365,6 +1365,46 @@ class OAuthAndBillingTest(PgCase):
         self.assertIsNotNone(self.one("select used_at from public.li_oauth_codes where code_hash = %s", (code,))[0])
         self.assertIsNotNone(self.one("select used_at from public.li_refresh_tokens where token_hash = %s",
                                       (refresh,))[0])
+
+    def oauth_fixture(self):
+        user = self.new_user()
+        client = "revoke-" + uuid.uuid4().hex
+        self.svc.execute("insert into public.li_oauth_clients(client_id,client_name,redirect_uris,grant_types,response_types,token_endpoint_auth_method) values (%s,'c','[]','[]','[]','none')", (client,))
+        digest = sha("parent:" + client)
+        self.svc.execute("insert into public.li_refresh_tokens(token_hash,user_id,client_id,resource,expires_at,used_at) values (%s,%s,%s,'https://li.example/mcp',now()+interval '1 day',now())", (digest,user,client))
+        access = {"token_hash": sha("access:" + client), "user_id": user, "client_id": client,
+                  "scope": "mcp", "resource": "https://li.example/mcp",
+                  "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
+        refresh = {**access, "token_hash": sha("refresh:" + client)}
+        return user, client, digest, access, refresh
+
+    def test_atomic_issue_is_single_use_and_disconnect_is_tenant_client_scoped(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        other_user, other_client, other_digest, other_access, other_refresh = self.oauth_fixture()
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.assertFalse(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", other_digest, other_access, other_refresh))
+        self.store.revoke_oauth_token(access["token_hash"], other_client)
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (access["token_hash"],))[0])
+        self.store.revoke_oauth_token(access["token_hash"], client)
+        self.assertIsNotNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (access["token_hash"],))[0])
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where user_id=%s and client_id=%s", (user,client))[0],0)
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (other_access["token_hash"],))[0])
+        self.store.revoke_oauth_token("unknown", client)
+
+    def test_disconnect_between_consume_and_issue_refuses_issuance(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        self.store.disconnect_oauth_client(user, client)
+        self.assertFalse(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.assertEqual(self.one("select count(*) from public.li_access_tokens where user_id=%s and client_id=%s", (user,client))[0],0)
+
+    def test_concurrent_disconnect_and_issue_leave_no_live_credentials(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        a, b = self.new_store(), self.new_store()
+        run_concurrently([lambda: a.issue_oauth_tokens("refresh_token", digest, access, refresh),
+                          lambda: b.disconnect_oauth_client(user, client)])
+        self.assertEqual(self.one("select count(*) from public.li_access_tokens where user_id=%s and client_id=%s and revoked_at is null", (user,client))[0],0)
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where user_id=%s and client_id=%s", (user,client))[0],0)
 
     def test_stripe_event_applies_exactly_once(self):
         user = self.new_user()
