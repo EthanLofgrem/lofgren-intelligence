@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -109,7 +110,9 @@ class FakeStore:
 
     def revoke_oauth_token(self, digest, client_id):
         row = self.access_tokens.get(digest) or self.refresh_tokens.get(digest)
-        if row and row["client_id"] == client_id:
+        if (row and row["client_id"] == client_id and not row.get("revoked_at")
+                and not row.get("used_at")
+                and datetime.fromisoformat(row["expires_at"]) > datetime.now(timezone.utc)):
             self.disconnect_oauth_client(row["user_id"], client_id)
 
     def put_access_token(self, row):

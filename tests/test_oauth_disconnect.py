@@ -87,4 +87,7 @@ class OAuthDisconnectTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AuthError):
             exchange(pending)
         new_tokens = exchange(consent())
+        oauth.revoke(token=tokens["access_token"], client_id=client)
         self.assertEqual(oauth.authenticate(new_tokens["access_token"]).user_id, "u1")
+        refreshed = oauth.refresh(refresh_token=new_tokens["refresh_token"], client_id=client)
+        self.assertEqual(oauth.authenticate(refreshed["access_token"]).user_id, "u1")
