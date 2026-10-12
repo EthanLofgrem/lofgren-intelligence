@@ -832,8 +832,15 @@ class PublicService:
     @staticmethod
     def _check_cost_ceiling(plan: Any, execution_plan: str) -> None:
         # Public safety ceiling independent of user-supplied max_spend.
-        public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
+        try:
+            public_cap = float(os.environ.get("LI_PUBLIC_MAX_ESTIMATED_USD_PER_RUN", "5.0"))
+        except (TypeError, ValueError, OverflowError):
+            raise QuotaExceeded("public per-run cost ceiling is unavailable") from None
+        if not math.isfinite(public_cap) or public_cap < 0:
+            raise QuotaExceeded("public per-run cost ceiling is unavailable")
         est = estimate_run(plan, execution_plan)
+        if not math.isfinite(est.total_usd) or est.total_usd < 0:
+            raise QuotaExceeded("run cost estimate is invalid")
         if est.total_usd > public_cap:
             raise QuotaExceeded("run exceeds the public per-run cost ceiling")
 

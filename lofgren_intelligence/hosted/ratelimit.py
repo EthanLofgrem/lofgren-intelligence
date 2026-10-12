@@ -52,10 +52,18 @@ DEFAULT_LIMITS: dict[str, tuple[int, int]] = {
     # per client IP and per email domain, always store-backed and fail closed.
     "activation_ip": (5, 3600),
     "activation_domain": (30, 3600),
+    # Anonymous /mcp-trial (hosted/trial.py): per IP, global, per-IP tool calls and
+    # the operator-wide spending ceiling. The trial passes its limits explicitly and
+    # always uses the store; these entries only name the buckets.
+    "trial_ip": (30, 60),
+    "trial_global": (600, 60),
+    "trial_call_ip": (10, 3600),
+    "trial_spend": (5, 86400),
 }
 
 # Sign-up/activation buckets: a store error refuses instead of falling back.
-FAIL_CLOSED_BUCKETS = frozenset({"oauth_register", "oauth_complete", "activation_ip", "activation_domain"})
+FAIL_CLOSED_BUCKETS = frozenset({"oauth_register", "oauth_complete", "activation_ip", "activation_domain",
+                                 "trial_ip", "trial_global", "trial_call_ip", "trial_spend"})
 
 MAX_TRACKED_KEYS = 10_000
 UNAVAILABLE_RETRY_AFTER_S = 30
