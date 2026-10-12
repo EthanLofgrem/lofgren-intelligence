@@ -3,7 +3,7 @@
 Prepared for Render workspace `tea-db3i5o7avr4c739tg4lg` (Lofgren Intelligence).
 Create a new worker; do not convert or redeploy the failed Docker web service.
 
-Application revision: `e232ced165a31ab66124decb1f0fe9ea4b9057ac`.
+Application revision: `b28cdb8a6c412d2c976e7eb9a4b97ad6c345ab4e`.
 The Blueprint commit is configuration identity, not application identity.
 The build explicitly fetches/checks out the application revision and verifies it
 before installing dependencies from its frozen uv.lock.
