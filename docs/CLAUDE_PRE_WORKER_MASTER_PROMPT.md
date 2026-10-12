@@ -130,3 +130,5 @@ public-trial enablement or external execution without specific authorization.
 
 ## Latest handoff override
 Fetch the latest build/li-release-hardening-oct11 head before starting. Live preflight now passes eight checks on deployed b28cdb8, not e232ced. New source fixes from five agent reviews need exact-head CI and deployment proof. Preserve trial-disabled and zero-cost configuration. Signed-in OAuth, actual ChatGPT install, hosted worker execution and hosted recovery remain unproven. Do not replay the Google login route: connected Render tooling already provides the alternate path.
+
+Latest hosted checkpoint: stable MCP alias now serves 6f53287, all eight ordinary preflight checks pass, all three matrix and five dedicated push gates pass, PostgreSQL and ops CI pass. Source watch refresh implementation is newer and needs exact-head CI before deployment. See RELEASE_CONFORMANCE_CURRENT.md. Actual ChatGPT sign-in is blocked by automatic approval review of Google provider access; no client acceptance proof exists.
