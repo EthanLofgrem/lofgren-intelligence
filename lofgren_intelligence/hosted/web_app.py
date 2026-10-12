@@ -146,9 +146,10 @@ async def oauth_complete(request: Request) -> Response:
         if body.get("state") is not None:
             query["state"] = str(body["state"])
         separator = "&" if urllib.parse.urlsplit(redirect).query else "?"
-        return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)})
+        return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)},
+                            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except ActivationRefused as exc:
-        headers = {"Cache-Control": "no-store"}
+        headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
         if exc.retry_after:
             headers["Retry-After"] = str(exc.retry_after)
         return JSONResponse({"error": exc.error, "error_description": str(exc)}, status_code=exc.status,

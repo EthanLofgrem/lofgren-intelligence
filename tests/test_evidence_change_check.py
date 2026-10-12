@@ -44,6 +44,23 @@ class ChangeCheckTests(unittest.TestCase):
         self.assertTrue(result['contract_changed'])
         self.assertEqual(result['sources'][0]['status'], 'insufficient_evidence_for_comparison')
 
+    def test_scope_change_reviews_all_prior_claims_even_with_identical_evidence(self):
+        before = receipt()
+        before['claims'].append({'id': 'unresolved', 'supporting': [], 'contradicting': []})
+        after = copy.deepcopy(before)
+        after['contract_hash'] = 'scope2'
+        result = module.compare(before, after)
+        self.assertTrue(result['contract_changed'])
+        self.assertEqual(result['sources'][0]['status'], 'recorded_evidence_unchanged')
+        self.assertEqual(result['prior_claim_ids_for_review'], ['c1', 'unresolved'])
+
+    def test_contradicting_evidence_change_triggers_review(self):
+        before = receipt()
+        before['claims'][0].update(supporting=[], contradicting=['e1'])
+        after = copy.deepcopy(before)
+        after['evidence'][0]['content_hash'] = 'b' * 64
+        self.assertEqual(module.compare(before, after)['prior_claim_ids_for_review'], ['c1'])
+
     def test_dangling_reference_and_duplicate_ids_fail_closed(self):
         for change in ('dangling', 'duplicate'):
             after = receipt()

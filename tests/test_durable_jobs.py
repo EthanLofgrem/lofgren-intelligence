@@ -766,6 +766,18 @@ class MCPJobToolTests(JobTestBase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_invalid_wait_durations_do_not_crash_worker_waits(self):
+        for raw in ("inf", "-inf", "nan", "1e300"):
+            with self.subTest(raw=raw), patch.dict(os.environ, {
+                "LI_WORKER_POLL_SECONDS": raw,
+                "LI_WORKER_HEARTBEAT_SECONDS": raw,
+                "LI_WORKER_SHUTDOWN_GRACE_SECONDS": raw,
+            }):
+                settings = JobSettings.from_env()
+                self.assertEqual(settings.poll_seconds, 5.0)
+                self.assertEqual(settings.heartbeat_seconds, 30.0)
+                self.assertEqual(settings.shutdown_grace_seconds, 25.0)
+
     def test_env_settings_are_bounded(self):
         with patch.dict(os.environ, {"LI_WORKER_LEASE_SECONDS": "30", "LI_WORKER_HEARTBEAT_SECONDS": "60",
                                      "LI_WORKER_CONCURRENCY": "999", "LI_JOB_MAX_ATTEMPTS": "50"}):

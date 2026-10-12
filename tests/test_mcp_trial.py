@@ -387,6 +387,35 @@ class AdditionalBoundTests(TrialTestBase):
                 fetch.assert_not_called()
 
 
+class AbuseBoundaryRegressionTests(TrialTestBase):
+    def test_forged_forwarding_headers_do_not_rotate_client_allowance(self):
+        with patch.dict(os.environ, {"LI_CLIENT_IP_HEADER": "", "LI_TRIAL_IP_REQUESTS_PER_MINUTE": "1"}):
+            first = self.post(INIT, {"X-Forwarded-For": "8.8.8.8", "X-Real-IP": "8.8.8.8"})
+            second = self.post(INIT, {"X-Forwarded-For": "1.1.1.1", "X-Real-IP": "1.1.1.1"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+    def test_invalid_store_answers_fail_closed_before_research(self):
+        for value in (float("nan"), float("inf"), -1, "invalid", None):
+            with self.subTest(value=value), patch.object(self.store, "take_keyed_rate_limit", return_value=value), \
+                 patch(EUROPEPMC) as fetch:
+                self.assertEqual(self.post(INIT).status_code, 503)
+                fetch.assert_not_called()
+
+    def test_operator_private_urls_refused_before_fetch_or_spend(self):
+        for url in ("http://127.0.0.1/private", "http://169.254.169.254/latest/meta-data/",
+                    "http://[::1]/private", "https://localhost/private", "https://user:pass@example.org/"):
+            manifest = {"schema": "lofgren.sources-manifest/1", "sources": [{"url": url}]}
+            self.store.takes.clear()
+            with self.subTest(url=url), patch.dict(os.environ, {"LI_TRIAL_SOURCES_MANIFEST": json.dumps(manifest)}), \
+                 patch("lofgren_intelligence.adapters.public_api.PublicHTTPClient.get") as fetch:
+                result = self.call("trial_research", {"question": "What is reported?", "source": "operator"})
+                self.assertTrue(result["isError"])
+                self.assertIn("TRIAL_UNAVAILABLE", result["content"][0]["text"])
+                fetch.assert_not_called()
+                self.assertNotIn("trial_spend", [take[0] for take in self.store.takes])
+
+
 class BodyDeadlineTests(unittest.IsolatedAsyncioTestCase):
     async def test_stalled_body_is_refused_without_starting_mcp(self):
         import asyncio

@@ -18,12 +18,18 @@ Application candidate at this checkpoint: `e232ced165a31ab66124decb1f0fe9ea4b905
 | Hosted worker | NOT RUN | Separate worker prepared; no verified running hosted worker or completed hosted customer case |
 | Ordinary client journey | NOT RUN | Real consent, token exchange, tool discovery, approved execution and result/receipt retrieval |
 | Hosted recovery and settlement | NOT RUN | Termination/reclaim, replay, concurrency, cancellation, provider failure and accounting |
-| Anonymous no-login trial | In development/review | Separate restricted endpoint; abuse, shared budgets, runtime, retention and actual client installation remain release requirements |
+| Anonymous no-login trial | Integrated into hardening source; disabled and unverified | Separate restricted endpoint; abuse, shared budgets, runtime, retention and actual client installation remain release requirements |
 | External actions | DISABLED | Concurrent duplicate-effect risk is contained; durable execution fencing is required before enablement |
 | Billing and donations | NOT VERIFIED | No live billing or verified donation destination advertised |
 | Full public release gate | NOT SATISFIED | Required exact-SHA operational evidence and signing must be reconciled with remaining checks |
 
 The CI and deployed checks above are retained checkpoint reports, not independent new tests performed while writing this document. A later fix or deployment must have its own identity and evidence.
+
+## Source work since the deployed checkpoint
+
+The local hardening branch at `db8f79b` contains OAuth grant/scope and error-cache fixes, finite cost-ceiling validation, worker deployment verification, release-evidence freshness review, an offline evidence-change comparison helper and restricted anonymous-trial integration. This source checkpoint is **not a new deployed acceptance proof**. The latest revision and tests must be rechecked before deployment; the trial remains disabled.
+
+Current owner instruction is zero cost. No paid worker, provider spending or live billing should be started. This does not establish that hosted-worker acceptance is complete.
 
 ## What public readiness must demonstrate
 
@@ -46,3 +52,7 @@ The local server and hosted registry have different tool sets. Refer to [CAPABIL
 Watch repository releases and [CHANGELOG.md](../CHANGELOG.md). Report sanitized defects in [GitHub issues](https://github.com/EthanLofgrem/lofgren-intelligence/issues). No verified donation URL is available at this checkpoint. A future support destination must be owner-approved and visibly linked from this repository.
 
 New evidence should lead to a versioned reassessment. New laws or rules require jurisdiction, effective dates and authoritative interpretation; no worldwide automatic legal-update coverage is promised.
+
+## Independent recheck — 2026-10-12 UTC
+
+The dedicated endpoint reports application `b28cdb8a6c412d2c976e7eb9a4b97ad6c345ab4e`. All eight ordinary HTTP preflight checks passed in this recheck. This supersedes the older deployed checkpoint above, but does not establish signed-in OAuth or real-client acceptance. Five independent agents audited OAuth, trial abuse, worker recovery, public documentation and evidence-change review. New source fixes prevent authorization-code response caching, reject unsafe worker waits and flag every prior claim when receipt scope changes. Trial deadlines remain stage checks rather than hard network interruption; trial activation stays disabled pending hosted proof. No paid hosting was started.

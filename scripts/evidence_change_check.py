@@ -55,7 +55,9 @@ def compare(before: dict, after: dict) -> dict:
     old, dependencies = _index(before)
     new, _ = _index(after)
     rows = []
-    affected = set()
+    contract_changed = before.get('contract_hash') != after.get('contract_hash')
+    # Scope changes can invalidate claims even when their recorded evidence is identical.
+    affected = {c['id'] for c in before['claims']} if contract_changed else set()
     for uri in sorted(set(old) | set(new)):
         if uri not in old:
             status = 'source_added'
@@ -73,7 +75,7 @@ def compare(before: dict, after: dict) -> dict:
         rows.append({'uri': uri, 'status': status, 'prior_claim_ids_for_review': claims})
     return {'schema': 'lofgren.evidence-change-report/1', 'sources': rows,
             'prior_claim_ids_for_review': sorted(affected),
-            'contract_changed': before.get('contract_hash') != after.get('contract_hash'),
+            'contract_changed': contract_changed,
             'limitations': ['Structural comparison only; receipt integrity and issuer identity are not verified.',
                             'Evidence changes can result from extraction or scope changes, not source revisions.',
                             'Unchanged evidence does not establish freshness, truth or unchanged law.',

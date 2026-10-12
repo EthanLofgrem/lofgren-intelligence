@@ -99,11 +99,11 @@ Current release work focuses on hosted-worker delivery, real OAuth/client accept
 
 ## New evidence and updates
 
-LI is designed to reassess findings when sources, scope or assumptions change while preserving earlier records. It does not promise continuous monitoring of every law, rule or publication. Legal changes require jurisdiction, effective date, authoritative sources and reviewed interpretation. Code and policy releases should pass review and testing before deployment; LI does not silently update its own production code.
+LI is designed to reassess findings when sources, scope or assumptions change while preserving earlier records. It does not promise continuous monitoring of every law, rule or publication. Legal changes require jurisdiction, effective date, authoritative sources and reviewed interpretation. Code and policy releases should pass review and testing before deployment; LI does not silently update its own production code. The [change-aware update guide](docs/CHANGE_AWARE_UPDATES.md) explains the existing offline receipt comparison and the requirements for future monitored reassessment.
 
 ## Learn, contribute and support
 
-Start with [architecture](docs/ARCHITECTURE.md), [evidence protocol](docs/EVIDENCE_PROTOCOL.md), [discovery](docs/DISCOVERY.md), [production](docs/PRODUCTION.md), [worker runtime](docs/WORKER_RUNTIME.md) and [public privacy](docs/PUBLIC_PRIVACY.md). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Start with [architecture](docs/ARCHITECTURE.md), [evidence protocol](docs/EVIDENCE_PROTOCOL.md), [discovery](docs/DISCOVERY.md), [production](docs/PRODUCTION.md), [worker runtime](docs/WORKER_RUNTIME.md) and [public privacy](docs/PUBLIC_PRIVACY.md). See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap](docs/ROADMAP.md) for current construction priorities. To understand a finding, inspect its claim, supporting and contradicting evidence, assumptions, evidence cut-off and receipt; treat an unanswered dependency as an unknown rather than a confirmed conclusion.
 
 Use [GitHub issues](https://github.com/EthanLofgrem/lofgren-intelligence/issues) for reproducible defects and proposals. Include the revision, command, expected behavior and sanitized evidence. Do not post credentials, private research or personal data. Contributions that improve evidence quality, safety boundaries and verified interoperability are especially useful.
 

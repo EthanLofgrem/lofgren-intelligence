@@ -6,7 +6,22 @@ next executable blocker. Preserve Research and Verification, Discovery,
 Production, Authorized Execution, Outcome Measurement and Improvement
 Evaluation. Stages are available capabilities, not mandatory fabricated steps.
 
-## Verified baseline
+## Current authority and source checkpoint
+Current owner instruction: complete every possible step at ZERO COST. Do not
+create a paid worker, start paid model/provider calls, activate billing, or
+assume permission for recurring charges. Progress through reversible source,
+local testing and existing permitted staging operations.
+
+The integration worktree was reviewed at db8f79b on
+build/li-release-hardening-oct11. This is newer source than the deployed
+e232ced application; fetch refs and inspect subsequent commits before work.
+It contains OAuth grant/scope checks, cache prevention, finite cost ceilings,
+worker deployment verification, release-evidence freshness review, offline
+evidence-change comparison and restricted trial integration. Source presence
+is not hosted acceptance. Retain one final candidate and deploy only after
+its required gates pass.
+
+## Reported deployed baseline
 Application e232ced165a31ab66124decb1f0fe9ea4b9057ac, PR #37.
 Vercel deployment dpl_DP5k99xLKjN7HDEr3a3U7HAQSumF assigned to
 https://lofgren-intelligence-mcp.vercel.app.
@@ -20,10 +35,10 @@ prepares a separate worker pinned to e232ced.
 Its YAML passes Render's official JSON Schema.
 Paid worker creation remains unapproved; do not provision it.
 
-Q36 trial branch build/li-trial-endpoint:
-6e609c55f19a3231633ab24e4c03389a985662e5, one commit ahead of e232ced.
-Codex independently ran its 24 tests successfully using fixtures.
-The trial is NOT deployed or tested in ChatGPT.
+Q36 trial originated at build/li-trial-endpoint, 6e609c5, and is integrated
+in the hardening source at 97de90f. Review subsequent trial hardening before
+editing. The trial is disabled and NOT hosted-proven or tested in ChatGPT.
+Historical fixture tests do not prove distributed abuse or runtime bounds.
 
 ## Codex verification in this increment
 - 84 hosted/auth/worker/source/surface tests passed after installing locked deps.
@@ -38,9 +53,10 @@ corrected runs passed. Do not misreport those as application defects.
 Live negative checks on deployed e232ced:
 malformed token form 400; invalid synthetic refresh 400;
 invalid synthetic MCP token 401.
-OAuth errors lacked cache-control. The accompanying source patch fixes
-the shared error helper and adds regression assertions. It is not deployed.
-Review/integrate this increment before building the next exact SHA.
+OAuth errors lacked cache-control. The fix and regression assertions are
+now integrated in hardening source, alongside grant/scope validation. These
+changes are not proven deployed; inspect final source and deploy/retest the
+new candidate rather than repeating the old integration work.
 
 ## Six workstreams
 1. Authenticate a synthetic staging customer through the actual supported
@@ -90,6 +106,17 @@ artifacts. All unsigned/missing/unobserved terms remain unsatisfied.
 Hosted auth, real-client, worker, restore/rollback and other remote requirements
 cannot be inferred from local suites. Owner holds signing authority.
 
+## Change-aware research and public repository
+Review scripts/evidence_change_check.py and docs/CHANGE_AWARE_UPDATES.md.
+The existing helper compares recorded evidence offline; it is not continuous
+monitoring or a legal interpretation system. Do not implement silent code
+self-updates or source-triggered production execution. Any monitor needs
+tenant ownership, source versions, bounded schedules/retries/budgets, expiry,
+cancellation and visible failures. Laws require jurisdiction and effective
+dates; a changed page is not proof of changed binding law.
+Keep README, PUBLIC_STATUS and ROADMAP consistent with deployed evidence.
+No invented release date, donation destination, client proof or user count.
+
 ## Delivery
 Use isolated worktrees and coordinate routing ownership with Codex.
 Review PRs #33/#34/#36/#37/#38 individually; no blind draft merges.
@@ -100,3 +127,6 @@ Return candidate SHA, tests, deployed behavior, failures, blockers and the
 smallest owner action. No paid hosting, live billing, new provider spending,
 public-trial enablement or external execution without specific authorization.
 
+
+## Latest handoff override
+Fetch the latest build/li-release-hardening-oct11 head before starting. Live preflight now passes eight checks on deployed b28cdb8, not e232ced. New source fixes from five agent reviews need exact-head CI and deployment proof. Preserve trial-disabled and zero-cost configuration. Signed-in OAuth, actual ChatGPT install, hosted worker execution and hosted recovery remain unproven. Do not replay the Google login route: connected Render tooling already provides the alternate path.
