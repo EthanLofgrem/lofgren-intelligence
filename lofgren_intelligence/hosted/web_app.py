@@ -296,7 +296,10 @@ async def account_export(request: Request) -> Response:
         store = SupabaseStore()
         user = store.verify_supabase_user(_supabase_session_token(request))
         data = PublicService(store).export_account_data(str(user["id"]))
-        return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=lofgren-intelligence-data.json"})
+        return JSONResponse(data, headers={
+            "Content-Disposition": "attachment; filename=lofgren-intelligence-data.json",
+            "Cache-Control": "no-store", "Pragma": "no-cache",
+        })
     except (StoreError, PublicServiceError) as exc:
         return _error(401, "unauthorized", str(exc))
 
@@ -310,7 +313,7 @@ async def account_delete(request: Request) -> Response:
             str(user["id"]),
             str(body.get("confirmation") or ""),
         )
-        return JSONResponse(result)
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except AccountDeletionPending as exc:
         return _error(409, "account_deletion_pending", str(exc))
     except (StoreError, PublicServiceError, StripeError, ValueError) as exc:

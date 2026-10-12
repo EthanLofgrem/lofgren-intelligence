@@ -596,6 +596,30 @@ class UnauthenticatedRateLimitTests(unittest.TestCase):
             self.assertIn(f'rate_limited("{bucket}", {handler})', source)
 
 
+class AccountResponseCacheTests(unittest.TestCase):
+    def test_successful_private_export_and_deletion_cannot_be_cached(self):
+        cases = (
+            (web_app.account_export, "/account/export", "GET", b"", "export_account_data", {"user_id": "u1", "runs": []}),
+            (web_app.account_delete, "/account/delete", "POST",
+             json.dumps({"confirmation": "DELETE MY LOFGREN INTELLIGENCE ACCOUNT"}).encode(),
+             "delete_account", {"deleted": True}),
+        )
+        for handler, path, method, body, operation, result in cases:
+            with self.subTest(path=path):
+                request = _request(path, method=method, body=body)
+                request.scope["headers"] = [(b"authorization", b"Bearer supabase-session")]
+                with patch.object(web_app, "SupabaseStore", return_value=FakeStore()), \
+                        patch.object(PublicService, operation, return_value=result) as call:
+                    response = asyncio.run(handler(request))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(json.loads(response.body), result)
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                self.assertEqual(response.headers["pragma"], "no-cache")
+                self.assertEqual(call.call_args.args[0], "u1")
+                if path == "/account/export":
+                    self.assertIn("attachment", response.headers["content-disposition"])
+
+
 class BuildAppTests(unittest.TestCase):
     """The deployed ASGI app (api/index.py) must build with the mcp release that is actually installed."""
 
