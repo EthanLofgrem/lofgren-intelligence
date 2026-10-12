@@ -1,134 +1,157 @@
-# Claude Code master prompt — finish pre-worker verification
+# Claude Code master prompt — complete LI acceptance at zero cost
 
-## Mission
-Lofgren Intelligence is the only release priority. Implement, test and fix the
-next executable blocker. Preserve Research and Verification, Discovery,
-Production, Authorized Execution, Outcome Measurement and Improvement
-Evaluation. Stages are available capabilities, not mandatory fabricated steps.
+## Mission and authority
 
-## Current authority and source checkpoint
-Current owner instruction: complete every possible step at ZERO COST. Do not
-create a paid worker, start paid model/provider calls, activate billing, or
-assume permission for recurring charges. Progress through reversible source,
-local testing and existing permitted staging operations.
+Ethan Lofgren is founder and release authority. Lofgren Intelligence is the
+release priority. Implement, independently test and fix executable defects;
+produce inspectable evidence for the supported release scope.
 
-The integration worktree was reviewed at db8f79b on
-build/li-release-hardening-oct11. This is newer source than the deployed
-e232ced application; fetch refs and inspect subsequent commits before work.
-It contains OAuth grant/scope checks, cache prevention, finite cost ceilings,
-worker deployment verification, release-evidence freshness review, offline
-evidence-change comparison and restricted trial integration. Source presence
-is not hosted acceptance. Retain one final candidate and deploy only after
-its required gates pass.
+Current authorization is **ZERO COST**. Do not create paid infrastructure,
+start paid model/provider calls, activate live billing or expand public trial
+spending. No running hosted worker is verified. Preserve disabled external
+execution and disabled anonymous trial until their specific gates pass.
 
-## Reported deployed baseline
-Application e232ced165a31ab66124decb1f0fe9ea4b9057ac, PR #37.
-Vercel deployment dpl_DP5k99xLKjN7HDEr3a3U7HAQSumF assigned to
-https://lofgren-intelligence-mcp.vercel.app.
-SUPABASE_SERVICE_ROLE_KEY is now saved privately as a Preview-only Secret.
-Eight hosted preflight checks passed, including exact-SHA readiness.
-Do not continue reporting the key as missing.
+Preserve Research and Verification, Discovery, Production, Authorized
+Execution, Outcome Measurement and Improvement Evaluation. These are available
+layers, not mandatory stages: never fabricate actions, outcomes or improvement
+data merely to fill the loop.
 
-Render has only the failed Docker web service on old main. No worker exists.
-deploy/li-staging-worker at dee19e831828348156f4a1cc97e6044afca4bc79
-prepares a separate worker pinned to e232ced.
-Its YAML passes Render's official JSON Schema.
-Paid worker creation remains unapproved; do not provision it.
+## Current state — verify identities before work
 
-Q36 trial originated at build/li-trial-endpoint, 6e609c5, and is integrated
-in the hardening source at 97de90f. Review subsequent trial hardening before
-editing. The trial is disabled and NOT hosted-proven or tested in ChatGPT.
-Historical fixture tests do not prove distributed abuse or runtime bounds.
+Repository: https://github.com/EthanLofgrem/lofgren-intelligence
+Integration branch: build/li-release-hardening-oct11.
+Public source checkpoint: `9583917`, including source-watch and conformance work.
+Fetch current refs, inspect AGENTS.md and working-tree changes, and review all
+commits after that checkpoint. Coordinate with Codex; use isolated worktrees
+and preserve other agents' changes.
 
-## Codex verification in this increment
-- 84 hosted/auth/worker/source/surface tests passed after installing locked deps.
-- 24 offline tests passed with zero network attempts.
-- 80 hardening/settlement/V4/V6 tests passed.
-- 16 V5/routing tests passed.
-- Trial: 24 tests passed in a separate worktree.
-These suites overlap; do not add them into a unique full-suite count.
-Initial runs had missing dependencies and one incorrect V5 module name;
-corrected runs passed. Do not misreport those as application defects.
+Stable authenticated MCP endpoint:
+https://lofgren-intelligence-mcp.vercel.app/mcp
 
-Live negative checks on deployed e232ced:
-malformed token form 400; invalid synthetic refresh 400;
-invalid synthetic MCP token 401.
-OAuth errors lacked cache-control. The fix and regression assertions are
-now integrated in hardening source, alongside grant/scope validation. These
-changes are not proven deployed; inspect final source and deploy/retest the
-new candidate rather than repeating the old integration work.
+Deployed application checkpoint: `6f53287`.
+- All three Python matrix jobs and all five dedicated push gates passed.
+- Real PostgreSQL proof and operational CI passed.
+- Clean installed-wheel checks passed.
+- All eight ordinary hosted preflight checks passed on the stable alias.
+- The private backend key is configured; it is no longer a missing-key blocker.
 
-## Six workstreams
-1. Authenticate a synthetic staging customer through the actual supported
-browser flow. Prove S256 exchange, one-time code use, refresh rotation/replay,
-expiry and revocation. Never manufacture identity or bypass consent.
-Local FakeStore proofs are not hosted proofs. Keep tokens out of logs.
+Local checkpoint: 1,119 tests passed, 25 offline checks passed with zero network
+attempts, and V1–V6 source certifications passed. These are distinct reported
+runs; do not add them into a unique total. New source-watch work has six tests.
+Newer source still needs its own exact-head CI and deployment acceptance.
 
-2. Complete a real supported MCP client connection. Discover tools, assess a
-request and exercise an authorized non-worker operation. Record exact client
-and protocol versions. Python SDK tests do not prove ChatGPT installation.
-If owner interaction is required, prepare the exact connection and secure
-handoff; label that requirement BLOCKED rather than claiming completion.
+An atomic OAuth disconnect fix is separate work in progress. Its migration
+and hosted behavior are NOT deployed-proven. Inspect its actual branch,
+patch, database grants and regressions before integrating or applying anything.
 
-3. Harden Q36 before enabling it:
-- Its default global ceiling of $10 divided by $2 worst-case allocation allows
-only FIVE research calls per day. This is safe containment, not a launch-scale
-free offer. Separate platform-price estimates from actual infrastructure cost.
-- OperatorSourcesAdapter fetch_all retrieves every configured URL (up to 3),
-contradicting the documented one-upstream-request bound. Enforce the promised
-bound or revise the bound and provide matching runtime/tests.
-- Stage-boundary deadlines do not interrupt an already running operation.
-Prove actual worst-case wall time, redirects, retries and body limits.
-- Prove global atomic admission and bounded concurrent execution across
-instances; test malformed storage responses, parallel requests and outage.
-- Verify trusted proxy IP behavior on Vercel and shared assistant egress.
-Do not assume IP equals user identity.
-- Verify receipts, output limits and source failures honestly.
-- Keep trial tools separate from private cases, jobs, billing and actions.
-- Keep trial disabled until the evidence and cost policy support enabling it.
+ChatGPT client acceptance is NOT proven. The secure sign-in choice returned
+Google, but automatic approval review blocked navigation to that provider.
+Do not bypass that review or retry the same blocked route. Use an available
+supported secure sign-in alternative or report the exact required owner action.
+Independent same-model subagents are reviewers, not external Claude/ChatGPT
+product connection proof.
 
-4. Worker preparation: official schema validation already passed. Verify
-pinned checkout/build/start commands with the current locked dependencies,
-Render Python compatibility and SIGTERM behavior. Never replace this with
-an unpinned deploy. No extra database or Redis is needed without evidence.
-Do not claim hosted-worker proof before a Render process completes a case.
+## Priority 1 — finish authentication and a real client connection
 
-5. Run isolated local execution and recovery: approved charter, job claim,
-saved checkpoint, lost response after commit, competing workers, cancellation,
-lease reclaim, actual usage settlement and result reopening. Exercise V1-V6
-where applicable. V4 external execution stays disabled: duplicate-effect
-fencing is still incomplete. Never perform external effects for a green test.
+Review the pending disconnect work for atomic revocation, races, failure
+behavior, tenant ownership and grants. Test revoke-versus-refresh, stale grants,
+replay, partial failure and reconnect behavior. Do not treat the UI's success
+message as evidence that tokens were revoked.
 
-6. Reconcile all 36 signed public-gate terms. PR #38
-(task/li-operations-evidence-ledger, 712339a...) is a draft available for review;
-do not duplicate it blindly. Distinguish raw test evidence from signed accepted
-artifacts. All unsigned/missing/unobserved terms remain unsatisfied.
-Hosted auth, real-client, worker, restore/rollback and other remote requirements
-cannot be inferred from local suites. Owner holds signing authority.
+On the final deployed candidate, observe the actual supported consent and S256
+PKCE flow, one-time code use, token resource/scope validation, refresh rotation,
+replay rejection, expiry and revocation. Use an authorized staging identity;
+never manufacture authority or bypass consent. Keep tokens out of logs.
 
-## Change-aware research and public repository
-Review scripts/evidence_change_check.py and docs/CHANGE_AWARE_UPDATES.md.
-The existing helper compares recorded evidence offline; it is not continuous
-monitoring or a legal interpretation system. Do not implement silent code
-self-updates or source-triggered production execution. Any monitor needs
-tenant ownership, source versions, bounded schedules/retries/budgets, expiry,
-cancellation and visible failures. Laws require jurisdiction and effective
-dates; a changed page is not proof of changed binding law.
-Keep README, PUBLIC_STATUS and ROADMAP consistent with deployed evidence.
-No invented release date, donation destination, client proof or user count.
+Complete one ordinary supported MCP client connection: initialize, tools/list,
+request assessment and an authorized non-worker operation. Record the client
+and protocol versions, connection steps, response evidence and limits. A Python
+harness, health response or proper anonymous 401 does not establish ChatGPT
+installation. No Vercel administrative bypass credential belongs in a client.
 
-## Delivery
-Use isolated worktrees and coordinate routing ownership with Codex.
-Review PRs #33/#34/#36/#37/#38 individually; no blind draft merges.
-Preserve all approval, tenant, resource/scope and no-store protections.
-Run relevant regressions, full suite, clean wheel and exact-head CI with every
-dedicated gate actually running. Retest deployed evidence after any code change.
-Return candidate SHA, tests, deployed behavior, failures, blockers and the
-smallest owner action. No paid hosting, live billing, new provider spending,
-public-trial enablement or external execution without specific authorization.
+## Priority 2 — trial safety and truthful source updates
 
+Inspect integrated trial implementation and all subsequent fixes rather than
+repeating old review notes as current defects. Keep private tools, cases,
+account, billing, actions and persistent customer state inaccessible.
 
-## Latest handoff override
-Fetch the latest build/li-release-hardening-oct11 head before starting. Live preflight now passes eight checks on deployed b28cdb8, not e232ced. New source fixes from five agent reviews need exact-head CI and deployment proof. Preserve trial-disabled and zero-cost configuration. Signed-in OAuth, actual ChatGPT install, hosted worker execution and hosted recovery remain unproven. Do not replay the Google login route: connected Render tooling already provides the alternate path.
+Prove shared atomic budget admission, per-client abuse controls, bounded
+concurrency and actual runtime/source/output limits. Test storage failure,
+malformed responses, forged proxy headers, rotating sessions, parallel calls,
+replay, provider failure and disconnect. IP and MCP session IDs are not identity.
+Document actual global capacity and what happens when the ceiling is exhausted.
+Do not enable or increase trial spending under the zero-cost instruction.
 
-Latest hosted checkpoint: stable MCP alias now serves 6f53287, all eight ordinary preflight checks pass, all three matrix and five dedicated push gates pass, PostgreSQL and ops CI pass. Source watch refresh implementation is newer and needs exact-head CI before deployment. See RELEASE_CONFORMANCE_CURRENT.md. Actual ChatGPT sign-in is blocked by automatic approval review of Google provider access; no client acceptance proof exists.
+Review the source-watch implementation and its six tests. Verify source
+fingerprints, changed/unchanged/unavailable classifications, review dependencies,
+retention and privacy. A refresh command is not continuous scheduling or legal
+interpretation. Laws require jurisdiction, effective date and authoritative
+sources. Changed web content does not prove a changed binding rule.
+
+No silent production self-upgrades, policy widening or source-triggered
+external effects. New code/rules require reviewed versioned releases. Preserve
+historical receipts and findings; reassessment produces a linked new version.
+
+## Priority 3 — worker preparation and recovery without charges
+
+Inspect the existing Render worker configuration and offline verifier. Preserve
+pinned checkout, locked dependencies, exact build/start commands and honest
+SIGTERM behavior. No extra database or Redis without demonstrated need.
+Connected Render tooling provides an alternative to the failed Google browser
+path; do not confuse the failed old Docker web service with a running worker.
+
+Continue isolated local testing of approved charter, budget reservation, job
+claim/checkpoint, competing workers, lease reclaim, cancellation, lost response
+after commit, durable result reopening and exactly-once settlement. A local
+worker can find defects; it cannot satisfy hosted-worker acceptance.
+
+Use only an existing approved zero-cost operating environment if one becomes
+available. Otherwise mark hosted execution BLOCKED. Do not provision paid
+hosting. When operationally possible, acceptance requires one persisted,
+approved hosted case producing findings and receipt, settling actual usage,
+surviving reopen and recovery, on the exact API/worker revisions.
+
+External execution stays disabled: durable duplicate-effect fencing must be
+implemented and independently proven before any enablement.
+
+## Priority 4 — reconcile release evidence and public explanation
+
+Use docs/RELEASE_CONFORMANCE_CURRENT.md and the 36-term release inventory.
+Distinguish source implementation, local/CI evidence, deployed observations
+and signed accepted artifacts. Missing, stale, unsigned and unobserved terms
+remain unsatisfied. Do not silently waive commercial terms for a free scope;
+a revised scope needs explicit reviewed requirements.
+
+Complete permitted restore/rollback preparation and test isolated resources.
+Owner holds release-signing authority; do not forge signatures or retrieve
+private signing material merely to display it.
+
+Keep README, PUBLIC_STATUS, ROADMAP and this handoff consistent with evidence.
+Explain what LI does, how evidence is inspected, actual limitations, current
+work and release conditions. No invented launch date, donation destination,
+customer count, autonomous law coverage or client success.
+
+## Validation and delivery
+
+Fix each verified defect with a meaningful regression. Preserve the first
+failure and explain its cause. Do not weaken authorization or assertions.
+
+On one final candidate run relevant regressions, full suite, offline checks,
+clean wheel, real PostgreSQL proof, operational checks and all dedicated gates.
+Inspect job execution and skips. Repeat stable-origin hosted preflight after
+deployment; the canonical OAuth issuer is the stable origin, so a unique
+Preview host is not automatically a valid issuer probe.
+
+Deliver:
+- Exact source, API, worker and schema identities.
+- Defects fixed and actual commands/results.
+- Observed authentication/client and recovery outcomes.
+- PASS, FAIL, BLOCKED and NOT RUN requirements.
+- The smallest actionable next proof or owner action.
+
+Start with current refs and the pending atomic disconnect fix. Then prioritize
+real hosted authentication and an ordinary client connection. Do every
+independent zero-cost task while preserving honest operational blockers.
+
+## Additional independently discovered defect
+Numeric corroboration previously propagated transitively and crashed on independent observations 100/114/129. The new verifier increment marks derived edges and preserves pairwise relations through reload/reverification. Its 1,126-test full suite and 94 focused tests passed. Require exact-head CI after integration. Historical graphs lacking provenance markers must be rebuilt from original evidence rather than silently assumed to have correct direct support.
