@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 import secrets
+import re
 from typing import Any
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -850,6 +851,18 @@ def build_app():
     hostname = (parsed.hostname or "").lower()
     host_entries = [hostname, hostname + ":*"]
     origin_entries = [base]
+    # Vercel supplies the exact deployment hostname. Permit only that hostname
+    # in Preview, without changing the canonical OAuth issuer/resource URLs.
+    # Never infer an allowed host from client-controlled request headers.
+    if os.environ.get("VERCEL_ENV") == "preview" and os.environ.get("VERCEL_URL"):
+        preview_host = os.environ["VERCEL_URL"]
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app", preview_host):
+            raise RuntimeError("VERCEL_URL must be an exact Vercel deployment hostname")
+        if preview_host not in host_entries:
+            host_entries.append(preview_host)
+        preview_origin = "https://" + preview_host
+        if preview_origin not in origin_entries:
+            origin_entries.append(preview_origin)
     origin_entries.extend(
         x.strip() for x in os.environ.get("LI_ALLOWED_ORIGINS", "").split(",") if x.strip()
     )
