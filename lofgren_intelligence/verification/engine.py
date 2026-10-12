@@ -18,10 +18,11 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from ..evidence.graph import EvidenceGraph
 from ..evidence.types import Calculation, Claim, ClaimOrigin, ClaimStatus, Contradiction, topic_tokens
-from ..models.provider import DOWN_WORDS, UP_WORDS, trend
+from ..models.provider import _NUM, DOWN_WORDS, UP_WORDS, parse_value, trend
 from .calibration import Calibrator
 from .policies import classify_claim, policy_for
 
@@ -38,7 +39,7 @@ WEIGHTS = {"b0": -1.6, "q": 2.0, "d": 0.9, "t": 0.8, "r": 0.6, "k": 1.4}
 
 OVERLAP_THRESHOLD = 0.8  # share of the smaller subject found in the larger
 JACCARD_THRESHOLD = 0.5
-VALUE_TOLERANCE = 0.15  # relative difference beyond which two values disagree
+VALUE_TOLERANCE = 0.15  # relative difference within which two values agree when one is approximate
 
 _CHANGE_WORDS = UP_WORDS | DOWN_WORDS
 
@@ -69,23 +70,210 @@ def similarity(a: Claim, b: Claim) -> float:
     return overlap if overlap >= OVERLAP_THRESHOLD and jaccard(sa, sb) >= JACCARD_THRESHOLD else 0.0
 
 
+# ---- what is being measured ----------------------------------------------------------------------------------
+# Two numbers corroborate only when they measure the same quantity on the same basis. Subject tokens alone cannot
+# tell "total revenue ... 410000" from "total costs ... 380000", or a rated figure from a delivered one, so each
+# claim also has a quantity kind and a measurement basis, read from these bounded lexicons. Words map to a
+# canonical name; synonyms ("sales", "turnover") map to one kind.
+QUANTITY_KINDS = {
+    "revenue": "revenue", "revenues": "revenue", "sales": "revenue", "turnover": "revenue",
+    "income": "income", "earnings": "income",
+    "profit": "profit", "profits": "profit", "profitable": "profit", "profitability": "profit",
+    "loss": "loss", "losses": "loss", "unprofitable": "loss",
+    "margin": "margin", "margins": "margin", "ebitda": "ebitda",
+    "cost": "cost", "costs": "cost", "expense": "cost", "expenses": "cost", "spending": "cost",
+    "expenditure": "cost", "expenditures": "cost", "opex": "cost", "capex": "capex",
+    "debt": "debt", "liabilities": "liabilities", "assets": "assets", "cash": "cash",
+    "price": "price", "prices": "price", "valuation": "valuation", "budget": "budget",
+    "tax": "tax", "taxes": "tax", "payroll": "payroll", "wages": "payroll", "salaries": "payroll",
+    "dividend": "dividend", "dividends": "dividend",
+}
+MEASUREMENT_BASIS = {
+    "rated": "rated", "nominal": "rated", "specified": "rated", "advertised": "rated", "claimed": "rated",
+    "datasheet": "rated",
+    "measured": "measured", "delivered": "measured", "actual": "measured", "observed": "measured",
+    "tested": "measured", "achieved": "measured",
+    "maximum": "peak", "peak": "peak", "minimum": "minimum",
+    "average": "average", "mean": "average", "median": "median",
+    "target": "target", "planned": "target", "budgeted": "target", "forecast": "forecast", "projected": "forecast",
+}
+# Hedges right before a number that mark it as approximate ("about 14 million"); see values_agree.
+APPROXIMATE = re.compile(r"(\b(about|approximately|approx\.?|roughly|around|nearly|almost|circa|some|estimated|"
+                         r"close to|on the order of)|~)\s*\$?\s*$", re.I)
+VALUE_RULE = "precision-v1"  # recorded in receipts: the value-agreement rule in values_agree
+_MULTIPLIERS = {"thousand": 1e3, "k": 1e3, "million": 1e6, "billion": 1e9}
+
+
+def _words(statement: str) -> list[str]:
+    return re.findall(r"[a-z][a-z\-]*", statement.lower())
+
+
+def quantity_kinds(statement: str) -> frozenset[str]:
+    return frozenset(QUANTITY_KINDS[w] for w in _words(statement) if w in QUANTITY_KINDS)
+
+
+def measurement_basis(statement: str) -> frozenset[str]:
+    return frozenset(MEASUREMENT_BASIS[w] for w in _words(statement) if w in MEASUREMENT_BASIS)
+
+
+def _literal(claim: Claim) -> re.Match | None:
+    """The number literal in the statement that the claim's value was read from, if it can be found."""
+    if claim.value is None:
+        return None
+    for m in _NUM.finditer(claim.statement):
+        v, _ = parse_value(m.group(0))
+        if v is not None and math.isclose(v, claim.value, rel_tol=1e-9, abs_tol=1e-12):
+            return m
+    return None
+
+
+def _place_value(d: Decimal) -> float:
+    return float(Decimal(1).scaleb(d.as_tuple().exponent))
+
+
+def value_resolution(claim: Claim) -> float:
+    """The precision a value is stated at: the place value of its last significant digit.
+
+    "14 million" -> 1e6, "14.2 million" -> 1e5, "48" -> 1, "6.50" -> 0.01, "410000" -> 1e4 (trailing zeros of a
+    whole number are read as rounding). When the literal cannot be found in the statement (a model supplied the
+    value), the value's own shortest decimal form is used.
+    """
+    m = _literal(claim)
+    if m is not None:
+        raw = m.group(2).replace(",", "").lstrip("-")
+        d = Decimal(raw)
+        if "." not in raw:
+            d = d.normalize() if d != 0 else Decimal(1)
+        return _place_value(d) * _MULTIPLIERS.get((m.group(3) or "").lower(), 1.0)
+    d = Decimal(repr(abs(claim.value or 0.0))).normalize()
+    return _place_value(d) if d != 0 else 1.0
+
+
+def is_approximate(claim: Claim) -> bool:
+    m = _literal(claim)
+    return bool(m and APPROXIMATE.search(claim.statement[:m.start()]))
+
+
+def values_agree(a: Claim, b: Claim) -> bool:
+    """Do two stated values of the same quantity agree? The rule (VALUE_RULE "precision-v1"):
+
+    * Exact statements agree only at the precision stated: the finer value, rounded to the coarser value's
+      resolution, must equal the coarser value, i.e. |a - b| <= half the coarser resolution.
+      14 million vs 14.2 million sq ft: 14.2 rounds to 14 at whole millions, so they agree.
+      48 vs 52 L/min: both are stated to the unit and differ by 4, so they disagree.
+    * When either value is marked approximate ("about", "roughly", "~", "an estimated" ...), they also agree
+      within VALUE_TOLERANCE (15%) of the larger magnitude.
+    """
+    if a.value is None or b.value is None:
+        return False
+    diff = abs(a.value - b.value)
+    if diff <= max(value_resolution(a), value_resolution(b)) / 2 * (1 + 1e-9):
+        return True
+    if is_approximate(a) or is_approximate(b):
+        return diff / max(abs(a.value), abs(b.value), 1e-9) <= VALUE_TOLERANCE
+    return False
+
+
+# ---- opposite statements without a negation word --------------------------------------------------------------
+# "foo 2.1 fixed the deadlock" and "the deadlock still occurs in foo 2.1" contradict each other, yet neither is a
+# negation and they share few subject words. Each frame names two opposite sides; a statement takes a side only if
+# it uses words of exactly one side of exactly one frame, and a negation ("did not fix") flips its side.
+STANCE_FRAMES = {
+    "resolution": (
+        frozenset({"fixed", "fix", "fixes", "resolved", "resolve", "resolves", "solved", "solves", "eliminated",
+                   "eliminates", "corrected", "corrects", "patched", "patches"}),
+        frozenset({"occurs", "occur", "occurred", "occurring", "happens", "happen", "happened", "persists",
+                   "persist", "persisted", "persisting", "recurs", "recur", "recurred", "reoccurs", "reproduces",
+                   "reproducible", "reproduced", "regressed", "unresolved", "unfixed"}),
+    ),
+    "outcome": (frozenset({"passed", "passes", "succeeded", "succeeds", "successful"}),
+                frozenset({"failed", "fails", "unsuccessful"})),
+    "approval": (frozenset({"approved", "approves", "granted", "accepted"}),
+                 frozenset({"rejected", "rejects", "denied", "refused"})),
+}
+_SIDE_NAMES = {"resolution": ("resolved", "still occurs"), "outcome": ("succeeded", "failed"),
+               "approval": ("approved", "rejected")}
+_STANCE_WORDS = frozenset().union(*(p | n for p, n in STANCE_FRAMES.values()))
+# Words that say who reports a statement, or when, rather than what it is about.
+_ATTRIBUTION_WORDS = frozenset({"report", "reports", "reported", "user", "users", "according", "says", "said",
+                                "notes", "noted", "release", "released", "still", "confirm", "confirms", "confirmed",
+                                "customers", "customer", "testers", "now", "longer", "again"})
+_VERSION = re.compile(r"\b[vV]?\d+(?:\.\d+)+[a-z0-9\-]*\b")
+
+
+def stance(claim: Claim) -> tuple[str, int] | None:
+    """(frame, side) a statement takes, side +1 or -1 after any negation; None when it takes none, or is mixed."""
+    words = set(_words(claim.statement))
+    found = None
+    for frame, (pos, neg) in STANCE_FRAMES.items():
+        p, n = bool(words & pos), bool(words & neg)
+        if not p and not n:
+            continue
+        if p and n or found is not None:
+            return None  # both sides, or more than one frame: ambiguous, so no stance
+        found = (frame, (1 if p else -1) * claim.polarity)
+    return found
+
+
+def stance_core(claim: Claim) -> set[str]:
+    return set(topic_tokens(claim.statement)) - _STANCE_WORDS - _ATTRIBUTION_WORDS - _CHANGE_WORDS
+
+
+def same_stance_subject(a: Claim, b: Claim) -> bool:
+    """Do two stance-taking statements concern the same thing: the same versions named, and the core words of one
+    found in the other?"""
+    if set(_VERSION.findall(a.statement)) != set(_VERSION.findall(b.statement)):
+        return False
+    ca, cb = stance_core(a), stance_core(b)
+    if len(ca) < 2 or len(cb) < 2:
+        return False
+    return len(ca & cb) / min(len(ca), len(cb)) >= OVERLAP_THRESHOLD
+
+
+def basis_mismatch(a: Claim, b: Claim) -> str:
+    """Why two figures for the same quantity are on different measurement bases ('' if they are not)."""
+    if a.value is None or b.value is None:
+        return ""
+    ba, bb = measurement_basis(a.statement), measurement_basis(b.statement)
+    if ba == bb:
+        return ""
+    return (f"different measurement basis: {', '.join(sorted(ba)) or 'unstated'} vs "
+            f"{', '.join(sorted(bb)) or 'unstated'}")
+
+
 def relation(a: Claim, b: Claim) -> tuple[str | None, str]:
-    """Do two claims talk about the same thing, and do they agree?"""
+    """Do two claims talk about the same thing, and do they agree?
+
+    Support needs the same subject, the same quantity kind, the same unit and values that agree at the precision
+    stated (values_agree). Different quantities (revenue vs costs) are unrelated: neither support nor contradiction.
+    A different measurement basis (rated vs delivered) is reported by scope_mismatch, so it can never confirm.
+    """
     if a.subject or b.subject:
         sim = 1.0 if a.subject == b.subject else 0.0
     else:
         sim = similarity(a, b)
+    sa, sb = stance(a), stance(b)
+    same_frame = sa is not None and sb is not None and sa[0] == sb[0] and (
+        bool(sim) or (not a.subject and not b.subject and same_stance_subject(a, b)))
+    if same_frame and sa[1] != sb[1]:
+        yes, no = _SIDE_NAMES[sa[0]]
+        return "contradicts", (f"opposite statements: one says {yes if sa[1] > 0 else no}, "
+                               f"the other says {yes if sb[1] > 0 else no}")
     if not sim:
         return None, ""
-    if a.polarity != b.polarity:
+    if quantity_kinds(a.statement) != quantity_kinds(b.statement):
+        return None, ""  # different quantities (revenue vs costs): neither confirms nor contradicts the other
+    if (a.value is None) != (b.value is None):
+        return None, ""  # a statement without the number can neither confirm nor refute the number
+    if a.value is not None and b.value is not None and a.unit != b.unit:
+        return None, ""  # incomparable units: unknown, so never a confirmation
+    if a.polarity != b.polarity and not same_frame:
         return "contradicts", "one statement negates the other"
     ta, tb = trend(set(a.topic)), trend(set(b.topic))
     if ta and tb and ta != tb:
         return "contradicts", "opposite direction of change"
-    if a.value is not None and b.value is not None and a.unit == b.unit:
-        scale = max(abs(a.value), abs(b.value), 1e-9)
-        if abs(a.value - b.value) / scale > VALUE_TOLERANCE:
-            return "contradicts", f"values differ: {a.value:g} vs {b.value:g} {a.unit}".strip()
+    if a.value is not None and b.value is not None and not values_agree(a, b):
+        return "contradicts", f"values differ: {a.value:g} vs {b.value:g} {a.unit}".strip()
     return "supports", f"same subject (similarity {sim:.2f}) and consistent"
 
 
@@ -175,7 +363,7 @@ class Verifier:
                         graph.link(e, b.id, "supports")
                     continue
                 cx = Contradiction(a.id, b.id, reason, resolution=resolution_for(a, b, reason))
-                if a.value is not None and b.value is not None and a.unit == b.unit:
+                if reason.startswith("values differ"):  # the relative difference explains a value disagreement
                     calc = graph.add_calculation(Calculation(
                         name="relative difference", formula="|a - b| / max(|a|, |b|)",
                         inputs=[{"name": "a", "value": a.value, "unit": a.unit,
@@ -256,7 +444,11 @@ class Verifier:
 
 
 def scope_mismatch(a: Claim, b: Claim) -> str:
-    """Why two claims about the same subject cover different ground ('' if they don't)."""
+    """Why two claims about the same subject cover different ground ('' if they don't): a different measurement
+    basis (a rated figure against a delivered one), a different period or a different place."""
+    basis = basis_mismatch(a, b)
+    if basis:
+        return basis
     overlap = a.scope.overlaps_time(b.scope)
     if overlap is False:
         return (f"different periods: {a.scope.valid_from}..{a.scope.valid_to} vs "
