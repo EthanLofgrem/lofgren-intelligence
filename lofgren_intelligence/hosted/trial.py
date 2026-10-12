@@ -420,6 +420,31 @@ class TrialMCPServer(MCPServer):
         super().__init__(*args, **kwargs)
         self.base_url = base_url
 
+    async def list_tools(self) -> Any:
+        """Publish the same immutable limits that the runtime enforces.
+
+        Keep validation in the tool bodies so existing typed trial refusals and
+        accounting order remain stable; clients can reject oversize requests
+        before sending them without gaining any authority from the schema.
+        """
+        tools = await super().list_tools()
+        for item in tools:
+            props = item.input_schema.get("properties", {})
+            for name, limit in (("question", BOUNDS.max_question_chars),
+                                ("claim", BOUNDS.max_question_chars)):
+                if name in props:
+                    props[name].update(minLength=1, maxLength=limit)
+            if "query" in props:
+                for branch in props["query"].get("anyOf", []):
+                    if branch.get("type") == "string":
+                        branch.update(minLength=1, maxLength=BOUNDS.max_query_chars)
+            if "source" in props:
+                props["source"]["enum"] = list(TRIAL_SOURCES)
+            if "options" in props:
+                props["options"].update(minItems=2, maxItems=BOUNDS.max_options)
+                props["options"]["items"].update(minLength=1, maxLength=BOUNDS.max_option_chars)
+        return tools
+
     async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
         if name not in TRIAL_TOOLS:
             pointer = _account_pointer(self.base_url)

@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 import secrets
+import re
 from typing import Any
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -184,7 +185,14 @@ async def oauth_token(request: Request) -> Response:
         else:
             return _error(400, "unsupported_grant_type")
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
-    except (AuthError, StoreError) as exc:
+    except StoreError:
+        return JSONResponse(
+            {"error": "temporarily_unavailable",
+             "error_description": "the authorization service is temporarily unavailable; retry later"},
+            status_code=503,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Retry-After": "30"},
+        )
+    except AuthError as exc:
         return _error(400, "invalid_grant", str(exc))
 
 
@@ -296,7 +304,10 @@ async def account_export(request: Request) -> Response:
         store = SupabaseStore()
         user = store.verify_supabase_user(_supabase_session_token(request))
         data = PublicService(store).export_account_data(str(user["id"]))
-        return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=lofgren-intelligence-data.json"})
+        return JSONResponse(data, headers={
+            "Content-Disposition": "attachment; filename=lofgren-intelligence-data.json",
+            "Cache-Control": "no-store", "Pragma": "no-cache",
+        })
     except (StoreError, PublicServiceError) as exc:
         return _error(401, "unauthorized", str(exc))
 
@@ -310,7 +321,7 @@ async def account_delete(request: Request) -> Response:
             str(user["id"]),
             str(body.get("confirmation") or ""),
         )
-        return JSONResponse(result)
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except AccountDeletionPending as exc:
         return _error(409, "account_deletion_pending", str(exc))
     except (StoreError, PublicServiceError, StripeError, ValueError) as exc:
@@ -840,6 +851,18 @@ def build_app():
     hostname = (parsed.hostname or "").lower()
     host_entries = [hostname, hostname + ":*"]
     origin_entries = [base]
+    # Vercel supplies the exact deployment hostname. Permit only that hostname
+    # in Preview, without changing the canonical OAuth issuer/resource URLs.
+    # Never infer an allowed host from client-controlled request headers.
+    if os.environ.get("VERCEL_ENV") == "preview" and os.environ.get("VERCEL_URL"):
+        preview_host = os.environ["VERCEL_URL"]
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app", preview_host):
+            raise RuntimeError("VERCEL_URL must be an exact Vercel deployment hostname")
+        if preview_host not in host_entries:
+            host_entries.append(preview_host)
+        preview_origin = "https://" + preview_host
+        if preview_origin not in origin_entries:
+            origin_entries.append(preview_origin)
     origin_entries.extend(
         x.strip() for x in os.environ.get("LI_ALLOWED_ORIGINS", "").split(",") if x.strip()
     )

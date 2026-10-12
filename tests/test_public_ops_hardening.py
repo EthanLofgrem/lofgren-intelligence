@@ -910,7 +910,8 @@ class CapabilityManifestTests(unittest.TestCase):
 # candidate itself, in workflow order. Each runs the exact-SHA V2-V6 gate jobs on push.
 RC_GATE_BRANCHES = ("build/release-candidate", "build/rc-durable-jobs", "build/rc-supabase-pin",
                     "build/rc-plan-catalog", "build/rc-integrated", "build/rc-clarification-domains",
-                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11")
+                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11",
+                    "build/li-account-response-cache")
 
 
 class CITriggerTests(unittest.TestCase):
