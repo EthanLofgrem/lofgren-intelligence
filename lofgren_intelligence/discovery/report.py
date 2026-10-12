@@ -18,6 +18,32 @@ def _fmt(v) -> str:
     return f"{v:g}" if isinstance(v, float) else str(v)
 
 
+def assumption_rows(result: "DiscoveryResult") -> list[dict]:
+    """The design assumptions the discovery rests on: stated inputs, never verified evidence."""
+    return [{"id": a.id, "statement": a.statement, "name": a.name, "value": a.value, "unit": a.unit,
+             "why_assumed": a.why_assumed, "replaceable": a.replaceable, "sensitivity": a.sensitivity,
+             "kind": "assumption"}
+            for a in sorted(result.candidates.assumptions, key=lambda a: a.id)]
+
+
+def _assumption_lines(result: "DiscoveryResult") -> list[str]:
+    rows = assumption_rows(result)
+    lines = ["## Assumptions (stated, not verified)", ""]
+    if not rows:
+        return lines + ["None: the design space stated no assumptions.", ""]
+    lines += ["Every candidate measure, simulation and the decision below depend on these inputs. They come from "
+              "the design space, not from V1 evidence.", ""]
+    for a in rows:
+        setting = ""
+        if a["value"] is not None:
+            unit = f" {a['unit']}" if a["unit"] else ""
+            setting = f"; sets {a['name'] or 'a value'} = {_fmt(a['value'])}{unit}"
+        why = f"; why assumed: {a['why_assumed']}" if a["why_assumed"] else ""
+        sens = f"; sensitivity {_fmt(a['sensitivity'])}" if a["sensitivity"] is not None else ""
+        lines.append(f"- {a['statement']} (`{a['id']}`{setting}{why}{sens})")
+    return lines + [""]
+
+
 def render_discovery_markdown(result: "DiscoveryResult") -> str:
     r, lines = result, []
     lines += [f"# Discovery: {r.objective.objective}", "",
@@ -33,6 +59,7 @@ def render_discovery_markdown(result: "DiscoveryResult") -> str:
         for cid, why in sorted(r.decision.alternatives.items()):
             lines.append(f"- not selected `{cid}`: {why}")
         lines.append("")
+    lines += _assumption_lines(r)
     if r.candidates.candidates:
         lines += ["## Candidates (order is not ranking)", "",
                   "| Candidate | Status | Technical feasibility | Economic feasibility | Expected value | Robustness |",
@@ -105,6 +132,7 @@ def discovery_summary(result: "DiscoveryResult") -> dict:
         "selected_candidate": None if sel is None else {"id": sel.id, "description": sel.description,
                                                         "kind": "candidate", "status": sel.status.value},
         "decision_rule": r.decision.rule if r.decision else None,
+        "assumptions": assumption_rows(r),
         "candidates": [{"id": c.id, "description": c.description, "status": c.status.value,
                         "technical_feasibility": c.technical_feasibility,
                         "economic_feasibility": c.economic_feasibility, "expected_value": c.expected_value,

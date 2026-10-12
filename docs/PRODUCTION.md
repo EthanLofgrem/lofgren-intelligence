@@ -78,8 +78,10 @@ expected outcome against the selected candidate's simulation, each constraint ag
 | `artifact.py` | ✓ | | ✓ | The implementation: `VALUES`, `UNITS`, one generated function per check, `check_all()` |
 | `test_artifact.py` | ✓ | | ✓ | Executable acceptance and integrity tests (`python -m unittest test_artifact`) |
 
-Every file is a pure function of the manifest (`production.codegen/1`), so the verifier can regenerate the bundle
-and require byte equality. Acceptance criteria and constraints are compiled from V2's structured expression trees
+Every file is a pure function of the manifest and the codegen version it records (`production.codegen/2`), so the
+verifier can regenerate the bundle and require byte equality. `codegen/2` adds an explicit **Assumptions** section
+to `README.md` (each stated design input, its value and id: stated, not verified); an artifact built by
+`production.codegen/1` still regenerates byte for byte and still verifies. Acceptance criteria and constraints are compiled from V2's structured expression trees
 into plain Python arithmetic with V2's comparison tolerance; V2 expressions carry units but no conversions, and
 units are checked at compile time, so the generated checks compute exactly what V2 computes.
 

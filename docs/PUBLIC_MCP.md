@@ -285,6 +285,26 @@ an undecided allowance: an undecided plan fails closed.
 If material cost components are not configured, runs explicitly report
 `cost_fully_priced=false`. That condition must block economic certification.
 
+## Typed refusals
+
+An anticipated refusal reaches the MCP client as a tool error whose text is `<CODE>: <reason>`, a stable code
+followed by one sanitized line (at most 300 characters, no traceback, no stored data). The server logs it as one
+informational line without a traceback. Codes raised below the service layer:
+
+| Code | Raised when |
+| --- | --- |
+| `UNSAFE_URL` | a URL is not a permitted public HTTP(S) address (localhost, private or reserved IPs, credentials) |
+| `INPUT_INVALID` | an input is outside its limit: objective/claim over 8000 characters, more than 20 inline documents or 250000 characters, more than 12 URLs, `max_records` outside 1-20, a bad `europepmc`/`trials` query |
+| `MANIFEST_INVALID` | an inline `sources_manifest` fails `lofgren.sources-manifest/1` validation |
+| `EXECUTION_REFUSED` | a V4 action target or execution precondition is refused (for example `https://127.0.0.1/hook`) |
+| `IMPROVEMENT_REFUSED` | a V6 improvement proposal is refused |
+
+Service refusals keep their own codes (`REQUEST_REFUSED`, `QUOTA_EXCEEDED`, `PAYMENT_REQUIRED`,
+`DISCOVERY_STATE_INVALID`, ...). Every other exception is unexpected: the client sees only
+`Error executing tool <name>` and the server logs the traceback. Every refusal fails closed.
+
+`max_records` is 1-20 on the hosted service (default 20). The local CLI and stdio server allow 1-100.
+
 ## Security boundaries
 
 Remote MCP rejects server-local file paths, caps objective/text/URL sizes,
