@@ -514,7 +514,7 @@ async def workspace_page(request: Request) -> Response:
     page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved cases · Lofgren Intelligence</title>
 {site.supabase_script_tag(nonce)}
-<style nonce="{nonce}">body{{font-family:system-ui;max-width:780px;margin:40px auto;padding:20px}}input,button,textarea{{display:block;padding:12px;margin:8px 0;box-sizing:border-box;max-width:100%;width:100%}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}li{{margin:16px 0}}</style>
+<style nonce="{nonce}">body{{font-family:system-ui;max-width:780px;margin:40px auto;padding:20px;line-height:1.5}}input,button,textarea{{display:block;padding:12px;margin:8px 0;box-sizing:border-box;max-width:100%;width:100%;font:inherit}}button{{cursor:pointer}}button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{{outline:3px solid #2563eb;outline-offset:3px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}li{{margin:16px 0}}details{{margin:12px 0}}footer{{border-top:1px solid #aaa;margin-top:40px;padding-top:20px}}@media screen and (max-width: 520px){{body{{margin:0;padding:16px}}}}</style>
 </head><body><main><h1>Your saved Intelligence Cases</h1>
 <p>Real persisted cases. <a href="/app">Open the separate illustrative demo</a>.</p>
 <label for="email">Email</label><input id="email" type="email" autocomplete="email">
@@ -537,8 +537,14 @@ async def workspace_page(request: Request) -> Response:
 <details><summary>Claims, contradictions and unknowns</summary><pre id="findings"></pre></details>
 <details><summary>Claim evidence and source traces</summary><pre id="traces"></pre></details>
 <details><summary>Research receipt</summary><pre id="receipt"></pre></details>
+<section aria-labelledby="follow-title"><h2 id="follow-title">Save a scoped follow-up</h2>
+<p>A follow-up becomes a new saved case draft linked to the inspected server-owned run. It does not reuse approval or start research.</p>
+<label for="followup">Follow-up question</label><textarea id="followup" maxlength="3000"></textarea>
+<button id="savefollowup" disabled>Save follow-up draft</button>
+<div id="followstatus" role="status" aria-live="polite"></div></section>
+<footer><a href="/trust">Trust</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/support">Support</a></footer>
 </main><script nonce="{nonce}">
-const sb=supabase.createClient({safe_url},{safe_key});let session=null,currentCase=null;
+const sb=supabase.createClient({safe_url},{safe_key});let session=null,currentCase=null,inspectedJob=null;
 const status=document.querySelector('#status'),list=document.querySelector('#cases');
 async function request(method,body,path='/workspace/cases'){{const r=await fetch(path,{{method,headers:{{authorization:'Bearer '+session.access_token,'content-type':'application/json'}},body:body?JSON.stringify(body):undefined}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'Request failed');return d}}
 async function load(){{if(!session)return;status.textContent='Loading saved cases…';const d=await request('GET');list.replaceChildren();for(const c of d.cases){{const li=document.createElement('li'),a=document.createElement('a');a.href='/cases/'+encodeURIComponent(c.id);a.textContent=(c.objective||c.id)+' — '+c.status;li.append(a);const resume=document.createElement('button');resume.textContent='Continue clarification';resume.onclick=async()=>{{try{{show(await request('GET',null,'/cases/'+encodeURIComponent(c.id)+'/charter'))}}catch(e){{status.textContent=e.message}}}};li.append(resume);list.append(li)}}status.textContent=d.cases.length?(d.truncated?'First 100 saved cases shown.':'Saved cases loaded.'):'No saved cases yet.'}}
@@ -547,10 +553,11 @@ async function recover(){{const x=await sb.auth.getSession();session=x.data.sess
 document.querySelector('#signin').onclick=async()=>{{try{{const x=await sb.auth.signInWithPassword({{email:document.querySelector('#email').value,password:document.querySelector('#password').value}});if(x.error)throw x.error;await recover()}}catch(e){{status.textContent=e.message}}}};
 document.querySelector('#refresh').onclick=()=>recover().catch(e=>status.textContent=e.message);
 function show(d){{currentCase=d;document.querySelector('#start').disabled=!(d.approval&&d.approval.state==='live');document.querySelector('#objective').value=d.objective;document.querySelector('#questions').textContent=JSON.stringify({{status:d.status,budget:d.budget,critical_unknowns:d.critical_unknowns,safety_notice:d.safety_notice}},null,2);const fields=document.querySelector('#answers');fields.replaceChildren();for(const q of d.questions){{const label=document.createElement('label'),input=document.createElement('textarea'),why=document.createElement('p');input.id='answer-'+q.key;input.dataset.answerKey=q.key;input.maxLength=3000;label.htmlFor=input.id;label.textContent=q.prompt;why.textContent=q.why;fields.append(label,why,input)}}document.querySelector('#revise').disabled=!d.questions.length;const a=document.querySelector('#review');a.href='/cases/'+encodeURIComponent(d.case_id);a.hidden=false}}
-function clearResult(){{for(const id of ['report','findings','traces','receipt'])document.querySelector('#'+id).textContent=''}}
+function clearResult(){{inspectedJob=null;document.querySelector('#savefollowup').disabled=true;for(const id of ['report','findings','traces','receipt'])document.querySelector('#'+id).textContent=''}}
 function jobView(d){{clearResult();document.querySelector('#resultstatus').textContent='Load the saved result to inspect its evidence.';document.querySelector('#jobid').value=d.job_id;document.querySelector('#job').textContent=JSON.stringify(d,null,2)}}
 document.querySelector('#jobid').oninput=()=>{{clearResult();document.querySelector('#resultstatus').textContent=''}};
-document.querySelector('#inspect').onclick=async()=>{{clearResult();const jobId=document.querySelector('#jobid').value;try{{const d=await request('GET',null,'/workspace/jobs/'+encodeURIComponent(jobId)+'/result');if(jobId!==document.querySelector('#jobid').value)return;document.querySelector('#resultstatus').textContent=d.result_available?'Saved result — job '+d.status+'. Research '+(d.completed?'completed':'stopped')+'. Receipt integrity: '+(d.receipt.intact?'intact':'FAILED'):'No saved result yet — job '+d.status;if(!d.result_available)return;document.querySelector('#report').textContent=d.report;document.querySelector('#findings').textContent=JSON.stringify({{findings:d.findings,contradictions:d.contradictions,unknowns:d.unknowns,stopped_reason:d.stopped_reason}},null,2);document.querySelector('#traces').textContent=JSON.stringify(d.traces,null,2);document.querySelector('#receipt').textContent=JSON.stringify(d.receipt,null,2)}}catch(e){{document.querySelector('#resultstatus').textContent=e.message}}}};
+document.querySelector('#inspect').onclick=async()=>{{clearResult();const jobId=document.querySelector('#jobid').value;try{{const d=await request('GET',null,'/workspace/jobs/'+encodeURIComponent(jobId)+'/result');if(jobId!==document.querySelector('#jobid').value)return;document.querySelector('#resultstatus').textContent=d.result_available?'Saved result — job '+d.status+'. Research '+(d.completed?'completed':'stopped')+'. Receipt integrity: '+(d.receipt.intact?'intact':'FAILED'):'No saved result yet — job '+d.status;if(!d.result_available)return;inspectedJob=d.job_id;document.querySelector('#savefollowup').disabled=false;document.querySelector('#report').textContent=d.report;document.querySelector('#findings').textContent=JSON.stringify({{findings:d.findings,contradictions:d.contradictions,unknowns:d.unknowns,stopped_reason:d.stopped_reason}},null,2);document.querySelector('#traces').textContent=JSON.stringify(d.traces,null,2);document.querySelector('#receipt').textContent=JSON.stringify(d.receipt,null,2)}}catch(e){{document.querySelector('#resultstatus').textContent=e.message}}}};
+document.querySelector('#savefollowup').onclick=async()=>{{const button=document.querySelector('#savefollowup'),followstatus=document.querySelector('#followstatus');try{{button.disabled=true;const d=await request('POST',{{question:document.querySelector('#followup').value}},'/workspace/jobs/'+encodeURIComponent(inspectedJob)+'/follow-up');followstatus.textContent='Follow-up draft saved. Continue clarification before reviewing its charter.';show(d);await load()}}catch(e){{followstatus.textContent=e.message}}finally{{button.disabled=!inspectedJob}}}};
 document.querySelector('#start').onclick=async()=>{{const button=document.querySelector('#start');try{{button.disabled=true;jobView(await request('POST',{{}},'/workspace/cases/'+encodeURIComponent(currentCase.case_id)+'/research'));await load();await loadJobs()}}catch(e){{status.textContent=e.message;button.disabled=false}}}};
 document.querySelector('#jobstatus').onclick=async()=>{{try{{jobView(await request('GET',null,'/workspace/jobs/'+encodeURIComponent(document.querySelector('#jobid').value)))}}catch(e){{status.textContent=e.message}}}};
 document.querySelector('#cancel').onclick=async()=>{{try{{jobView(await request('POST',{{}},'/workspace/jobs/'+encodeURIComponent(document.querySelector('#jobid').value)+'/cancel'))}}catch(e){{status.textContent=e.message}}}};
@@ -596,6 +603,24 @@ async def workspace_job_result(request: Request) -> Response:
         user = store.verify_supabase_user(_supabase_session_token(request))
         result = PublicService(store).get_job_result(
             str(user["id"]), {"job_id": str(request.path_params["job_id"])})
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (StoreError, PublicServiceError) as exc:
+        return _case_error(exc)
+
+
+async def workspace_job_follow_up(request: Request) -> Response:
+    try:
+        try:
+            body = await _json_body(request, 10_000)
+        except (ValueError, UnicodeDecodeError):
+            return _error(400, "invalid_request", "a bounded JSON follow-up question is required")
+        store = SupabaseStore()
+        user = store.verify_supabase_user(_supabase_session_token(request))
+        result = PublicService(store).create_scoped_follow_up(
+            str(user["id"]),
+            {"job_id": str(request.path_params["job_id"]), "question": body.get("question")},
+            public_base(),
+        )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (StoreError, PublicServiceError) as exc:
         return _case_error(exc)
@@ -867,6 +892,7 @@ def build_app():
         Route("/workspace/jobs", rate_limited("cases", workspace_jobs), methods=["GET"]),
         Route("/workspace/jobs/{job_id:str}/cancel", rate_limited("cases", workspace_job), methods=["POST"]),
         Route("/workspace/jobs/{job_id:str}/result", rate_limited("cases", workspace_job_result), methods=["GET"]),
+        Route("/workspace/jobs/{job_id:str}/follow-up", rate_limited("cases", workspace_job_follow_up), methods=["POST"]),
         Route("/cases/{case_id:str}/charter", rate_limited("cases", case_details), methods=["GET"]),
         Route("/cases/{case_id:str}/approve", rate_limited("cases", case_approve), methods=["POST"]),
         Route("/account", account_page, methods=["GET"]),
