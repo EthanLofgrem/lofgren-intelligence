@@ -849,6 +849,16 @@ class CapabilityManifestTests(unittest.TestCase):
     def test_checked_in_manifest_is_current(self):
         self.assertEqual(json.loads(self._doc("docs/CAPABILITIES.json")), self.manifest)
 
+    def test_execution_gate_is_advertised_without_gating_proposals_or_receipt_reads(self):
+        by_name = {t["name"]: t for t in self.manifest["tools"]}
+        gate = by_name["execute_action"]["gated_by"]
+        self.assertIn("LI_EXTERNAL_EXECUTION_ENABLED == true", gate)
+        self.assertIn("disabled by default", gate)
+        self.assertIn("explicit browser approval", gate)
+        self.assertIn("existing receipts remain readable", gate)
+        self.assertIsNone(by_name["propose_action"]["gated_by"])
+        self.assertIsNone(by_name["action_status"]["gated_by"])
+
     def test_metering_matches_the_service(self):
         from lofgren_intelligence.hosted.service import ADHOC_UNIT_COSTS
         by_name = {t["name"]: t for t in self.manifest["tools"]}
@@ -900,7 +910,7 @@ class CapabilityManifestTests(unittest.TestCase):
 # candidate itself, in workflow order. Each runs the exact-SHA V2-V6 gate jobs on push.
 RC_GATE_BRANCHES = ("build/release-candidate", "build/rc-durable-jobs", "build/rc-supabase-pin",
                     "build/rc-plan-catalog", "build/rc-integrated", "build/rc-clarification-domains",
-                    "build/rc-candidate-3")
+                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11")
 
 
 class CITriggerTests(unittest.TestCase):
@@ -962,6 +972,21 @@ class CITriggerTests(unittest.TestCase):
                                        "'build/v2-complete' || github.ref_name == 'build/public-v2-integration' "
                                        + "".join(f"|| github.ref_name == '{b}' " for b in RC_GATE_BRANCHES).rstrip()
                                        + ") }}")
+
+    def test_release_gate_receipt_runs_only_on_candidate_pushes(self):
+        text = self._workflow("tests.yml")
+        cond = self._job_condition(text, "release-gate-receipt")
+        self.assertIn("always() && github.event_name == 'push'", cond)
+        self.assertNotIn("pull_request", cond)
+        for branch in ("build/rc-candidate-3", "build/li-release-hardening-oct11"):
+            self.assertIn(f"github.ref_name == '{branch}'", cond)
+        self.assertEqual(cond.count("github.ref_name =="), 2)
+        start = text.index("\n  release-gate-receipt:\n")
+        block = text[start:]
+        for job in ("test", "v2-ready-for-v3", "v3-ready-for-v4", "v4-ready-for-v5",
+                    "v5-ready-for-v6", "v6-complete"):
+            self.assertIn(f"      - {job}\n", block)
+        self.assertIn('--expected-ref-name "$GITHUB_REF_NAME"', block)
 
 
 if __name__ == "__main__":

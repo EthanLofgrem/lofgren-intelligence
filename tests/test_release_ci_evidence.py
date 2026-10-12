@@ -216,6 +216,8 @@ class ReleaseArtifactManifestTests(unittest.TestCase):
 
 
 class ReleaseGateReceiptTests(unittest.TestCase):
+    candidate_ref = "build/li-release-hardening-oct11"
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.receipt_path = Path(self.temporary.name) / "release-gate-receipt.json"
@@ -234,7 +236,7 @@ class ReleaseGateReceiptTests(unittest.TestCase):
             run_id=456,
             workflow="tests",
             event="push",
-            ref_name="build/rc-candidate-3",
+            ref_name=self.candidate_ref,
             scope="release-candidate",
             jobs=self._jobs() if jobs is None else jobs,
         )
@@ -247,6 +249,7 @@ class ReleaseGateReceiptTests(unittest.TestCase):
             expected_sha="1" * 40,
             expected_tree="2" * 40,
             expected_run_id=456,
+            expected_ref_name=self.candidate_ref,
             expected_scope="release-candidate",
         )
         self.assertEqual(verified["conclusion"], "success")
@@ -264,6 +267,7 @@ class ReleaseGateReceiptTests(unittest.TestCase):
                 expected_sha="1" * 40,
                 expected_tree="2" * 40,
                 expected_run_id=456,
+                expected_ref_name=self.candidate_ref,
                 expected_scope="release-candidate",
             )
 
@@ -279,11 +283,12 @@ class ReleaseGateReceiptTests(unittest.TestCase):
                 expected_sha="3" * 40,
                 expected_tree="2" * 40,
                 expected_run_id=456,
+                expected_ref_name=self.candidate_ref,
                 expected_scope="release-candidate",
             )
 
     def test_release_candidate_scope_rejects_another_branch(self):
-        with self.assertRaisesRegex(ReleaseGateReceiptError, "must come from build/rc-candidate-3"):
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "allowed release branch"):
             build_release_gate_receipt(
                 source_sha="1" * 40,
                 source_tree="2" * 40,
@@ -303,9 +308,31 @@ class ReleaseGateReceiptTests(unittest.TestCase):
                 run_id=456,
                 workflow="tests",
                 event="push",
-                ref_name="build/rc-candidate-3",
+                ref_name=self.candidate_ref,
                 scope="integration-validation",
                 jobs=self._jobs(),
+            )
+
+    def test_receipt_from_another_allowed_candidate_ref_is_rejected(self):
+        receipt = build_release_gate_receipt(
+            source_sha="1" * 40,
+            source_tree="2" * 40,
+            run_id=456,
+            workflow="tests",
+            event="push",
+            ref_name="build/rc-candidate-3",
+            scope="release-candidate",
+            jobs=self._jobs(),
+        )
+        write_release_gate_receipt(receipt, self.receipt_path)
+        with self.assertRaisesRegex(ReleaseGateReceiptError, "expected branch"):
+            verify_release_gate_receipt(
+                self.receipt_path,
+                expected_sha="1" * 40,
+                expected_tree="2" * 40,
+                expected_run_id=456,
+                expected_ref_name=self.candidate_ref,
+                expected_scope="release-candidate",
             )
 
     def test_tampered_conclusion_is_rejected(self):
@@ -318,6 +345,7 @@ class ReleaseGateReceiptTests(unittest.TestCase):
                 expected_sha="1" * 40,
                 expected_tree="2" * 40,
                 expected_run_id=456,
+                expected_ref_name=self.candidate_ref,
                 expected_scope="release-candidate",
             )
 

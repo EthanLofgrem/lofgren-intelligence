@@ -33,7 +33,10 @@ REQUIRED_RELEASE_JOBS = (
 )
 VALID_JOB_RESULTS = frozenset({"success", "failure", "cancelled", "skipped"})
 VALID_GATE_SCOPES = frozenset({"integration-validation", "release-candidate"})
-RELEASE_CANDIDATE_REF = "build/rc-candidate-3"
+RELEASE_CANDIDATE_REFS = frozenset({
+    "build/rc-candidate-3",
+    "build/li-release-hardening-oct11",
+})
 HEX_OBJECT_ID = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -205,13 +208,13 @@ def build_release_gate_receipt(
     if scope not in VALID_GATE_SCOPES:
         raise ReleaseGateReceiptError(f"unsupported release gate scope: {scope!r}")
     normalized_ref = ref_name.strip()
-    if scope == "release-candidate" and normalized_ref != RELEASE_CANDIDATE_REF:
+    if scope == "release-candidate" and normalized_ref not in RELEASE_CANDIDATE_REFS:
         raise ReleaseGateReceiptError(
-            f"release-candidate receipts must come from {RELEASE_CANDIDATE_REF}"
+            "release-candidate receipts must come from an allowed release branch"
         )
-    if scope == "integration-validation" and normalized_ref == RELEASE_CANDIDATE_REF:
+    if scope == "integration-validation" and normalized_ref in RELEASE_CANDIDATE_REFS:
         raise ReleaseGateReceiptError(
-            f"{RELEASE_CANDIDATE_REF} receipts must use release-candidate scope"
+            f"{normalized_ref} receipts must use release-candidate scope"
         )
 
     recorded_jobs: dict[str, str] = {}
@@ -273,6 +276,7 @@ def verify_release_gate_receipt(
     expected_sha: str,
     expected_tree: str,
     expected_run_id: int,
+    expected_ref_name: str,
     expected_scope: str,
 ) -> dict[str, Any]:
     try:
@@ -305,6 +309,8 @@ def verify_release_gate_receipt(
         raise ReleaseGateReceiptError("release gate receipt tree does not match the expected tree")
     if rebuilt["workflow"]["run_id"] != expected_run_id:
         raise ReleaseGateReceiptError("release gate receipt run id does not match the expected run")
+    if rebuilt["workflow"]["ref_name"] != expected_ref_name.strip():
+        raise ReleaseGateReceiptError("release gate receipt ref does not match the expected branch")
     if rebuilt["workflow"]["name"] != "tests" or rebuilt["workflow"]["event"] != "push":
         raise ReleaseGateReceiptError("release gate receipt must come from the tests push workflow")
     if rebuilt["scope"] != expected_scope:
@@ -449,6 +455,7 @@ def _artifact_parser() -> argparse.ArgumentParser:
     gate_verify.add_argument("--expected-sha", required=True)
     gate_verify.add_argument("--expected-tree", required=True)
     gate_verify.add_argument("--expected-run-id", type=int, required=True)
+    gate_verify.add_argument("--expected-ref-name", required=True)
     gate_verify.add_argument("--expected-scope", choices=sorted(VALID_GATE_SCOPES), required=True)
     return parser
 
@@ -487,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_sha=args.expected_sha,
                 expected_tree=args.expected_tree,
                 expected_run_id=args.expected_run_id,
+                expected_ref_name=args.expected_ref_name,
                 expected_scope=args.expected_scope,
             )
     except (ArtifactManifestError, ReleaseGateReceiptError) as exc:

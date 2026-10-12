@@ -321,6 +321,20 @@ class FakeStore:
             self._hold(row, row["lease_expires_at"] + timedelta(seconds=max(int(hold_grace_seconds or 0), 0)))
             return self._job_out(row)
 
+    def save_research_job_result(self, job_id, worker, run, checkpoint, lease_seconds, hold_grace_seconds):
+        with self._job_lock:
+            row = self.jobs.get(job_id)
+            if (not row or not worker or row["lease_owner"] != worker
+                    or row["status"] not in ("running", "cancel_requested")
+                    or row["lease_expires_at"] is None or row["lease_expires_at"] <= self._job_now()
+                    or run["user_id"] != row["user_id"]):
+                return None
+            if row["checkpoint"].get("phase") == "result_saved":
+                return self._job_out(row) if row["checkpoint"]["run_id"] == run["run_id"] else None
+            self.save_run(run)
+            return self.heartbeat_research_job(job_id, worker, lease_seconds, hold_grace_seconds,
+                                               checkpoint, checkpoint["units"])
+
     def complete_research_job(self, job_id, worker, run_id, cost_so_far):
         with self._job_lock:
             row = self.jobs.get(job_id)

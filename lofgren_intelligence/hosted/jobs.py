@@ -11,6 +11,7 @@ docs/WORKER_RUNTIME.md.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import threading
@@ -46,6 +47,9 @@ def _float_env(name: str, default: float, minimum: float) -> float:
     try:
         value = float(raw) if raw else default
     except ValueError:
+        return default
+    # Event.wait()/executor waits reject infinite or platform-overflowing delays.
+    if not math.isfinite(value) or value > threading.TIMEOUT_MAX:
         return default
     return max(minimum, value)
 

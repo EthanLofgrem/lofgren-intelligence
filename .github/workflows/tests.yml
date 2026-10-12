@@ -76,7 +76,7 @@ jobs:
           "$RUNNER_TEMP/wheel-env/bin/lofgren" certify-boundary
 
   v2-ready-for-v3:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v2-complete' || github.ref_name == 'build/public-v2-integration' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v2-complete' || github.ref_name == 'build/public-v2-integration' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3' || github.ref_name == 'build/mcp-hosting-hardening' || github.ref_name == 'build/li-release-hardening-oct11') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -99,7 +99,7 @@ jobs:
 
 
   v3-ready-for-v4:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v3-production' || github.ref_name == 'build/v3-complete' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3' || github.ref_name == 'build/mcp-hosting-hardening' || github.ref_name == 'build/li-release-hardening-oct11') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -122,7 +122,7 @@ jobs:
 
 
   v4-ready-for-v5:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v4-execution' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3' || github.ref_name == 'build/mcp-hosting-hardening' || github.ref_name == 'build/li-release-hardening-oct11') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -145,7 +145,7 @@ jobs:
 
 
   v5-ready-for-v6:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v5-outcomes' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3' || github.ref_name == 'build/mcp-hosting-hardening' || github.ref_name == 'build/li-release-hardening-oct11') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -168,7 +168,7 @@ jobs:
 
 
   v6-complete:
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3') }}
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'build/v6-improve' || github.ref_name == 'release/public-v1-v6' || github.ref_name == 'build/public-ops-hardening' || github.ref_name == 'build/public-hardening-rebased' || github.ref_name == 'build/release-candidate' || github.ref_name == 'build/rc-durable-jobs' || github.ref_name == 'build/rc-supabase-pin' || github.ref_name == 'build/rc-plan-catalog' || github.ref_name == 'build/rc-integrated' || github.ref_name == 'build/rc-clarification-domains' || github.ref_name == 'build/rc-candidate-3' || github.ref_name == 'build/mcp-hosting-hardening' || github.ref_name == 'build/li-release-hardening-oct11') }}
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -190,7 +190,7 @@ jobs:
         run: python scripts/v6_gate.py --sha "${{ github.sha }}" --ci-run-id "${{ github.run_id }}"
 
   release-gate-receipt:
-    if: ${{ always() && github.event_name == 'push' && github.ref_name == 'build/rc-candidate-3' }}
+    if: ${{ always() && github.event_name == 'push' && (github.ref_name == 'build/rc-candidate-3' || github.ref_name == 'build/li-release-hardening-oct11') }}
     needs:
       - test
       - v2-ready-for-v3
@@ -215,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           scope="integration-validation"
-          if [[ "$GITHUB_REF_NAME" == "build/rc-candidate-3" ]]; then
+          if [[ "$GITHUB_REF_NAME" == "build/rc-candidate-3" || "$GITHUB_REF_NAME" == "build/li-release-hardening-oct11" ]]; then
             scope="release-candidate"
           fi
           echo "RELEASE_GATE_SCOPE=$scope" >> "$GITHUB_ENV"
@@ -252,4 +252,5 @@ jobs:
             --expected-sha "$GITHUB_SHA" \
             --expected-tree "$RELEASE_GATE_TREE" \
             --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-ref-name "$GITHUB_REF_NAME" \
             --expected-scope "$RELEASE_GATE_SCOPE"

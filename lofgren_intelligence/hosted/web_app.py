@@ -21,7 +21,7 @@ from starlette.routing import Route
 from .. import __version__
 from .auth import ActivationRefused, AuthError, OAuthService
 from .mcp_sdk import build_mcp
-from . import console, site
+from . import console, site, trial
 from .journey import checkout_return_html, consent_intro_html, landing_html
 from .ratelimit import client_ip, rate_limited
 from .service import AccountDeletionPending, PublicService, PublicServiceError
@@ -54,7 +54,8 @@ def _error(status: int, code: str, description: str | None = None) -> JSONRespon
     body: dict[str, Any] = {"error": code}
     if description:
         body["error_description"] = description
-    return JSONResponse(body, status_code=status)
+    return JSONResponse(body, status_code=status,
+                        headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 async def healthz(request: Request) -> Response:
@@ -96,7 +97,7 @@ async def oauth_resource_root(request: Request) -> Response:
     base = public_base()
     return JSONResponse({
         "resource": base + "/mcp",
-        "authorization_servers": [base],
+        "authorization_servers": [base + "/"],
         "scopes_supported": ["mcp"],
         "bearer_methods_supported": ["header"],
     })
@@ -105,7 +106,7 @@ async def oauth_resource_root(request: Request) -> Response:
 async def oauth_server_metadata(request: Request) -> Response:
     base = public_base()
     return JSONResponse({
-        "issuer": base,
+        "issuer": base + "/",
         "authorization_endpoint": base + "/oauth/authorize",
         "token_endpoint": base + "/oauth/token",
         "registration_endpoint": base + "/oauth/register",
@@ -145,9 +146,10 @@ async def oauth_complete(request: Request) -> Response:
         if body.get("state") is not None:
             query["state"] = str(body["state"])
         separator = "&" if urllib.parse.urlsplit(redirect).query else "?"
-        return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)})
+        return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)},
+                            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except ActivationRefused as exc:
-        headers = {"Cache-Control": "no-store"}
+        headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
         if exc.retry_after:
             headers["Retry-After"] = str(exc.retry_after)
         return JSONResponse({"error": exc.error, "error_description": str(exc)}, status_code=exc.status,
@@ -160,8 +162,13 @@ async def oauth_token(request: Request) -> Response:
     raw = await request.body()
     if len(raw) > 100_000:
         return _error(413, "invalid_request", "request body too large")
-    form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
-    get = lambda key, default="": (form.get(key) or [default])[-1]
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed token request")
+    if any(len(values) != 1 for values in form.values()):
+        return _error(400, "invalid_request", "duplicate token parameters")
+    get = lambda key, default="": (form.get(key) or [default])[0]
     try:
         oauth = OAuthService(SupabaseStore())
         grant = get("grant_type")
@@ -772,7 +779,7 @@ class RequestTelemetry:
             if message["type"] == "http.response.start":
                 status = int(message["status"])
                 headers = list(message.get("headers", []))
-                if scope.get("path", "").rstrip("/") == "/mcp":
+                if scope.get("path", "").rstrip("/") in ("/mcp", "/mcp-trial"):
                     headers = [(key, value) for key, value in headers if key.lower() != b"cache-control"]
                     headers.append((b"cache-control", b"no-store"))
                 headers.append((b"x-request-id", request_id.encode("ascii")))
@@ -813,7 +820,21 @@ class SecurityHeaders:
         await self.app(scope, receive, wrapped)
 
 
+async def mcp_service_description(request: Request) -> Response:
+    body: dict[str, Any] = {"service": "Lofgren Intelligence", "interface": "MCP",
+                            "resource": public_base() + "/mcp", "authentication": "OAuth 2.1 with PKCE S256"}
+    if trial.trial_enabled():
+        body["trial"] = {"endpoint": public_base() + trial.TRIAL_PATH, "authentication": "none",
+                         "tools": list(trial.TRIAL_TOOLS), "persists": False}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
 def build_app():
+    surface = os.environ.get("LI_DEPLOYMENT_SURFACE", "full")
+    if surface not in {"full", "mcp"}:
+        raise RuntimeError("LI_DEPLOYMENT_SURFACE must be full or mcp")
+    # Unknown LI_TRIAL_ENABLED values fail startup; the trial is mounted only on the dedicated MCP surface.
+    trial_on = trial.trial_enabled() and surface == "mcp"
     base = public_base()
     parsed = urllib.parse.urlsplit(base)
     hostname = (parsed.hostname or "").lower()
@@ -860,14 +881,27 @@ def build_app():
         Route(path, _site_page(render, needs_base), methods=["GET"]) for path, render, needs_base in SITE_ROUTES
     )
 
+    if surface == "mcp":
+        # Explicit allowlist: new customer/admin routes remain excluded by default.
+        allowed = {
+            "/healthz", "/readyz", "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
+            "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
+            "/actions/{action_id:str}", "/actions/{action_id:str}/details", "/actions/{action_id:str}/approve",
+            "/cases/{case_id:str}", "/cases/{case_id:str}/charter", "/cases/{case_id:str}/approve",
+            "/static/vendor/{name:str}",
+        }
+        routes = [Route("/", mcp_service_description, methods=["GET"])] + [
+            route for route in routes if route.path in allowed
+        ]
+
     mcp = build_mcp(base)
     # Register the routes through MCPServer.custom_route, the public API in every supported mcp 2.x release.
     # streamable_http_app(custom_starlette_routes=...) existed only in some releases (2.3.0 rejects it), and
     # routes registered this way are served without MCP bearer auth, exactly as before.
     for route in routes:
         mcp.custom_route(route.path, methods=sorted(route.methods - {"HEAD"}), name=route.name)(route.endpoint)
-    app = mcp.streamable_http_app(
-        streamable_http_path="/mcp",
+    http_settings: dict[str, Any] = dict(
         json_response=True,
         stateless_http=True,
         max_request_body_size=MAX_MCP_BODY_BYTES,
@@ -878,6 +912,10 @@ def build_app():
         ),
         host=hostname,
     )
+    app = mcp.streamable_http_app(streamable_http_path="/mcp", **http_settings)
+    if trial_on:
+        # A separate anonymous MCP server with its own allowlist; /mcp and its bearer auth are unchanged.
+        app = trial.mount_trial(app, base, **http_settings)
     app = CORSMiddleware(
         app,
         allow_origins=origin_entries,
