@@ -109,6 +109,39 @@ class AnonymousSurfaceTests(TrialTestBase):
         self.assertEqual(root["resource"], ENV["LI_PUBLIC_BASE_URL"] + "/mcp")
         self.assertEqual(root["trial"]["tools"], list(trial.TRIAL_TOOLS))
 
+    def test_no_account_discovery_advertises_enforced_input_limits(self):
+        listed = self.post(rpc("tools/list", {}, 2))
+        self.assertEqual(listed.status_code, 200)
+        for item in listed.json()["result"]["tools"]:
+            props = item["inputSchema"]["properties"]
+            text = props.get("question", props.get("claim"))
+            self.assertEqual(text["minLength"], 1)
+            self.assertEqual(text["maxLength"], trial.BOUNDS.max_question_chars)
+            self.assertEqual(props["source"]["enum"], list(trial.TRIAL_SOURCES))
+            query = next(b for b in props["query"]["anyOf"] if b["type"] == "string")
+            self.assertEqual(query["maxLength"], trial.BOUNDS.max_query_chars)
+            if "options" in props:
+                self.assertEqual(props["options"]["minItems"], 2)
+                self.assertEqual(props["options"]["maxItems"], trial.BOUNDS.max_options)
+                self.assertEqual(props["options"]["items"]["maxLength"], trial.BOUNDS.max_option_chars)
+
+    def test_no_account_current_protocol_lists_only_restricted_tools(self):
+        version = "2026-07-28"
+        headers = {"MCP-Protocol-Version": version, "Mcp-Method": "tools/list"}
+        params = {"_meta": {"io.modelcontextprotocol/protocolVersion": version,
+                            "io.modelcontextprotocol/clientInfo": {"name": "audit", "version": "1"},
+                            "io.modelcontextprotocol/clientCapabilities": {}}}
+        listed = self.post(rpc("tools/list", params, 2), headers)
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(sorted(t["name"] for t in listed.json()["result"]["tools"]), sorted(trial.TRIAL_TOOLS))
+        self.assertNotIn("Mcp-Session-Id", listed.headers)
+        self.assertNotIn("WWW-Authenticate", listed.headers)
+        bad = self.post(rpc("tools/list", params, 3),
+                        {"MCP-Protocol-Version": version, "Mcp-Method": "tools/call"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(bad.json()["error"]["code"], -32020)
+        self.assertIn("mcp-method header does not match", bad.json()["error"]["message"])
+
     def test_trial_is_disabled_by_default_and_only_on_mcp_surface(self):
         for env in ({"LI_TRIAL_ENABLED": ""}, {"LI_DEPLOYMENT_SURFACE": "full"}):
             with self.subTest(env=env), patch.dict(os.environ, env):
