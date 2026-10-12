@@ -68,7 +68,7 @@ source .venv/bin/activate
 # Windows PowerShell instead: .venv\Scripts\Activate.ps1
 python -m pip install -e .
 lofgren --help
-lofgren investigate "What does the supplied sample evidence establish?" \
+lofgren investigate "Is industrial construction in the Phoenix metro increasing?" \
   --files examples/sample-sources --out report.md --receipt receipt.json
 ```
 
