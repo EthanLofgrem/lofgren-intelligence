@@ -54,7 +54,8 @@ def _error(status: int, code: str, description: str | None = None) -> JSONRespon
     body: dict[str, Any] = {"error": code}
     if description:
         body["error_description"] = description
-    return JSONResponse(body, status_code=status)
+    return JSONResponse(body, status_code=status,
+                        headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 async def healthz(request: Request) -> Response:
