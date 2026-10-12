@@ -631,4 +631,6 @@ class OAuthTokenInputTests(unittest.TestCase):
                 response = _call(web_app.oauth_token, "/oauth/token", method="POST", body=body)
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(json.loads(response.body)["error"], "invalid_request")
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                self.assertEqual(response.headers["pragma"], "no-cache")
                 store.assert_not_called()

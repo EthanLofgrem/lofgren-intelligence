@@ -1,256 +1,112 @@
 # Lofgren Intelligence
 
-Open outcome intelligence system for evidence-driven research, verification, discovery, building, execution, and learning.
+**Research and Verification. Discovery. Production. Authorized Execution. Outcome Measurement. Improvement Evaluation.**
 
-**A Lofgren Enterprise project.**
+Lofgren Intelligence (LI) is an open-source, governed research engine that compatible AI assistants can use through MCP. It connects a question to inspectable claims, source records, contradictions, bounded artifacts and versioned receipts. Ethan Lofgren is its founder and release authority.
 
-> A governed intelligence layer designed to sense the physical and digital world, research problems, verify evidence, generate new possibilities, design solutions, build usable artifacts, execute authorized actions, measure real-world outcomes, and learn from the results.
->
-> **Built today:** the governed V1–V6 stack: V1 research/verification, V2 discovery, V3 production, V4 authorized execution, V5 measured outcomes and V6 reviewed improvement. **Public readiness remains a separate hosted-release gate** covering OAuth, tenant isolation, persistence, deployment identity, real-client interoperability, billing, backup/restore and rollback.
+**Release status: pre-public hosted verification.** Local developer use is available. A dedicated authenticated MCP endpoint is reachable, but hosted-worker execution and an ordinary end-to-end client journey remain unverified. There is **no committed public launch date**. See [current public status](docs/PUBLIC_STATUS.md) before connecting or relying on a capability.
 
-Most AI tools stop at an answer. Lofgren Intelligence is built to carry an objective the whole way to an outcome:
+## What makes LI useful
 
-```
-Intent → Plan → Sense → Research → Verify → Imagine → Simulate → Optimize → Produce
-→ Build → Test → Authorize → Execute → Operate → Measure → Learn → Improve → Research again
-```
+A useful answer should preserve how it was reached. LI provides mechanisms to inspect a claim, trace its sources, surface disagreements and missing evidence, and retain a case when a conversation disconnects. Discovery and generated artifacts remain linked to upstream evidence and requirements. External action requires separate authority; a model's request does not grant it permission.
 
-It is not another chatbot and not another model. Models (Claude, GPT and others) are replaceable suppliers of reasoning. This layer owns what makes results trustworthy: the plan, the evidence, the verification, the authority to act, and the memory of what actually worked.
+For example, a researcher evaluating a technical option can inspect the evidence behind a conclusion, compare bounded candidate designs, produce an artifact where supported, and record later observations. Medical, legal and financial research still needs appropriate expert review. Receipts document provenance and execution; they do not prove that a source is truthful.
 
-## Status: governed V1–V6 intelligence stack
+## Capabilities and boundaries
 
-V1 runs the first six stages end to end:
+The V1–V6 implementations are available software capabilities, not six mandatory stages for every question.
 
-| Stage | What V1 does |
-| --- | --- |
-| **Intent** | Compiles a free-text objective into an **Outcome Contract**: questions, constraints, evidence standard, spend cap, and which actions need approval. Business objectives are structured through the seven Lofgren Enterprise stages. |
-| **Plan** | Builds a research plan from the sources connected, orders it by value per unit of cost, and turns anything no source can answer into an explicit gap. |
-| **Sense** | Gathers evidence through adapters: your documents, public web pages, orbital passes of open-data imaging satellites, open Sentinel-2 / Landsat imagery catalogs, and your own IoT sensors (read-only, with your authorization). |
-| **Research** | Extracts atomic claims, each linked to its evidence and source, into an **evidence graph**. |
-| **Verify** | Cross-checks claims across *independent* sources, records contradictions instead of averaging them away, and scores confidence from source quality, independence, recency, directness and contradiction. |
-| **Report** | A cited report: verified, partially verified, contested and single-source findings, contradictions, what is missing, the full loop status, and the cost. |
-
-V2 (release 0.3.0) runs the next three over V1's verified state (see [docs/DISCOVERY.md](docs/DISCOVERY.md)):
-
-| Stage | What V2 does |
-| --- | --- |
-| **Imagine** | Frames the problem from V1's knowledge map, checks prior art (a miss is never called novelty), finds gaps and connections, and proposes hypotheses with counter-hypotheses, each with the evidence that would test it. Candidate solutions come from a structured design space, never from prose. |
-| **Simulate** | Runs structured models over each candidate (seeded Monte Carlo), then sensitivity analysis: elasticities, break-even points, failure thresholds, robustness. Results are predictions, never observations. |
-| **Optimize** | Exhaustive integer search, an exact-rational simplex with an optimality certificate, or a grid search that can only report "feasible"; every answer is re-checked independently. |
-
-A discovery verifier then lowers anything unsupported, an explicit recorded rule decides, and the result is a
-tamper-evident discovery receipt plus, when a candidate is selected, a validated V3 handoff. V2 never writes to V1's
-evidence, never turns an idea into a fact, and cannot execute anything. It passes its own gate, `lofgren certify --v2`
-([docs/V2_CERTIFICATION.md](docs/V2_CERTIFICATION.md)).
-
-V3 (release 0.4.0) runs the next three over V2's handoff (see [docs/PRODUCTION.md](docs/PRODUCTION.md)):
-
-| Stage | What V3 does |
-| --- | --- |
-| **Produce** | Binds the handoff to its discovery value by value, compiles it into numbered requirements and plans which file satisfies each. |
-| **Build** | Generates the artifact deterministically: a manifest, a plan, machine-readable checks, a README, a Python implementation with one function per acceptance criterion and constraint, and its tests. |
-| **Test** | Runs the generated tests in a separate interpreter and has an independent verifier regenerate every file, re-evaluate every check with V2's evaluator, and reproduce reference probes that include expected failures. |
-
-The result is a tamper-evident production receipt and a V4 handoff with `authority.granted = false`. V3 never
-deploys, publishes, purchases, sends or writes to an external repository. It passes its own gate,
-`lofgren certify --v3` ([docs/V3_CERTIFICATION.md](docs/V3_CERTIFICATION.md)).
-
-V4–V6 continue the governed chain:
-
-| Version | Role | Boundary |
+| Layer | Implemented purpose | Boundary |
 | --- | --- | --- |
-| **V4 — Act** | Executes only identity-bound, explicitly approved, bounded actions with preflight, verification, idempotency and rollback where supported. | Client booleans never grant authority. |
-| **V5 — Measure** | Compares expected outcomes with actual observations, records missing/failed measurements, and keeps descriptive evidence separate from causal claims. | Unmeasured outcomes cannot drive improvement. |
-| **V6 — Improve** | Evaluates candidate improvements against held-out evidence, minimum gain and safety constraints, then produces a review proposal. | V6 cannot silently rewrite policy, history, authority or the running system. |
+| V1 — Research and Verification | Extract scoped claims, trace evidence, record contradictions and unknowns, produce reports and receipts | Unsupported statements must retain their limitations |
+| V2 — Discovery | Frame problems, assess prior art, generate bounded candidates, simulate and optimize supported models | Hypotheses and predictions are not observations |
+| V3 — Production | Build and verify supported specifications and deterministic artifacts | Not a general guarantee that any requested product can be built |
+| V4 — Authorized Execution | Propose actions and enforce reviewed authority | Hosted external execution is disabled; duplicate-effect fencing remains unfinished |
+| V5 — Outcome Measurement | Record observations and compare them with expectations | Observation does not establish causation |
+| V6 — Improvement Evaluation | Evaluate improvement candidates and produce review proposals | No automatic production mutation or authority expansion |
 
-Each version has its own executable certification gate. The combined lifecycle may be certified while the hosted service still remains **not public-ready** until the public release gate passes.
+**Interfaces differ.** The local stdio server supports V1–V3 developer workflows and handoff utilities. The hosted registry includes broader case and lifecycle tools behind OAuth and tenant checks. A tool's presence does not establish deployed acceptance. Inspect the [generated capability manifest](docs/CAPABILITIES.json), [request assessment schema](docs/li_assess_request.schema.json) and [MCP integration guide](docs/MCP_SELECTION_AND_VERIFICATION.md).
 
-### Release 0.2.0: V1 hardened for V2
 
-V1 is now a typed, provable evidence base, and it passes the **V1 certification gate** (`lofgren certify`) that V2 construction depends on:
+<details>
+<summary>Inspect the authenticated hosted tool inventory</summary>
 
-- **Typed findings and unknowns.** Every question is answered by a `Finding` built only from graph state. Every gap is an `Unknown` with an acquisition plan (sources, expected gain, cost, approval).
-- **Scope on every claim.** Each claim records the period and place it covers. Disagreements across different scopes are leads, not conflicts.
-- **Lineage.** Syndicated copies and quoted sources count as one confirmation.
-- **Contradiction graph and skeptic pass.** Every conflict states what would resolve it. An adversarial review flags unsupported, circular, stale and unscoped claims.
-- **Receipts.** Every run gets a tamper-evident research receipt with inputs, state and report hashes, plus a per-operation cost ledger and calculation receipts for every derived number.
-- **Model-independent.** Heuristic, Anthropic, or any OpenAI-compatible endpoint, including local models.
-- **Web discovery.** Search results are deduplicated and robots.txt is respected.
-- **Clean physical data.** Normalized satellite metadata, and unit-checked sensor data.
-- **Structured MCP tools.** A V2 knowledge map (`export_state`) and JSON Schemas for the evidence protocol.
+- **Research (V1):** `cancel_research`, `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_job_status`, `get_receipt`, `investigate`, `li_assess_request`, `plan_research`, `render_report`, `satellite_passes`, `start_research`, `trace_claim`, `verify_claim`.
+- **Discovery (V2):** `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
+- **Production (V3):** `build_artifact`, `get_artifact`.
+- **Execution (V4):** `action_status`, `execute_action`, `propose_action`.
+- **Outcome (V5):** `get_outcome`, `measure_outcome`.
+- **Improvement (V6):** `evaluate_improvement`, `get_improvement`.
+- **Account / billing:** `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status`.
 
-See [CHANGELOG.md](CHANGELOG.md), [docs/V1_CERTIFICATION.md](docs/V1_CERTIFICATION.md) and [docs/EVIDENCE_PROTOCOL.md](docs/EVIDENCE_PROTOCOL.md).
+Trial tools, when enabled, are separate from this authenticated inventory.
+</details>
 
-V1 runs on the Python standard library alone (Python 3.10+). A model is optional: with `ANTHROPIC_API_KEY` set it uses Claude for claim extraction; without one it uses a deterministic offline extractor.
+## Sources and reasoning
 
-## Quick start
+- Local documents and protected public-URL intake are supported. Supplied URL manifests are labelled `operator_selected`.
+- Europe PMC supplies **abstracts only**. Retractions, corrections and unavailable results have explicit handling.
+- ClinicalTrials.gov supplies registry records. A registered trial is **not efficacy evidence**; trial results are not fetched.
+- Configured search and model providers can extend research. They are not automatically included or funded by connecting LI.
+- Without a configured reasoning provider, LI uses rule-based extraction. Do not mistake that mode for model-backed analysis.
+
+Hosted public-source investigations require the durable worker. See [source behavior and limits](docs/HOSTED_PUBLIC_SOURCES.md).
+
+## Try the local developer version
+
+Requires Python 3.10 or later. The default branch may lag the current candidate; the following pins the application revision documented in the status page. Review updates before changing that pin.
 
 ```bash
 git clone https://github.com/EthanLofgrem/lofgren-intelligence.git
 cd lofgren-intelligence
-pip install -e .            # or run without installing: python -m lofgren_intelligence ...
-
-# Investigate with your own documents (sample data is fictional and labeled)
-lofgren investigate "Is industrial construction in the Phoenix metro increasing?" \
-  --files examples/sample-sources --out report.md
-
-# See the contract, plan and price before running anything
-lofgren estimate "Find a warehouse business opportunity near 33.4484, -112.0740"
-
-# Which open-data imaging satellites pass over a place (live elements from CelesTrak)
-lofgren passes --lat 33.4484 --lon -112.0740 --fetch
-
-# Physical-world investigation: orbits + open imagery catalogs + your sensors
-lofgren investigate "How is soil moisture changing on my field at 33.4484, -112.0740?" \
-  --fetch-orbits --imagery --sensors examples/sample_sensors.csv --sensors-authorized
-
-# Plans and bills
-lofgren pricing --standard-units 1000 --heavy 6
-
-# Receipts, the V2 knowledge map, and calibration
-lofgren investigate "..." --files notes/ --receipt receipt.json --state knowledge-map.json --log predictions.jsonl
-# knowledge-map/2 adds provenance, question associations, finding derivation and fingerprints
-lofgren investigate "..." --files notes/ --state2 knowledge-map-2.json
-lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
-
-# Free public sources (no keys): Europe PMC literature, ClinicalTrials.gov registrations, operator-selected URLs.
-# Abstracts are labelled abstract_only and retracted papers are excluded; a registered trial is labelled
-# as not being evidence of efficacy; manifest pages are labelled operator_selected with retrieval time and sha256.
-# The labels, dates and passages stay with the evidence: in the run JSON, under each source in the report, and in
-# the receipt's evidence entries.
-lofgren investigate "Does metformin reduce cardiovascular events?" --europepmc "metformin cardiovascular outcomes" \
-  --trials "metformin cardiovascular" --max-records 20 --sources-manifest sources.json  # lofgren.sources-manifest/1
-
-# Web discovery (Brave Search API key) and model choice
-BRAVE_API_KEY=... lofgren investigate "..." --search brave
-LOFGREN_PROVIDER=openai-compatible LOFGREN_BASE_URL=http://localhost:11434/v1 LOFGREN_MODEL=llama3.1 lofgren investigate "..."
-
-# Discovery (V2): research, then frame, hypothesize, simulate, optimize and decide
-lofgren discover "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources \
-  --goal "Choose a warehouse size (fictional)" --design design.json --handoff handoff.json
-
-# Version gates
-lofgren certify
-lofgren certify-boundary
-lofgren certify --v2
-lofgren certify --v3
-lofgren certify --v4
-lofgren certify --v5
-lofgren certify --v6
-
-# Production (V3): research, discover, then build, test and verify an artifact
-lofgren produce "Is industrial construction in the Phoenix metro increasing?" --files examples/sample-sources \
-  --goal "Choose a warehouse size (fictional)" --design examples/designs/warehouse.json --out-dir build/warehouse
-lofgren verify-artifact build/warehouse
+git checkout e232ced165a31ab66124decb1f0fe9ea4b9057ac
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows PowerShell instead: .venv\Scripts\Activate.ps1
+python -m pip install -e .
+lofgren --help
+lofgren investigate "What does the supplied sample evidence establish?" \
+  --files examples/sample-sources --out report.md --receipt receipt.json
 ```
 
-`investigate`, `discover`, `produce` and `mcp` take `--as-of 2026-09-30T12:00:00Z` to verify evidence as of a
-fixed instant instead of now (staleness and future-dated evidence are judged against it). The certifications
-pin their own clock this way, so they give the same answer whenever they run.
+Sample sources are fictional demonstration data. This exercise does not establish real-world findings. Keep generated research files private when they contain sensitive inputs.
 
-## Use it inside Claude Code, Codex and other AI tools (MCP)
+If you already use `uv`, an alternative is `uv sync --frozen` followed by `uv run lofgren --help`.
 
-Connected-assistant selection, the bounded hosted assessment tool, actual OAuth metadata, schemas and verification steps are documented in [MCP selection and verification](docs/MCP_SELECTION_AND_VERIFICATION.md). Assessment recommends a workflow; it never creates a case or starts research.
+Configure a compatible local MCP client to start the installed executable:
 
-Lofgren Intelligence has both a local stdio MCP server and a hosted MCP service under release certification. The core V1–V6 lifecycle is implemented and certified on the release line. The hosted integration exposes governed lifecycle capabilities through authenticated, tenant-scoped, durable service code, but it is **not public-ready** until OAuth, tenant isolation, restart persistence, real-client, Stripe sandbox, backup/restore, rollback, deployment and exact-SHA release-evidence gates pass.
-
-```bash
-# Claude Code
-claude mcp add lofgren -- lofgren mcp
+```json
+{
+  "mcpServers": {
+    "lofgren": {
+      "command": "lofgren",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
-```toml
-# Codex: ~/.codex/config.toml
-[mcp_servers.lofgren]
-command = "lofgren"
-args = ["mcp"]
-```
+Client configuration formats differ. The executable must be available to the client; an absolute virtual-environment executable path may be necessary. This is local stdio configuration, not proof of hosted ChatGPT compatibility.
 
-Tools return structured data, not narrative. The hosted service (`/mcp`) registers exactly these tools; the list is generated in [docs/CAPABILITIES.json](docs/CAPABILITIES.json) and a test keeps it equal to the server's registry:
+## Hosted MCP and release work
 
-- **Research (V1):** `li_assess_request`, `cancel_research`, `case_status`, `clarify_objective`, `compile_objective`, `export_knowledge_map2`, `export_state`, `find_contradictions`, `find_gaps`, `get_finding`, `get_job_status`, `get_receipt`, `investigate`, `plan_research`, `render_report`, `satellite_passes`, `start_research`, `trace_claim`, `verify_claim`.
-- **Discovery (V2):** `analyze_sensitivity`, `create_v3_handoff`, `discover`, `find_connections`, `find_discovery_gaps`, `find_prior_art`, `generate_candidates`, `generate_hypotheses`, `get_discovery_receipt`, `optimize_solution`, `render_discovery_report`, `simulate_candidate`, `verify_discovery`.
-- **Production (V3):** `build_artifact`, `get_artifact`.
-- **Execution (V4):** `action_status`, `execute_action`, `propose_action`. Execution remains server-authorized and browser-reviewed; the model cannot self-authorize.
-- **Outcome (V5):** `get_outcome`, `measure_outcome`.
-- **Improvement (V6):** `evaluate_improvement`, `get_improvement`.
-- **Account / billing:** `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status`. `create_checkout` refuses until billing is enabled and economically certified.
+The dedicated integration endpoint is `https://lofgren-intelligence-mcp.vercel.app/mcp`. It requires LI authorization. An anonymous **401 is expected**; health or discovery success alone does not establish usable research. Do not distribute administrative credentials or hosting bypass secrets to clients.
 
-The local stdio server (`lofgren mcp`, contract `lofgren.mcp/3`) covers V1–V3 for developer use: it has `export_knowledge_map` instead of `export_knowledge_map2`, adds `create_v4_handoff`, `verify_artifact`, `get_artifact_file` and `get_production_receipt`, and has no V4–V6, account or billing tools.
+Current release work focuses on hosted-worker delivery, real OAuth/client acceptance, recovery and settlement, bounded anonymous-trial review, and exact-revision release evidence. [PUBLIC_STATUS.md](docs/PUBLIC_STATUS.md) separates implemented features from demonstrated delivery.
 
-Not proven by this repository: deployment, real clients, backup/restore, the Supabase owner settings, and PublicMCPReady.
+**Not proven:** complete customer deployment, real clients, hosted recovery, backup/restore and `PublicMCPReady`. These require retained operational evidence; code certification alone is insufficient.
 
-Every output says what kind of thing it is (`kind`, `confidence_kind`): a verified fact, a hypothesis, a simulated value or a candidate. The local stdio server is intended for developer use. The hosted service uses durable tenant-scoped storage for research runs, discoveries, artifacts, actions, outcomes and improvement records and is being certified separately before public release.
+## New evidence and updates
 
-## How a finding earns its status
+LI is designed to reassess findings when sources, scope or assumptions change while preserving earlier records. It does not promise continuous monitoring of every law, rule or publication. Legal changes require jurisdiction, effective date, authoritative sources and reviewed interpretation. Code and policy releases should pass review and testing before deployment; LI does not silently update its own production code. The [change-aware update guide](docs/CHANGE_AWARE_UPDATES.md) explains the existing offline receipt comparison and the requirements for future monitored reassessment.
 
-| Status | Meaning |
-| --- | --- |
-| Verified | Meets the contract's standard (default: 2 independent sources, confidence ≥ 70%), or is a direct measurement with no contradiction |
-| Verified attribution | One primary source establishes what it *said*, not that it is true |
-| Partially verified | Supported, confidence ≥ 50%, but short of the standard |
-| Contested | Independent evidence disagrees; both sides are shown |
-| Single-source | One source, low confidence |
-| Insufficient evidence | Nothing supports it yet |
+## Learn, contribute and support
 
-Confidence scores are **uncalibrated starting estimates** until real outcomes are recorded; reports say so. The calibrator (V1) and outcome memory (V5) exist to hold "80% confident" to account.
+Start with [architecture](docs/ARCHITECTURE.md), [evidence protocol](docs/EVIDENCE_PROTOCOL.md), [discovery](docs/DISCOVERY.md), [production](docs/PRODUCTION.md), [worker runtime](docs/WORKER_RUNTIME.md) and [public privacy](docs/PUBLIC_PRIVACY.md). See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap](docs/ROADMAP.md) for current construction priorities. To understand a finding, inspect its claim, supporting and contradicting evidence, assumptions, evidence cut-off and receipt; treat an unanswered dependency as an unknown rather than a confirmed conclusion.
 
-## Boundaries (by design, not by policy alone)
+Use [GitHub issues](https://github.com/EthanLofgrem/lofgren-intelligence/issues) for reproducible defects and proposals. Include the revision, command, expected behavior and sanitized evidence. Do not post credentials, private research or personal data. Contributions that improve evidence quality, safety boundaries and verified interoperability are especially useful.
 
-- **Satellites:** public orbital elements and open or licensed imagery only. Nothing in this codebase contacts, commands or accesses a spacecraft or a provider without authorization.
-- **Sensors / IoT:** only devices the user owns or is authorized to read; adapters are read-only and the registry refuses adapters that request write or control access.
-- **People:** no tracking of individual people, homes or vehicles.
-- **Actions:** every action passes the authority engine: *Execute = Authorized ∧ Validated ∧ WithinBudget ∧ WithinPolicy*. Spending, deploying, publishing, messaging and device control always need explicit approval.
-- **Money:** a job is estimated before it runs, capped by the contract, and never charged above the estimate.
+**Donations:** no verified donation destination is published here. A founder-approved support link can be added when available; do not send funds to unverified links. Live paid service and payment activation are not established by this repository.
 
-## Repository layout
-
-```
-lofgren_intelligence/
-  kernel/        the loop, pipeline, findings, ledger, receipts, knowledge map
-  intent/        objective → Outcome Contract (incl. Lofgren Enterprise venture stages)
-  research/      research planner, value-per-cost ordering, stopping rule
-  adapters/      evidence adapters + source registry (documents, web search, web pages, orbital, imagery, sensors)
-  evidence/      typed evidence, evidence graph, scope, lineage
-  verification/  cross-checking, policies, contradictions, skeptic, confidence, calibration
-  orbital/       TLE parsing, orbit propagation, pass prediction, imaging-satellite catalog
-  models/        replaceable model providers (offline heuristic, Anthropic)
-  authority/     the authority engine (V4 foundation)
-  billing/       work units, job classes, plans, bill formula
-  report/        Markdown and JSON reports
-  mcp/           MCP server (stdio), structured tools
-  production/    V3 Production: specification compiler, planner, code generation, verifier, sandboxed tests,
-                 receipt, V4 handoff, disk store, certification
-  discovery/     V2 Discovery: context, framing, prior art, gaps, connections, hypotheses, candidates,
-                 simulation, sensitivity, optimization, verifier, receipt, V3 handoff, pipeline, certification
-  certification.py  the V1Ready gate (lofgren certify)
-  schemas.py     JSON Schemas for the evidence protocol
-  cli.py         the `lofgren` command
-schemas/         generated JSON Schemas
-docs/            architecture, roadmap, pricing, Lofgren Enterprise integration
-tests/           standard-library unittest suite
-```
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -t .
-```
-
-## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap: V1 → V6](docs/ROADMAP.md)
-- [Pricing model](docs/PRICING.md)
-- [Lofgren Enterprise integration](docs/LOFGREN_ENTERPRISE.md)
-- [Evidence protocol](docs/EVIDENCE_PROTOCOL.md)
-- [V1 certification: the gate before V2](docs/V1_CERTIFICATION.md)
-- [Discovery Intelligence (V2)](docs/DISCOVERY.md) · [V2 certification: the gate before V3](docs/V2_CERTIFICATION.md)
-- [Production Intelligence (V3)](docs/PRODUCTION.md) · [V3 certification: the gate before V4](docs/V3_CERTIFICATION.md)
-- [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
-
-## License
-
-Apache License 2.0. Copyright 2026 Lofgren Enterprise. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-The open-source core (framework, schemas, adapters, verification) is free. The hosted Lofgren Intelligence service — orchestration, commercial data connectors, outcome memory, heavy compute and billing — is the paid layer.
+Licensed under [Apache 2.0](LICENSE).

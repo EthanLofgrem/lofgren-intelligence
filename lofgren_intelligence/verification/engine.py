@@ -156,10 +156,15 @@ class Verifier:
 
     def cross_check(self, graph: EvidenceGraph) -> None:
         claims = list(graph.claims.values())
+        # Corroboration is pairwise, not transitive. Persisted verifier edges must
+        # not become primary support on a later verification or graph reload.
+        derived = {(e.src, e.dst) for e in graph.edges if e.verifier_derived}
+        support = {c.id: tuple(e for e in c.supporting if (e, c.id) not in derived)
+                   for c in claims}
         for i, a in enumerate(claims):
-            groups_a = self._groups(graph, a.supporting)
+            groups_a = self._groups(graph, support[a.id])
             for b in claims[i + 1:]:
-                groups_b = self._groups(graph, b.supporting)
+                groups_b = self._groups(graph, support[b.id])
                 if groups_a and groups_a == groups_b:
                     continue  # same source family: not an independent check
                 rel, reason = relation(a, b)
@@ -169,19 +174,19 @@ class Verifier:
                 if rel == "supports":
                     if mismatch:
                         continue  # same subject, different period or place: not a confirmation
-                    for e in b.supporting:
-                        graph.link(e, a.id, "supports")
-                    for e in a.supporting:
-                        graph.link(e, b.id, "supports")
+                    for e in support[b.id]:
+                        graph.link(e, a.id, "supports", verifier_derived=True)
+                    for e in support[a.id]:
+                        graph.link(e, b.id, "supports", verifier_derived=True)
                     continue
                 cx = Contradiction(a.id, b.id, reason, resolution=resolution_for(a, b, reason))
                 if a.value is not None and b.value is not None and a.unit == b.unit:
                     calc = graph.add_calculation(Calculation(
                         name="relative difference", formula="|a - b| / max(|a|, |b|)",
                         inputs=[{"name": "a", "value": a.value, "unit": a.unit,
-                                 "evidence_id": a.supporting[0] if a.supporting else None},
+                                 "evidence_id": support[a.id][0] if support[a.id] else None},
                                 {"name": "b", "value": b.value, "unit": b.unit,
-                                 "evidence_id": b.supporting[0] if b.supporting else None}],
+                                 "evidence_id": support[b.id][0] if support[b.id] else None}],
                         result=round(abs(a.value - b.value) / max(abs(a.value), abs(b.value), 1e-9), 4)))
                     cx.reason += f" (relative difference {calc.result:.1%}, {calc.id})"
                 if mismatch:
@@ -190,10 +195,10 @@ class Verifier:
                     graph.add_contradiction(cx)
                     continue
                 graph.add_contradiction(cx)
-                for e in b.supporting:
-                    graph.link(e, a.id, "contradicts")
-                for e in a.supporting:
-                    graph.link(e, b.id, "contradicts")
+                for e in support[b.id]:
+                    graph.link(e, a.id, "contradicts", verifier_derived=True)
+                for e in support[a.id]:
+                    graph.link(e, b.id, "contradicts", verifier_derived=True)
 
     def score(self, graph: EvidenceGraph, claim: Claim) -> ConfidenceFactors:
         # Only temporally eligible evidence counts, for support, independence, freshness and contradiction alike.
