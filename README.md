@@ -6,7 +6,7 @@ Lofgren Intelligence (LI) is an open-source, governed research engine that compa
 
 **Release status: pre-public hosted verification.** Local developer use is available. A dedicated authenticated MCP endpoint is reachable, but hosted-worker execution and an ordinary end-to-end client journey remain unverified. There is **no committed public launch date**. See [current public status](https://github.com/EthanLofgrem/lofgren-intelligence/blob/build/li-release-hardening-oct11/docs/PUBLIC_STATUS.md) before connecting or relying on a capability.
 
-The default branch currently retains the older code baseline. Use the pinned checkout below for the tested application; [PR #39](https://github.com/EthanLofgrem/lofgren-intelligence/pull/39) contains the next hardening candidate under review.
+The default branch currently contains public documentation only; it does not contain the application source. Use the pinned checkout below for the tested application; [PR #39](https://github.com/EthanLofgrem/lofgren-intelligence/pull/39) contains the next hardening candidate under review.
 
 ## What makes LI useful
 
@@ -90,6 +90,16 @@ Configure a compatible local MCP client to start the installed executable:
 ```
 
 Client configuration formats differ. The executable must be available to the client; an absolute virtual-environment executable path may be necessary. This is local stdio configuration, not proof of hosted ChatGPT compatibility.
+
+## Connect without an LI account — current availability
+
+The current product requirement is free public MCP use with no LI login, signup, account creation or payment. GitHub identity and repository authorization are optional, separate features; they must not be prerequisites for public first use.
+
+**Available locally:** the stdio configuration above does not require an LI account. Python installation and a compatible client are required. Configured third-party providers may have their own credentials or charges; they are not necessary for a safe local objective-compilation operation.
+
+**Remote no-login connection: not available yet.** A separate bounded anonymous transport is implemented, but is disabled on the stable hosted service. Its candidate tools support public-source research, claim verification and comparison, return results inline, and do not save private Cases or durable jobs. Do not connect to a guessed URL or treat a connection button as verified availability.
+
+An assistant may require its own account and MCP support. Universal compatibility is a goal, not a tested claim. Ordinary-client acceptance and hosted abuse/runtime verification are still required before advertising a remote Connect entry point. Optional private operations retain authorization; public access never grants access to another user's data.
 
 ## Hosted MCP and release work
 
