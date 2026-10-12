@@ -184,7 +184,14 @@ async def oauth_token(request: Request) -> Response:
         else:
             return _error(400, "unsupported_grant_type")
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
-    except (AuthError, StoreError) as exc:
+    except StoreError:
+        return JSONResponse(
+            {"error": "temporarily_unavailable",
+             "error_description": "the authorization service is temporarily unavailable; retry later"},
+            status_code=503,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Retry-After": "30"},
+        )
+    except AuthError as exc:
         return _error(400, "invalid_grant", str(exc))
 
 

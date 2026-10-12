@@ -647,6 +647,43 @@ if __name__ == "__main__":
 
 
 class OAuthTokenInputTests(unittest.TestCase):
+    def test_backend_failures_are_retryable_and_redacted_not_invalid_grants(self):
+        from lofgren_intelligence.hosted.store import StoreError
+        for grant, operation in (("authorization_code", "exchange_code"), ("refresh_token", "refresh")):
+            with self.subTest(grant=grant), patch.object(web_app, "SupabaseStore", return_value=FakeStore()), \
+                    patch.object(web_app.OAuthService, operation,
+                                 side_effect=StoreError("private database failure secret=do-not-expose")):
+                response = _call(web_app.oauth_token, "/oauth/token", method="POST",
+                                 body=f"grant_type={grant}".encode())
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(json.loads(response.body)["error"], "temporarily_unavailable")
+            self.assertNotIn("private database", response.body.decode())
+            self.assertNotIn("do-not-expose", response.body.decode())
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            self.assertEqual(response.headers["pragma"], "no-cache")
+            self.assertEqual(response.headers["retry-after"], "30")
+
+    def test_store_initialization_failure_is_sanitized(self):
+        from lofgren_intelligence.hosted.store import StoreError
+        with patch.object(web_app, "SupabaseStore", side_effect=StoreError("SUPABASE_SERVICE_ROLE_KEY is required")):
+            response = _call(web_app.oauth_token, "/oauth/token", method="POST",
+                             body=b"grant_type=refresh_token")
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", response.body.decode())
+
+    def test_invalid_grants_remain_client_errors_without_retry_hint(self):
+        from lofgren_intelligence.hosted.auth import AuthError
+        for grant, operation in (("authorization_code", "exchange_code"), ("refresh_token", "refresh")):
+            with self.subTest(grant=grant), patch.object(web_app, "SupabaseStore", return_value=FakeStore()), \
+                    patch.object(web_app.OAuthService, operation, side_effect=AuthError("invalid credentials")):
+                response = _call(web_app.oauth_token, "/oauth/token", method="POST",
+                                 body=f"grant_type={grant}".encode())
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(json.loads(response.body)["error"], "invalid_grant")
+            self.assertNotIn("retry-after", response.headers)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            self.assertEqual(response.headers["pragma"], "no-cache")
+
     def test_malformed_inputs_are_refused_before_database_initialization(self):
         inputs = (b"\xff", b"grant_type=authorization_code&grant_type=refresh_token",
                   b"&".join(b"field%d=x" % i for i in range(33)))
