@@ -31,7 +31,7 @@ import threading
 import time
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DSN = os.environ.get("LI_PG_DSN", "").strip()
@@ -479,7 +479,7 @@ class PrivilegeTest(PgCase):
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
         self.assertIn("li_save_research_job_result", expected)
-        self.assertEqual(len(expected), 24, sorted(expected))
+        self.assertEqual(len(expected), 27, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -1365,6 +1365,110 @@ class OAuthAndBillingTest(PgCase):
         self.assertIsNotNone(self.one("select used_at from public.li_oauth_codes where code_hash = %s", (code,))[0])
         self.assertIsNotNone(self.one("select used_at from public.li_refresh_tokens where token_hash = %s",
                                       (refresh,))[0])
+
+    def oauth_fixture(self):
+        user = self.new_user()
+        client = "revoke-" + uuid.uuid4().hex
+        self.svc.execute("insert into public.li_oauth_clients(client_id,client_name,redirect_uris,grant_types,response_types,token_endpoint_auth_method) values (%s,'c','[]','[]','[]','none')", (client,))
+        digest = sha("parent:" + client)
+        self.svc.execute("insert into public.li_refresh_tokens(token_hash,user_id,client_id,resource,expires_at,used_at) values (%s,%s,%s,'https://li.example/mcp',now()+interval '1 day',now())", (digest,user,client))
+        access = {"token_hash": sha("access:" + client), "user_id": user, "client_id": client,
+                  "scope": "mcp", "resource": "https://li.example/mcp",
+                  "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
+        refresh = {**access, "token_hash": sha("refresh:" + client)}
+        return user, client, digest, access, refresh
+
+    def test_atomic_issue_is_single_use_and_disconnect_is_tenant_client_scoped(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        other_user, other_client, other_digest, other_access, other_refresh = self.oauth_fixture()
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.assertFalse(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", other_digest, other_access, other_refresh))
+        self.store.revoke_oauth_token(access["token_hash"], other_client)
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (access["token_hash"],))[0])
+        self.store.revoke_oauth_token(access["token_hash"], client)
+        self.assertIsNotNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (access["token_hash"],))[0])
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where user_id=%s and client_id=%s", (user,client))[0],0)
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (other_access["token_hash"],))[0])
+        self.store.revoke_oauth_token("unknown", client)
+
+    def test_disconnect_between_consume_and_issue_refuses_issuance(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        self.store.disconnect_oauth_client(user, client)
+        self.assertFalse(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.assertEqual(self.one("select count(*) from public.li_access_tokens where user_id=%s and client_id=%s", (user,client))[0],0)
+
+    def test_concurrent_disconnect_and_issue_leave_no_live_credentials(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        a, b = self.new_store(), self.new_store()
+        run_concurrently([lambda: a.issue_oauth_tokens("refresh_token", digest, access, refresh),
+                          lambda: b.disconnect_oauth_client(user, client)])
+        self.assertEqual(self.one("select count(*) from public.li_access_tokens where user_id=%s and client_id=%s and revoked_at is null", (user,client))[0],0)
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where user_id=%s and client_id=%s", (user,client))[0],0)
+
+    def reconsent_fixture(self, store, user, client):
+        suffix = uuid.uuid4().hex
+        digest = sha("new-parent:" + suffix)
+        store.conn.execute("insert into public.li_refresh_tokens(token_hash,user_id,client_id,resource,expires_at,used_at) values (%s,%s,%s,'https://li.example/mcp',now()+interval '1 day',now())", (digest,user,client))
+        access = {"token_hash": sha("new-access:" + suffix), "user_id": user, "client_id": client,
+                  "scope": "mcp", "resource": "https://li.example/mcp",
+                  "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
+        refresh = {**access, "token_hash": sha("new-refresh:" + suffix)}
+        self.assertTrue(store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        return access, refresh
+
+    def test_revoked_access_replay_cannot_disconnect_new_consent(self):
+        user, client, digest, old, refresh = self.oauth_fixture()
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", digest, old, refresh))
+        self.store.revoke_oauth_token(old["token_hash"], client)
+        new, new_refresh = self.reconsent_fixture(self.store, user, client)
+        self.store.revoke_oauth_token(old["token_hash"], client)
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (new["token_hash"],))[0])
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where token_hash=%s", (new_refresh["token_hash"],))[0], 1)
+
+    def test_expired_access_and_consumed_refresh_do_not_disconnect(self):
+        user, client, digest, access, refresh = self.oauth_fixture()
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", digest, access, refresh))
+        self.svc.execute("update public.li_access_tokens set expires_at=now()-interval '1 second' where token_hash=%s", (access["token_hash"],))
+        self.store.revoke_oauth_token(access["token_hash"], client)
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where token_hash=%s", (refresh["token_hash"],))[0], 1)
+        self.svc.execute("update public.li_refresh_tokens set used_at=now() where token_hash=%s", (refresh["token_hash"],))
+        new, _ = self.reconsent_fixture(self.store, user, client)
+        self.store.revoke_oauth_token(refresh["token_hash"], client)
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (new["token_hash"],))[0])
+
+    def test_waiting_old_revocation_rechecks_after_reconsent(self):
+        user, client, digest, old, refresh = self.oauth_fixture()
+        self.assertTrue(self.store.issue_oauth_tokens("refresh_token", digest, old, refresh))
+        blocker, revoker = self.new_store(), self.new_store()
+        pid = revoker.conn.execute("select pg_backend_pid()").fetchone()[0]
+        errors = []
+        def revoke_old():
+            try:
+                revoker.revoke_oauth_token(old["token_hash"], client)
+            except Exception as exc:
+                errors.append(exc)
+        thread = threading.Thread(target=revoke_old)
+        with blocker.conn.transaction():
+            blocker.conn.execute("select pg_advisory_xact_lock(hashtextextended('li_oauth:' || %s::text || ':' || %s, 0))", (user, client))
+            thread.start()
+            wait_until_lock_waiting(self.admin, pid)
+            blocker.disconnect_oauth_client(user, client)
+            new, new_refresh = self.reconsent_fixture(blocker, user, client)
+        thread.join(15)
+        self.assertFalse(thread.is_alive(), "revoker must finish after the blocker commits")
+        self.assertEqual(errors, [])
+        self.assertIsNone(self.one("select revoked_at from public.li_access_tokens where token_hash=%s", (new["token_hash"],))[0])
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where token_hash=%s", (new_refresh["token_hash"],))[0], 1)
+
+    def test_corrective_revocation_migration_is_idempotent(self):
+        correction = next(MIGRATIONS.glob("*_oauth_revocation_replay.sql")).read_text()
+        for _ in range(2):
+            with self.admin.transaction():
+                self.admin.execute(correction)
+        self.assertFalse(self.one("select has_function_privilege('anon','public.li_revoke_oauth_token(text,text)','EXECUTE')")[0])
+        self.assertFalse(self.one("select has_function_privilege('authenticated','public.li_revoke_oauth_token(text,text)','EXECUTE')")[0])
+        self.assertTrue(self.one("select has_function_privilege('service_role','public.li_revoke_oauth_token(text,text)','EXECUTE')")[0])
 
     def test_stripe_event_applies_exactly_once(self):
         user = self.new_user()
