@@ -560,6 +560,10 @@
       "max_sources": 1,
       "max_records": 5,
       "max_pages": 1,
+      "max_upstream_requests": 1,
+      "max_retries": 0,
+      "max_redirects": 0,
+      "max_body_bytes": 1000000,
       "max_manifest_urls": 3,
       "max_tasks": 8,
       "http_timeout_s": 10.0,
@@ -576,9 +580,17 @@
       "global_requests_per_minute": 600,
       "per_ip_tool_calls_per_hour": 10,
       "spend_ceiling_usd_default": 10.0,
+      "spend_ceiling_unit": "LI platform-price estimate dollars (not infrastructure cost)",
       "spend_window_seconds_default": 86400,
-      "backend": "li_take_keyed_rate_limit (database); fail closed, no in-memory fallback"
+      "worst_case_allocation_per_research_call_usd": 2.0,
+      "research_calls_per_day_default": 5,
+      "max_concurrent_calls_default": 2,
+      "concurrency_slot_lease_seconds": 60,
+      "per_ip_key": "HMAC-SHA256 under LI_TRIAL_IP_HMAC_KEY; missing key refuses every trial request",
+      "client_address": "Vercel: x-vercel-forwarded-for, else x-forwarded-for (set by Vercel's edge); elsewhere: the socket peer only",
+      "backend": "li_take_keyed_rate_limit and li_acquire_trial_slot (database); fail closed, no in-memory fallback"
     },
+    "worst_case_wall_seconds": 50.0,
     "protected_tools": "refused with ACCOUNT_REQUIRED; connect an account at /mcp",
     "not_proven": [
       "real ChatGPT client: no ChatGPT connector installation or session against /mcp-trial has been performed"

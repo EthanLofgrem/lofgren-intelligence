@@ -16,26 +16,56 @@ from .test_public_hosted import FakeStore
 from .test_public_sources import fixture
 
 ROOT = Path(__file__).resolve().parent.parent
+# Test-only placeholder key (not a secret); production reads LI_TRIAL_IP_HMAC_KEY from the environment.
+TEST_IP_HMAC_KEY = "test-only-trial-ip-hmac-key-0123456789abcdef"
 TRIAL_ENV = {**ENV, "LI_DEPLOYMENT_SURFACE": "mcp", "LI_TRIAL_ENABLED": "true",
-             "SUPABASE_SERVICE_ROLE_KEY": "service-test-key"}
+             "SUPABASE_SERVICE_ROLE_KEY": "service-test-key", "LI_TRIAL_IP_HMAC_KEY": TEST_IP_HMAC_KEY,
+             "LI_TRIAL_TRUSTED_PROXY": "", "VERCEL": ""}
 HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 QUESTION = "What does published literature say about zelvapril for hypertension?"
+PEER = ("198.51.100.7", 50000)  # documentation address as the socket peer
 EUROPEPMC = "lofgren_intelligence.adapters.public_api.PublicHTTPClient.get_json"
 
 
 class TrialOnlyStore:
-    """Exposes only the keyed limiter. Any other store access (cases, runs, jobs, billing) fails the test."""
+    """Exposes only the keyed limiter and the trial concurrency slots, modelled atomically (one lock, like the
+    SQL advisory lock). Any other store access (cases, runs, jobs, billing) fails the test."""
 
     def __init__(self):
+        import threading
         self.inner = FakeStore()
         self.takes = []
         self.error = None
+        self.lock = threading.Lock()
+        self.slots = {}
+        self.slot_calls = []
 
     def take_keyed_rate_limit(self, bucket, key_hash, limit, window_seconds):
         if self.error is not None:
             raise self.error
-        self.takes.append((bucket, key_hash, limit, window_seconds))
-        return self.inner.take_keyed_rate_limit(bucket, key_hash, limit, window_seconds)
+        with self.lock:
+            self.takes.append((bucket, key_hash, limit, window_seconds))
+            return self.inner.take_keyed_rate_limit(bucket, key_hash, limit, window_seconds)
+
+    def acquire_trial_slot(self, slot_id, max_concurrent, lease_seconds):
+        import time
+        if self.error is not None:
+            raise self.error
+        with self.lock:
+            now = time.monotonic()
+            self.slots = {k: v for k, v in self.slots.items() if v > now}
+            self.slot_calls.append(("acquire", slot_id, max_concurrent, lease_seconds))
+            if len(self.slots) >= max_concurrent:
+                return max(1, int(min(self.slots.values()) - now) + 1)
+            if slot_id in self.slots:
+                return lease_seconds
+            self.slots[slot_id] = now + lease_seconds
+            return 0
+
+    def release_trial_slot(self, slot_id):
+        with self.lock:
+            self.slot_calls.append(("release", slot_id))
+            return self.slots.pop(slot_id, None) is not None
 
     def __getattr__(self, name):
         raise AssertionError(f"the trial must not touch store.{name}")
@@ -58,10 +88,10 @@ class TrialTestBase(unittest.TestCase):
         self.env = patch.dict(os.environ, TRIAL_ENV)
         self.env.start()
         self.addCleanup(self.env.stop)
-        p = patch.object(trial, "SupabaseStore", lambda: self.store)
+        p = patch.object(trial, "SupabaseStore", lambda **kw: self.store)
         p.start()
         self.addCleanup(p.stop)
-        self.client = TestClient(web_app.build_app(), base_url=ENV["LI_PUBLIC_BASE_URL"])
+        self.client = TestClient(web_app.build_app(), base_url=ENV["LI_PUBLIC_BASE_URL"], client=PEER)
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 
@@ -147,7 +177,7 @@ class RealPipelineTests(TrialTestBase):
         self.assertIn("europepmc", json.dumps(out["provenance"]["sources"]).lower())
         self.assertTrue(out["limitations"])
         self.assertIn("report_markdown", out["artifacts"])
-        self.assertLessEqual(out["estimate"]["total_usd"], trial.BOUNDS.max_estimated_usd)
+        self.assertLessEqual(out["cost"]["platform_price_estimate"]["usd"], trial.BOUNDS.max_estimated_usd)
         self.assertEqual(out["provenance"]["provider"]["name"], "heuristic")
 
     def test_verify_claim_and_compare_return_native_receipts(self):
@@ -204,10 +234,12 @@ class BoundsTests(TrialTestBase):
         self.assertTrue(result["isError"])
 
     def test_record_and_page_bounds_reach_the_adapter(self):
-        registry = trial._registry("clinicaltrials", "zelvapril")
-        adapter = registry.get("clinicaltrials")
+        registry, adapter, fetcher = trial._registry("clinicaltrials", "zelvapril")
+        self.assertIs(registry.get("clinicaltrials"), adapter)
         self.assertEqual((adapter.max_records, adapter.max_pages), (5, 1))
         self.assertEqual((adapter.client.timeout, adapter.client.max_retries), (10.0, 0))
+        self.assertIs(adapter.client._open, fetcher)  # every upstream byte passes the bounded fetcher
+        self.assertEqual((fetcher.max_requests, fetcher.max_redirects), (1, 0))
 
     def test_estimated_cost_bound_refuses_before_any_work(self):
         with patch.object(trial, "BOUNDS", trial.TrialBounds(max_estimated_usd=0.01)):
@@ -296,7 +328,7 @@ class AbuseControlTests(TrialTestBase):
         fetch.assert_not_called()
 
     def test_unconfigured_store_fails_closed_without_memory_fallback(self):
-        def missing():
+        def missing(**kw):
             raise StoreError("SUPABASE_URL is required")
 
         with patch.object(trial, "SupabaseStore", missing), \
@@ -310,7 +342,7 @@ class AbuseControlTests(TrialTestBase):
             self.assertTrue(bucket.startswith("trial_"))
             self.assertRegex(key_hash, r"^[0-9a-f]{64}$")
         self.assertNotIn("testclient", json.dumps(self.store.takes))
-        self.assertEqual(ratelimit.rate_key("trial_spend", "operator"),
+        self.assertEqual(trial.trial_key_hash("trial_spend", "operator"),
                          next(k for b, k, _, _ in self.store.takes if b == "trial_spend"))
         self.assertTrue({"trial_ip", "trial_global", "trial_call_ip", "trial_spend"} <= ratelimit.FAIL_CLOSED_BUCKETS)
 

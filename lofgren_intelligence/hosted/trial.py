@@ -15,11 +15,17 @@ The trial is a second, separate MCP server. It never shares the authenticated
   account row is created or read.
 * Identity is always "anonymous". An MCP session id, a bearer token or any
   argument the model supplies is never treated as identity.
-* Abuse controls use the existing keyed rate limiter in the database
-  (`li_take_keyed_rate_limit`), always store-backed and fail closed: per client
-  IP and global request limits, a per-IP tool-call allowance, and an
-  operator-wide spending ceiling. If the store is not configured or errors,
-  every trial request is refused. There is no in-memory fallback.
+* Admission is store-backed and fails closed: per client IP and global request
+  limits and a per-IP tool-call allowance (`li_take_keyed_rate_limit`, per-IP
+  keys are an HMAC under `LI_TRIAL_IP_HMAC_KEY`), a global concurrency slot
+  (`li_acquire_trial_slot`) and an operator-wide ceiling denominated in LI
+  platform-price estimate dollars. If the store is not configured, errors or
+  answers malformed, every trial request is refused. There is no in-memory
+  fallback.
+* Each call is hard-bounded at runtime: one upstream HTTP request (no retries,
+  no redirects, bounded body), and a wall-clock deadline that the call's
+  response never outlives (`_run_bounded`) and that closes the upstream socket
+  (`trial_fetch.TrialFetcher`).
 
 See docs/MCP_TRIAL.md.
 """
@@ -27,10 +33,15 @@ See docs/MCP_TRIAL.md.
 from __future__ import annotations
 
 import contextvars
+import hashlib
+import hmac
+import ipaddress
 import json
 import math
 import os
+import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
@@ -43,6 +54,7 @@ from starlette.responses import JSONResponse
 
 from . import ratelimit
 from .store import SupabaseStore
+from .trial_fetch import TrialFetcher
 
 TRIAL_PATH = "/mcp-trial"
 TRIAL_TOOLS = ("trial_research", "trial_verify_claim", "trial_compare")
@@ -56,13 +68,17 @@ class TrialBounds:
 
     max_sources: int = 1                 # one public source per call
     max_records: int = 5                 # records retrieved from that source
-    max_pages: int = 1                   # one page => at most one upstream request per call
-    max_manifest_urls: int = 3           # operator manifest entries, when the operator enables it
+    max_pages: int = 1                   # one page of results
+    max_upstream_requests: int = 1       # HTTP requests per call, enforced by TrialFetcher (retries and redirects included)
+    max_retries: int = 0                 # no retry of a failed upstream request
+    max_redirects: int = 0               # an upstream redirect is refused, not followed
+    max_body_bytes: int = 1_000_000      # upstream response body
+    max_manifest_urls: int = 3           # operator manifest entries; ONE of them is fetched per call
     max_tasks: int = 8                   # research plan tasks
-    http_timeout_s: float = 10.0         # per upstream request, no retries
-    max_seconds: float = 40.0            # wall-clock deadline, checked at every pipeline stage
+    http_timeout_s: float = 10.0         # connect and every socket operation, capped by the time left
+    max_seconds: float = 40.0            # hard wall-clock bound of a tool call, admission included
     max_output_bytes: int = 256_000      # serialized tool result
-    max_estimated_usd: float = 2.0       # LI platform-price estimate of one call
+    max_estimated_usd: float = 2.0       # LI platform-price estimate of one call (worst case reserved per call)
     max_question_chars: int = 500
     max_query_chars: int = 200
     max_option_chars: int = 120
@@ -71,21 +87,41 @@ class TrialBounds:
 
 BOUNDS = TrialBounds()
 
+# Store calls made by the trial use this per-request timeout (SupabaseStore default: 30 s).
+STORE_TIMEOUT_S = 5.0
+# HTTP-level admission makes at most this many store calls before the MCP request is handled.
+HTTP_ADMISSION_STORE_CALLS = 2
+# The deployment's function limit (vercel.json maxDuration for api/index.py).
+HOST_LIMIT_S = 60.0
+# Concurrency slot lease: longer than the hard per-call bound, so a live call never loses its slot.
+SLOT_LEASE_S = int(math.ceil(BOUNDS.max_seconds)) + 20
+
 # Rate buckets (all store-backed, fail closed). Defaults; LI_TRIAL_* env may change them.
 TRIAL_IP_REQUESTS = ("trial_ip", "LI_TRIAL_IP_REQUESTS_PER_MINUTE", 30, 60)
 TRIAL_GLOBAL_REQUESTS = ("trial_global", "LI_TRIAL_GLOBAL_REQUESTS_PER_MINUTE", 600, 60)
 TRIAL_IP_CALLS = ("trial_call_ip", "LI_TRIAL_IP_CALLS_PER_HOUR", 10, 3600)
 DEFAULT_SPEND_CEILING_USD = 10.0
 DEFAULT_SPEND_WINDOW_S = 86_400
+DEFAULT_MAX_CONCURRENT = 2
+MAX_CONCURRENT_CEILING = 10
 GLOBAL_KEY = "operator"
+PER_IP_BUCKETS = frozenset({"trial_ip", "trial_call_ip"})
+IP_HMAC_ENV = "LI_TRIAL_IP_HMAC_KEY"
+MIN_IP_HMAC_KEY_CHARS = 32
+TRUSTED_PROXY_ENV = "LI_TRIAL_TRUSTED_PROXY"
+# Vercel documents both as set by its edge (x-forwarded-for is overwritten, external values are not forwarded);
+# x-vercel-forwarded-for is preferred because a proxy in front of Vercel could overwrite x-forwarded-for.
+VERCEL_CLIENT_IP_HEADERS = ("x-vercel-forwarded-for", "x-forwarded-for")
 
 LIMITATIONS = (
     "Trial: anonymous, bounded, synchronous. Nothing is saved; there is no Case, durable run, job or history.",
-    "One public source per call (Europe PMC, ClinicalTrials.gov, or the operator's manifest when enabled), "
-    "at most 5 records from one page. Absence of evidence here is not evidence of absence.",
+    "One public source per call (Europe PMC, ClinicalTrials.gov, or one page from the operator's manifest when "
+    "enabled), one upstream request, at most 5 records. Absence of evidence here is not evidence of absence.",
     "The trial uses LI's deterministic heuristic reasoning provider; the authenticated service may use a configured "
     "model provider and broader sources.",
     "Findings are provisional and scoped to the retrieved records; inspect the receipt and provenance.",
+    "Cost figures are estimates, never measurements: the platform-price estimate is what LI's price list would "
+    "charge (the trial charges nothing) and the infrastructure estimate uses operator-configured rates.",
     "Consequential or underspecified objectives return clarification questions instead of research; serious work "
     "requires an approved Intelligence Case on a connected account.",
     "No private Cases, runs, jobs, billing, durable work or external execution are reachable from the trial.",
@@ -131,7 +167,12 @@ def _env_int(name: str, default: int) -> int:
 
 
 def spend_ceiling() -> tuple[int, int]:
-    """(worst-case calls allowed per window, window seconds) for the operator-wide spending ceiling."""
+    """(research calls allowed per window, window seconds) under the operator-wide ceiling.
+
+    The ceiling is denominated in LI platform-price estimate dollars, not in infrastructure cost: every research
+    call reserves the worst-case platform-price allocation (`BOUNDS.max_estimated_usd`) before any work, so the
+    ceiling is a global call-count containment of floor(ceiling / allocation) calls per window.
+    """
     raw = os.environ.get("LI_TRIAL_SPEND_CEILING_USD", "").strip()
     try:
         usd = DEFAULT_SPEND_CEILING_USD if not raw else float(raw)
@@ -144,6 +185,20 @@ def spend_ceiling() -> tuple[int, int]:
     if not 60 <= window <= 86_400:
         raise TrialUnavailable("trial is misconfigured (LI_TRIAL_SPEND_WINDOW_SECONDS); the trial fails closed")
     return int(math.floor(usd / BOUNDS.max_estimated_usd + 1e-9)), window
+
+
+def research_calls_per_day() -> int:
+    """Exact research calls the current ceiling configuration admits per rolling 86,400 s, globally."""
+    calls, window = spend_ceiling()
+    # A sliding window of `window` s admitting `calls` admits at most calls * ceil(86,400 / window) in any day.
+    return calls * math.ceil(86_400 / window)
+
+
+def max_concurrent() -> int:
+    value = _env_int("LI_TRIAL_MAX_CONCURRENT", DEFAULT_MAX_CONCURRENT)
+    if not 1 <= value <= MAX_CONCURRENT_CEILING:
+        raise TrialUnavailable("trial is misconfigured (LI_TRIAL_MAX_CONCURRENT); the trial fails closed")
+    return value
 
 
 def operator_manifest() -> dict[str, Any] | None:
@@ -159,31 +214,113 @@ def operator_manifest() -> dict[str, Any] | None:
     return value
 
 
-# ---- abuse accounting: keyed limiter, store-backed only --------------------------------
+# ---- client address and keyed hashing ------------------------------------------------
+
+def trusted_proxy() -> str:
+    """'vercel' or 'none'. Forwarding headers are trusted only on Vercel, which sets and overwrites them."""
+    raw = os.environ.get(TRUSTED_PROXY_ENV, "").strip().lower()
+    on_vercel = os.environ.get("VERCEL", "").strip() == "1"
+    if raw == "":
+        return "vercel" if on_vercel else "none"
+    if raw == "none":
+        return "none"
+    if raw == "vercel":
+        if not on_vercel:
+            # Off Vercel these headers are whatever the client sent: never trust them.
+            raise TrialUnavailable(f"trial is misconfigured ({TRUSTED_PROXY_ENV}=vercel outside Vercel); the trial "
+                                   "fails closed")
+        return "vercel"
+    raise TrialUnavailable(f"trial is misconfigured ({TRUSTED_PROXY_ENV}); the trial fails closed")
+
+
+def _normalise_ip(value: str) -> str | None:
+    try:
+        ip = ipaddress.ip_address(value.strip().strip("[]").split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        # One subscriber usually holds a whole /64: key IPv6 clients by their /64 so rotation does not reset limits.
+        return str(ipaddress.IPv6Network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
+def trial_client_ip(request: Request) -> str:
+    """The client address used for per-IP limits.
+
+    On Vercel: the first address in `x-vercel-forwarded-for`, else `x-forwarded-for`, both set by Vercel's edge.
+    Anywhere else: the socket peer only; client-supplied forwarding headers (and LI_CLIENT_IP_HEADER) are ignored.
+    No usable address refuses (fail closed). An address is not a user: shared egress (ChatGPT, NAT, VPN) puts many
+    people behind one address.
+    """
+    if trusted_proxy() == "vercel":
+        for header in VERCEL_CLIENT_IP_HEADERS:
+            value = request.headers.get(header, "")
+            if value.strip():
+                ip = _normalise_ip(value.split(",", 1)[0])
+                if ip is None:
+                    break
+                return ip
+        raise TrialUnavailable("the client address could not be determined; the trial fails closed")
+    peer = request.client.host if request.client else ""
+    ip = _normalise_ip(peer) if peer else None
+    if ip is None:
+        raise TrialUnavailable("the client address could not be determined; the trial fails closed")
+    return ip
+
+
+def _ip_hmac_key() -> bytes:
+    key = os.environ.get(IP_HMAC_ENV, "")
+    if len(key.strip()) < MIN_IP_HMAC_KEY_CHARS:
+        # Without the secret, per-IP keys would be reversible digests: refuse every trial request instead.
+        raise TrialUnavailable(f"trial is misconfigured ({IP_HMAC_ENV} is missing or shorter than "
+                               f"{MIN_IP_HMAC_KEY_CHARS} characters); the trial fails closed")
+    return key.encode("utf-8")
+
+
+def trial_key_hash(bucket: str, key: str) -> str:
+    """The digest stored for (bucket, key). Per-IP keys: HMAC-SHA256 under the env secret. Global keys: SHA-256 of a
+    constant (no client data). The raw IP never leaves the process."""
+    if bucket in PER_IP_BUCKETS:
+        return hmac.new(_ip_hmac_key(), f"{bucket}:{key}".encode("utf-8"), hashlib.sha256).hexdigest()
+    if key != GLOBAL_KEY:
+        raise ValueError("global trial buckets take only the operator key")
+    return ratelimit.rate_key(bucket, key)
+
+
+# ---- admission: store-backed only ----------------------------------------------------
 
 def _store() -> Any:
     try:
-        return SupabaseStore()
+        return SupabaseStore(timeout=STORE_TIMEOUT_S)
     except Exception:
         raise TrialUnavailable() from None
+
+
+def _wait_seconds(value: Any) -> float:
+    """A limiter answer: a non-negative finite number. Anything else is malformed and refuses."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TrialUnavailable()
+    value = float(value)
+    if not math.isfinite(value) or value < 0:
+        raise TrialUnavailable()
+    return value
 
 
 def _take(bucket: str, key: str, limit: int, window: int) -> float:
     """One store-backed take. Any store problem refuses (never an in-memory fallback, never allow)."""
+    if bucket not in ratelimit.DEFAULT_LIMITS:
+        raise ValueError(f"unknown rate-limit bucket {bucket!r}")
+    key_hash = trial_key_hash(bucket, key)
     if limit <= 0:
         return float(window)
     store = _store()
     try:
-        wait = ratelimit.take(bucket, key, store=store, limit=limit, window=window)
+        wait = store.take_keyed_rate_limit(bucket, key_hash, int(limit), int(window))
     except Exception:
         raise TrialUnavailable() from None
-    try:
-        wait = float(wait)
-    except (TypeError, ValueError):
-        raise TrialUnavailable() from None
-    if not math.isfinite(wait) or wait < 0:
-        raise TrialUnavailable()
-    return wait
+    return _wait_seconds(wait)
 
 
 def take_request_allowance(ip: str) -> float:
@@ -212,8 +349,39 @@ def _reserve_spend() -> None:
     calls, window = spend_ceiling()
     wait = _take("trial_spend", GLOBAL_KEY, calls, window)
     if wait:
-        raise TrialRefused("TRIAL_CEILING_REACHED", "the operator-wide trial spending ceiling for the current "
-                           "window is reached; nothing ran. Retry later or connect an account.")
+        raise TrialRefused("TRIAL_CEILING_REACHED", "the operator-wide trial ceiling for the current window is "
+                           "reached; nothing ran. Retry later or connect an account.")
+
+
+class _Slot:
+    """One global concurrency slot (li_acquire_trial_slot), released when the call's worker ends."""
+
+    def __init__(self) -> None:
+        self.slot_id = str(uuid.uuid4())
+        self.held = False
+
+    def acquire(self) -> None:
+        limit = max_concurrent()
+        store = _store()
+        try:
+            answer = store.acquire_trial_slot(self.slot_id, limit, SLOT_LEASE_S)
+        except Exception:
+            raise TrialUnavailable() from None
+        if isinstance(answer, bool) or not isinstance(answer, int) or answer < 0:
+            raise TrialUnavailable()
+        if answer:
+            raise TrialRefused("TRIAL_BUSY", f"the trial is running its maximum of {limit} concurrent call(s); "
+                               f"nothing ran. Retry in about {answer} s.")
+        self.held = True
+
+    def release(self) -> None:
+        if not self.held:
+            return
+        self.held = False
+        try:
+            _store().release_trial_slot(self.slot_id)
+        except Exception:
+            pass  # the lease (SLOT_LEASE_S) reclaims it; release failure never extends capacity
 
 
 # ---- the real pipeline, bounded ------------------------------------------------------
@@ -227,36 +395,84 @@ def _text(value: Any, name: str, limit: int) -> str:
     return value
 
 
-def _registry(source: str, query: str | None):
+class _Deadline:
+    def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.clock = clock
+        self.end = clock() + seconds
+        self.cancelled = False
+
+    def remaining(self) -> float:
+        return self.end - self.clock()
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def check(self, stage: str = "") -> None:
+        if self.cancelled or self.clock() > self.end:
+            raise TrialRefused("TRIAL_TIME_BOUND", f"the trial time bound of {BOUNDS.max_seconds:g} s was reached"
+                               f"{' before ' + stage if stage else ''}; nothing was saved")
+
+
+def _pick_manifest_entry(sources: list[dict[str, str]], objective: str) -> dict[str, str]:
+    """The one manifest page a call fetches: the best token overlap with the objective; ties go to the first."""
+    from ..evidence.types import topic_tokens
+
+    wanted = set(topic_tokens(objective))
+    best, best_score = sources[0], -1
+    for entry in sources:
+        text = " ".join(entry.get(k, "") for k in ("title", "publisher", "note", "url"))
+        score = len(set(topic_tokens(text)) & wanted)
+        if score > best_score:
+            best, best_score = entry, score
+    return best
+
+
+def _registry(source: str, query: str | None, objective: str = "",
+              fetcher: TrialFetcher | None = None) -> tuple[Any, Any, TrialFetcher]:
+    """(registry, the one network adapter, the call's fetcher). The fetcher is the adapter client's only opener."""
     from .. import build_registry
     from ..adapters.clinicaltrials import ClinicalTrialsAdapter
     from ..adapters.europepmc import EuropePMCAdapter
-    from ..adapters.manifest import OperatorSourcesAdapter, parse_manifest
+    from ..adapters.manifest import OperatorSourcesAdapter, SourceManifest, parse_manifest
     from ..adapters.public_api import PublicHTTPClient
 
     if source not in TRIAL_SOURCES:
         raise TrialRefused("TRIAL_INVALID_INPUT", "source must be one of: " + ", ".join(TRIAL_SOURCES))
+    if fetcher is None:
+        fetcher = TrialFetcher(deadline_at=time.monotonic() + BOUNDS.max_seconds,
+                               max_requests=BOUNDS.max_upstream_requests, max_redirects=BOUNDS.max_redirects,
+                               max_body_bytes=BOUNDS.max_body_bytes, op_timeout_s=BOUNDS.http_timeout_s)
     registry = build_registry(texts=None, urls=None, fetch_orbits=False, imagery=False, search=None)
+
+    def client(name: str) -> PublicHTTPClient:
+        return PublicHTTPClient(name, timeout=BOUNDS.http_timeout_s, max_retries=BOUNDS.max_retries,
+                                min_interval_s=0.0, opener=fetcher)
+
     if source == "operator":
         manifest_doc = operator_manifest()
         if manifest_doc is None:
             raise TrialRefused("TRIAL_INVALID_INPUT", "the operator source manifest is not enabled on this trial")
-        manifest = parse_manifest(json.dumps(manifest_doc, sort_keys=True, allow_nan=False).encode("utf-8"))
+        try:
+            manifest = parse_manifest(json.dumps(manifest_doc, sort_keys=True, allow_nan=False).encode("utf-8"))
+        except ValueError:
+            raise TrialUnavailable("the operator trial manifest is invalid; the trial fails closed") from None
         if len(manifest.sources) > BOUNDS.max_manifest_urls:
             raise TrialUnavailable("the operator trial manifest exceeds the trial bound; the trial fails closed")
-        registry.register(OperatorSourcesAdapter(manifest, client=PublicHTTPClient(
-            "operator_sources", timeout=BOUNDS.http_timeout_s, max_retries=0, min_interval_s=0.0)))
-        return registry
+        # One upstream request per call: only the best-matching page is fetched (manifest hash kept for provenance).
+        entry = _pick_manifest_entry(manifest.sources, objective or (query or ""))
+        one = SourceManifest([entry], manifest.sha256, manifest.path, manifest.description)
+        adapter = OperatorSourcesAdapter(one, client=client("operator_sources"))
+        registry.register(adapter)
+        return registry, adapter, fetcher
     query = _text(query, "query", BOUNDS.max_query_chars)
-    adapter = EuropePMCAdapter if source == "europepmc" else ClinicalTrialsAdapter
+    cls = EuropePMCAdapter if source == "europepmc" else ClinicalTrialsAdapter
     key = "europepmc" if source == "europepmc" else "trials"
     try:
-        registry.register(adapter(query, max_records=BOUNDS.max_records, max_pages=BOUNDS.max_pages,
-                                  client=PublicHTTPClient(key, timeout=BOUNDS.http_timeout_s, max_retries=0,
-                                                          min_interval_s=0.0)))
+        adapter = cls(query, max_records=BOUNDS.max_records, max_pages=BOUNDS.max_pages, client=client(key))
     except ValueError as exc:
         raise TrialRefused("TRIAL_INVALID_INPUT", str(exc)) from None
-    return registry
+    registry.register(adapter)
+    return registry, adapter, fetcher
 
 
 def _clarification(objective: str) -> dict[str, Any] | None:
@@ -275,18 +491,71 @@ def _clarification(objective: str) -> dict[str, Any] | None:
     }
 
 
-class _Deadline:
-    def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic) -> None:
-        self.clock = clock
-        self.end = clock() + seconds
+def _retrieval_report(source: str, adapter: Any, fetcher: TrialFetcher) -> dict[str, Any]:
+    """How the one source retrieval ended. Read from the adapter itself, never inferred from the findings."""
+    from ..adapters.public_api import OUTCOME_COMPLETE, OUTCOME_UNAVAILABLE
 
-    def check(self, stage: str = "") -> None:
-        if self.clock() > self.end:
-            raise TrialRefused("TRIAL_TIME_BOUND", f"the trial time bound of {BOUNDS.max_seconds:g} s was reached"
-                               f"{' before ' + stage if stage else ''}; nothing was saved")
+    if source == "operator":
+        fetched = adapter.fetched
+        if fetched is None:
+            outcome, errors, records = "not_attempted", ["the source was not queried"], 0
+        else:
+            ok = [f for f in fetched if f.outcome == OUTCOME_COMPLETE]
+            outcome = OUTCOME_COMPLETE if ok and len(ok) == len(fetched) else OUTCOME_UNAVAILABLE
+            errors, records = [f.error for f in fetched if f.error], len(ok)
+    else:
+        r = adapter.retrieval
+        if r is None:
+            outcome, errors, records = "not_attempted", ["the source was not queried"], 0
+        else:
+            outcome, errors, records = r.outcome, list(r.errors), r.records
+    return {
+        "source": source,
+        "outcome": outcome,
+        "records": records,
+        "errors": [str(e)[:300] for e in errors][:5],
+        "upstream_requests": fetcher.attempts,
+        "upstream_requests_refused": fetcher.refused,
+        "upstream_bytes": fetcher.bytes_read,
+    }
 
 
-def _research(objective: str, source: str, query: str | None, deadline: _Deadline) -> dict[str, Any]:
+def cost_report(platform_estimate: dict[str, Any] | None, provider_info: dict[str, Any] | None,
+                ledger: Any) -> dict[str, Any]:
+    """Platform price and infrastructure cost, kept apart. Both are estimates; neither is a measured cost."""
+    from .costing import actual_run_cost
+
+    try:
+        infra = actual_run_cost(provider_info or {}, ledger)
+        known: float | None = infra.known_cost_usd
+        unpriced = list(infra.unpriced_components)
+    except ValueError:  # an invalid operator rate: say so rather than guess
+        known, unpriced = None, ["invalid_operator_rate"]
+    return {
+        "platform_price_estimate": {
+            "kind": "estimate",
+            "measured": False,
+            "usd": None if platform_estimate is None else platform_estimate.get("total_usd"),
+            "detail": platform_estimate,
+            "meaning": "What LI's pay-as-you-go price list would charge for this research plan. The trial charges "
+                       "nothing. The trial ceiling is counted in these dollars.",
+        },
+        "infrastructure_cost_estimate": {
+            "kind": "estimate",
+            "measured": False,
+            "known_usd": known,
+            "unpriced_components": unpriced,
+            "fully_priced": known is not None and not unpriced,
+            "meaning": "LI's cost to serve this call, from hosted/costing.actual_run_cost with operator-configured "
+                       "rates (LI_RETRIEVAL_USD_PER_CALL, LI_INFRA_USD_PER_RUN). The heuristic provider makes no "
+                       "model call and the sources are free keyless APIs. Components without a configured rate are "
+                       "listed as unpriced, never counted as zero. Not a metered cost.",
+        },
+    }
+
+
+def _research(objective: str, source: str, query: str | None, deadline: _Deadline,
+              slot: _Slot) -> dict[str, Any]:
     from ..billing.pricing import PLANS
     from ..intent.compiler import compile_intent
     from ..kernel.ledger import CostLedger
@@ -295,7 +564,11 @@ def _research(objective: str, source: str, query: str | None, deadline: _Deadlin
     from ..research.planner import plan_research
     from .snapshots import durable_snapshot
 
-    registry = _registry(source, query)
+    fetcher = TrialFetcher(deadline_at=deadline.end, max_requests=BOUNDS.max_upstream_requests,
+                           max_redirects=BOUNDS.max_redirects, max_body_bytes=BOUNDS.max_body_bytes,
+                           op_timeout_s=BOUNDS.http_timeout_s, clock=deadline.clock,
+                           cancelled=lambda: deadline.cancelled)
+    registry, adapter, fetcher = _registry(source, query, objective, fetcher)
     contract = compile_intent(objective, max_spend_usd=BOUNDS.max_estimated_usd)
     plan = plan_research(contract, registry)
     network_adapters = {t.adapter_id for t in plan.tasks if t.adapter_id != "documents"}
@@ -304,14 +577,29 @@ def _research(objective: str, source: str, query: str | None, deadline: _Deadlin
                            "for larger research")
     estimate = estimate_run(plan, "payg")
     if estimate.total_usd > BOUNDS.max_estimated_usd + 1e-9:
-        raise TrialRefused("TRIAL_BOUND_EXCEEDED", f"estimated cost ${estimate.total_usd:.2f} exceeds the trial "
-                           f"per-call bound of ${BOUNDS.max_estimated_usd:.2f}; nothing ran")
-    _reserve_spend()  # worst-case per-call amount against the operator-wide ceiling, before any work
+        raise TrialRefused("TRIAL_BOUND_EXCEEDED", f"platform-price estimate ${estimate.total_usd:.2f} exceeds the "
+                           f"trial per-call bound of ${BOUNDS.max_estimated_usd:.2f}; nothing ran")
+    deadline.check("admission")
+    slot.acquire()          # global concurrency slot before any spend or upstream request
+    deadline.check("admission")
+    _reserve_spend()        # worst-case per-call platform-price allocation against the global ceiling
     deadline.check("research")
+    ledger = CostLedger(PLANS["payg"].rate)
     result = run_investigation(contract, registry, HeuristicProvider(), "payg", approved=False,
-                               ledger=CostLedger(PLANS["payg"].rate), stage_hook=deadline.check)
+                               ledger=ledger, stage_hook=deadline.check)
+    deadline.check("output")
+    retrieval = _retrieval_report(source, adapter, fetcher)
+    if retrieval["outcome"] not in ("complete", "partial"):
+        raise TrialRefused("TRIAL_SOURCE_FAILED", f"the {source} retrieval failed ({retrieval['outcome']}: "
+                           f"{'; '.join(retrieval['errors']) or 'no data'}). No evidence was retrieved, so nothing "
+                           f"was concluded. The call counted against the trial ceiling.")
     snap = durable_snapshot(result)
-    snap["_estimate"] = estimate.as_dict()
+    from ..kernel.receipt import verify_receipt
+
+    if not snap.get("receipt_intact") or not verify_receipt(snap["receipt"]):
+        raise TrialRefused("TRIAL_RECEIPT_INVALID", "the research receipt did not verify; no result is returned")
+    snap["_retrieval"] = retrieval
+    snap["_cost"] = cost_report(estimate.as_dict(), snap["receipt"].get("provider"), ledger)
     return snap
 
 
@@ -319,7 +607,8 @@ def _envelope(tool: str, kind: str, snap: dict[str, Any], base_url: str) -> dict
     from .snapshots import summary
 
     receipt = snap["receipt"]
-    return {
+    retrieval = snap["_retrieval"]
+    out = {
         "trial": True,
         "identity": "anonymous",
         "persisted": False,
@@ -334,17 +623,21 @@ def _envelope(tool: str, kind: str, snap: dict[str, Any], base_url: str) -> dict
         },
         "receipt": receipt,
         "receipt_intact": bool(snap["receipt_intact"]),
+        "retrieval": retrieval,
         "provenance": {
             "sources": receipt.get("sources", []),
             "evidence": receipt.get("evidence", []),
             "rejected_evidence": receipt.get("rejected_evidence", []),
             "provider": receipt.get("provider"),
         },
-        "estimate": snap.get("_estimate"),
+        "cost": snap["_cost"],
         "bounds": asdict(BOUNDS),
         "limitations": list(LIMITATIONS),
         "account_connection": _account_pointer(base_url),
     }
+    if retrieval["outcome"] == "partial":
+        out["warnings"] = [f"partial retrieval from {retrieval['source']}: " + "; ".join(retrieval["errors"])]
+    return out
 
 
 def _account_pointer(base_url: str) -> dict[str, str]:
@@ -379,16 +672,52 @@ def _bounded_output(out: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _trial_call(tool: str, objective: str, run: Callable[[_Deadline], dict[str, Any]],
+def _run_bounded(fn: Callable[[], dict[str, Any]], deadline: _Deadline) -> dict[str, Any]:
+    """Run `fn` in a worker thread and answer by the deadline, whatever the worker is doing.
+
+    At the deadline the caller gets TRIAL_TIME_BOUND; the deadline is cancelled so the worker's next stage check
+    stops it, and its upstream socket is already shut by the fetcher's watchdog. The worker releases its
+    concurrency slot when it ends.
+    """
+    box: dict[str, Any] = {}
+    ctx = contextvars.copy_context()
+
+    def target() -> None:
+        try:
+            box["value"] = ctx.run(fn)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=target, name="li-trial-call", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline.remaining()))
+    if worker.is_alive():
+        deadline.cancel()
+        raise TrialRefused("TRIAL_TIME_BOUND", f"the trial time bound of {BOUNDS.max_seconds:g} s was reached; "
+                           "nothing was saved")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _trial_call(tool: str, objective: str, run: Callable[[_Deadline, _Slot], dict[str, Any]],
                 base_url: str) -> dict[str, Any]:
-    _take_call_allowance()
-    gated = _clarification(objective)
-    if gated is not None:
-        gated.update({"trial": True, "identity": "anonymous", "persisted": False, "tool": tool,
-                      "limitations": list(LIMITATIONS), "account_connection": _account_pointer(base_url)})
-        return gated
     deadline = _Deadline(BOUNDS.max_seconds)
-    return _bounded_output(run(deadline))
+
+    def body() -> dict[str, Any]:
+        _take_call_allowance()
+        gated = _clarification(objective)
+        if gated is not None:
+            gated.update({"trial": True, "identity": "anonymous", "persisted": False, "tool": tool,
+                          "limitations": list(LIMITATIONS), "account_connection": _account_pointer(base_url)})
+            return gated
+        slot = _Slot()
+        try:
+            return _bounded_output(run(deadline, slot))
+        finally:
+            slot.release()
+
+    return _run_bounded(body, deadline)
 
 
 # ---- the trial MCP server ----------------------------------------------------------
@@ -449,8 +778,8 @@ def build_trial_mcp(base_url: str) -> TrialMCPServer:
         5 records. Returns findings, provenance, limitations and the native receipt inline; nothing is saved."""
         question = _text(question, "question", BOUNDS.max_question_chars)
 
-        def run(deadline: _Deadline) -> dict[str, Any]:
-            snap = _research(question, source, query or question, deadline)
+        def run(deadline: _Deadline, slot: _Slot) -> dict[str, Any]:
+            snap = _research(question, source, query or question, deadline, slot)
             return _envelope("trial_research", "research", snap, base)
 
         return _trial_call("trial_research", question, run, base)
@@ -462,8 +791,8 @@ def build_trial_mcp(base_url: str) -> TrialMCPServer:
         claim = _text(claim, "claim", BOUNDS.max_question_chars)
         objective = f"Verify the claim: {claim}"
 
-        def run(deadline: _Deadline) -> dict[str, Any]:
-            snap = _research(objective, source, query or claim, deadline)
+        def run(deadline: _Deadline, slot: _Slot) -> dict[str, Any]:
+            snap = _research(objective, source, query or claim, deadline, slot)
             return _envelope("trial_verify_claim", "claim_verification", snap, base)
 
         return _trial_call("trial_verify_claim", objective, run, base)
@@ -483,17 +812,22 @@ def build_trial_mcp(base_url: str) -> TrialMCPServer:
             raise ToolError(str(exc)) from None
         objective = f"Compare {' versus '.join(names)}: {question}"
 
-        def run(deadline: _Deadline) -> dict[str, Any]:
+        def run(deadline: _Deadline, slot: _Slot) -> dict[str, Any]:
             from ..discovery.context import DiscoveryContext
             from ..discovery.pipeline import run_discovery
             from .snapshots import durable_discovery_snapshot
 
-            snap = _research(objective, source, query or " ".join(names), deadline)
+            snap = _research(objective, source, query or " ".join(names), deadline, slot)
             out = _envelope("trial_compare", "discovery_comparison", snap, base)
             deadline.check("discovery")
             ctx = DiscoveryContext(snap["knowledge_map2"], snap["receipt"])
             disc = durable_discovery_snapshot(run_discovery(ctx, objective))
             deadline.check("output")
+            from ..discovery.receipt import verify_discovery_receipt
+
+            if not disc.get("receipt_intact") or not verify_discovery_receipt(disc["receipt"]):
+                raise TrialRefused("TRIAL_RECEIPT_INVALID", "the discovery receipt did not verify; no result is "
+                                   "returned")
             out["options"] = names
             out["discovery"] = {
                 "summary": disc["summary"],
@@ -533,8 +867,9 @@ class TrialEndpoint:
         scope["auth"] = AuthCredentials()
         auth_token = auth_context_var.set(None)
         try:
-            ip = ratelimit.client_ip(Request(scope))
             try:
+                # Fail closed: no trusted client address, no IP HMAC key or no working store refuses the request.
+                ip = trial_client_ip(Request(scope))
                 wait = await run_in_threadpool(take_request_allowance, ip)
             except TrialUnavailable:
                 await JSONResponse({"error": "temporarily_unavailable",
@@ -661,9 +996,20 @@ def trial_manifest(base_url: str = "https://capabilities.invalid") -> dict[str, 
             "global_requests_per_minute": TRIAL_GLOBAL_REQUESTS[2],
             "per_ip_tool_calls_per_hour": TRIAL_IP_CALLS[2],
             "spend_ceiling_usd_default": DEFAULT_SPEND_CEILING_USD,
+            "spend_ceiling_unit": "LI platform-price estimate dollars (not infrastructure cost)",
             "spend_window_seconds_default": DEFAULT_SPEND_WINDOW_S,
-            "backend": "li_take_keyed_rate_limit (database); fail closed, no in-memory fallback",
+            "worst_case_allocation_per_research_call_usd": BOUNDS.max_estimated_usd,
+            "research_calls_per_day_default": int(math.floor(DEFAULT_SPEND_CEILING_USD / BOUNDS.max_estimated_usd
+                                                             + 1e-9)),
+            "max_concurrent_calls_default": DEFAULT_MAX_CONCURRENT,
+            "concurrency_slot_lease_seconds": SLOT_LEASE_S,
+            "per_ip_key": f"HMAC-SHA256 under {IP_HMAC_ENV}; missing key refuses every trial request",
+            "client_address": "Vercel: x-vercel-forwarded-for, else x-forwarded-for (set by Vercel's edge); "
+                              "elsewhere: the socket peer only",
+            "backend": "li_take_keyed_rate_limit and li_acquire_trial_slot (database); fail closed, no in-memory "
+                       "fallback",
         },
+        "worst_case_wall_seconds": BOUNDS.max_seconds + HTTP_ADMISSION_STORE_CALLS * STORE_TIMEOUT_S,
         "protected_tools": "refused with ACCOUNT_REQUIRED; connect an account at /mcp",
         "not_proven": ["real ChatGPT client: no ChatGPT connector installation or session against /mcp-trial "
                        "has been performed"],
