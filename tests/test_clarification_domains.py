@@ -12,6 +12,11 @@ question bank was the water-purifier design bank. Recorded behavior of that code
   D. water-purifier design             -> CLARIFICATION_REQUIRED, the same 7 design keys
   Shopify commercial objective         -> READY_FOR_SCOPE_APPROVAL, round 0, 0 questions
 
+Capability-testing defects recorded on e232ced (asserted in tests/test_clarification_gaps.py):
+
+  D4. "Is it worth it?"                -> READY_FOR_SCOPE_APPROVAL, round 0, 0 questions
+  D6. medical + legal + financial      -> medical bank only; medical notice and exclusions only
+
 `ORIGINAL_RULE` below is a frozen copy of that rule so the record is executable. The
 corrected behavior is asserted by every other test here. No test makes a model,
 network, Stripe or Supabase call.
@@ -264,13 +269,22 @@ class QuestionBankTests(unittest.TestCase):
         self.assertIsNone(re.search(r"clinician|patient|Shopify|revenue|lawyer", water, re.IGNORECASE))
         commercial = repr(to_dict(clarify_objective(COMMERCIAL))["questions"])
         self.assertIsNone(re.search(r"clinician|patient|preclinical|lawyer|water", commercial, re.IGNORECASE))
-        # Mixed: a legal question about a business takes the legal bank (priority), not two banks.
+        # Mixed (changed by D6): a legal question about a business keeps legal as the primary
+        # domain, but no longer drops the financial domain -- it gets one merged, bounded bank
+        # (purpose/scope first) instead of the legal bank alone. Domain-foreign prompts
+        # (clinician, patient, water) still never leak in.
         mixed = clarify_objective("Which licensing regulations apply to a Shopify business selling supplements?")
         self.assertEqual(mixed.domain, "legal")
-        self.assertEqual(keys(mixed), [q.key for q in LEGAL_QUESTIONS])
+        self.assertEqual(mixed.domains, ["legal", "financial"])
+        self.assertEqual(keys(mixed)[:2], ["purpose", "scope"])
+        self.assertIn("jurisdiction", keys(mixed))
+        self.assertIn("launch_budget", keys(mixed))
         self.assertEqual(mixed.classification["domains_matched"], ["legal", "financial"])
-        # Medical and financial: medical (the higher-consequence domain) wins.
+        self.assertIsNone(re.search(r"clinician|patient|preclinical|water",
+                                    repr(to_dict(mixed)["questions"]), re.IGNORECASE))
+        # Medical and financial: medical (the higher-consequence domain) is primary.
         self.assertEqual(classify_objective("Estimate revenue for epilepsy drugs.").domain, "medical")
+        self.assertEqual(classify_objective("Estimate revenue for epilepsy drugs.").domains, ("medical", "financial"))
 
 
 class NoticeAndCharterTests(unittest.TestCase):

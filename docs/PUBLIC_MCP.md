@@ -49,13 +49,32 @@ questions instead, and the work happens through an Intelligence Case.
 Every objective is classified deterministically (explicit keyword and
 structure rules in `lofgren_intelligence/intent/clarification.py`, no model
 call). The result is returned as `domain`, `consequence` and
-`classification` (`broad_scope`, `domains_matched`, `signals`):
+`classification` (`broad_scope`, `underspecified`, `domains`, `mixed_domain`,
+`domains_matched`, `signals`), plus a top-level `domains` list:
 
 - **Domain** (priority order): `medical`, `legal`, `financial`, `safety`,
   `engineering_design`, `general`. A design objective whose only special
   match is safety keeps the engineering-design bank. An objective that matches
-  no domain takes the `general` path; one bank is used per case, so no other
-  domain's prompts appear.
+  no domain takes the `general` path, so no other domain's prompts appear.
+- **Mixed domains**: when two or more of medical, legal, financial and safety
+  match, `domain` is still the priority winner, but `domains` lists every
+  matched domain (signal `mixed_domain:medical+legal+financial`). The case then
+  carries every domain's `safety_notice` text (one combined notice) and every
+  domain's `exclusions` (no duplicates), and asks one merged bank of at most 7
+  questions: `purpose` and `scope` first, then each domain's decision-relevant
+  keys round-robin in priority order (medical `population`, `focus`,
+  `evidence_types`; legal `jurisdiction`, `parties`, `time`; financial
+  `launch_budget`, `revenue_definition`, `risk_and_hours`; safety
+  `jurisdiction`, `standards`, `affected_population`), skipping keys already
+  asked. The Case Charter records `domains`.
+- **Underspecified**: an objective that names no subject -- no word outside a
+  fixed list of function words, pronouns and generic verbs/evaluatives ("Is it
+  worth it?", "Should I do this?"), or a short objective (8 tokens or fewer)
+  that leans on "it", "this", "that", "they"... with at most one subject word
+  ("Is it legal?") -- is flagged `underspecified` (signals
+  `underspecified:no_subject_noun`, `underspecified:deictic_without_referent`).
+  With no domain it gets the `subject`, `purpose`, `scope` questions; with a
+  domain, `subject` leads that domain's bank (still at most 7).
 - **Consequence** is `high` for medical, legal and safety objectives, for any
   amount of money (a financial objective with a money target), and for public
   impact (public, communities, residents...); otherwise `standard`.
@@ -63,8 +82,10 @@ call). The result is returned as `domain`, `consequence` and
   and/or, an enumeration of several open dimensions, ranking words
   ("strongest", "best") or prioritisation ("which ... deserve priority").
 - **Rule**: clarification is required for any high-consequence objective, any
-  broad objective, and (as before) any short design objective. A simple
-  factual question ("What is the capital of France?") skips it.
+  broad objective, any underspecified objective, and (as before) any short
+  design objective. A simple, well-formed factual question that names its
+  subject ("What is the capital of France?", "When was the transistor
+  invented?") skips it.
 
 | Domain | Question keys (highest information first) |
 | --- | --- |
@@ -74,6 +95,8 @@ call). The result is returned as `domain`, `consequence` and
 | safety / infrastructure | `jurisdiction`, `standards`, `affected_population`, `purpose` |
 | engineering_design | `location`, `users`, `problem`, `success`, `cost`, `constraints`, `source_or_environment` (unchanged) |
 | general | `purpose`, `scope`, `time_cutoff`, `sources`, `depth_budget` |
+| underspecified (no domain) | `subject` (what "it"/"this" refers to), `purpose` (incl. what "worth it" means), `scope` |
+| mixed (2+ of medical/legal/financial/safety) | `purpose`, `scope`, then the domains' decision-relevant keys round-robin, max 7 |
 
 Each question carries why it matters and examples. Only unanswered questions
 are asked; an answer (including `unknown`) is kept and never asked again. No
