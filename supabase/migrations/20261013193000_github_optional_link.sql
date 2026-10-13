@@ -13,6 +13,8 @@ CREATE TABLE public.li_github_connections (
 ALTER TABLE public.li_github_link_states ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.li_github_connections ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.li_github_link_states, public.li_github_connections FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TYPE public.li_github_link_states, public.li_github_connections FROM PUBLIC, anon, authenticated;
+GRANT USAGE ON TYPE public.li_github_link_states, public.li_github_connections TO service_role;
 
 CREATE FUNCTION public.li_github_begin_link(p_subject uuid,p_state_hash text,p_verifier text,p_callback text)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$

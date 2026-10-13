@@ -390,7 +390,8 @@ class MigrationApplyTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def store_rpc_names() -> set[str]:
-    return set(re.findall(r'self\.rpc\(\s*"([a-z_]+)"', STORE_SOURCE.read_text(encoding="utf-8")))
+    sources = [STORE_SOURCE, ROOT / "lofgren_intelligence" / "hosted" / "github_onboarding.py"]
+    return {name for source in sources for name in re.findall(r"\.rpc\(\s*[\"']([a-z_]+)[\"']", source.read_text(encoding="utf-8"))}
 
 
 @pg_test
