@@ -64,7 +64,7 @@ LI_TABLES = {
     "li_access_tokens", "li_refresh_tokens", "li_runs", "li_usage_events", "li_rate_events",
     "li_billing_events", "li_discoveries", "li_artifacts", "li_action_proposals", "li_outcomes",
     "li_improvements", "li_usage_reservations", "li_rate_limit_events", "li_cases", "li_case_charters",
-    "li_case_approvals", "li_case_events", "li_research_jobs",
+    "li_case_approvals", "li_case_events", "li_research_jobs", "li_trial_slots",
 }
 INTERNAL_FUNCTIONS = {"li_research_job_account", "li_research_job_abandon_settlement"}
 
@@ -480,6 +480,9 @@ class PrivilegeTest(PgCase):
         expected = store_rpc_names()
         self.assertIn("li_save_research_job_result", expected)
         self.assertIn("li_claim_targeted_research_job", expected)
+        self.assertIn("li_acquire_trial_slot", expected)
+        self.assertIn("li_release_trial_slot", expected)
+        self.assertEqual(len(expected), 30, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -1290,6 +1293,80 @@ class RateLimitTest(PgCase):
         self.assertEqual((out[0] + out[1]).count(True), 5)
         self.assertEqual(self.one("select count(*) from public.li_rate_events where user_id = %s and bucket = 'mcp'",
                                   (user,))[0], 5)
+
+
+@pg_test
+class TrialSlotTest(PgCase):
+    """Global /mcp-trial concurrency slots (li_acquire_trial_slot / li_release_trial_slot)."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin.execute("delete from public.li_trial_slots")
+        self.admin.commit()
+
+    def test_concurrent_acquisitions_never_exceed_the_bound_across_connections(self):
+        stores = [self.new_store() for _ in range(4)]
+        ids = [[str(uuid.uuid4()) for _ in range(3)] for _ in stores]
+
+        def burst(i):
+            return [stores[i].acquire_trial_slot(sid, 3, 60) for sid in ids[i]]
+
+        out = run_concurrently([lambda i=i: burst(i) for i in range(len(stores))])
+        flat = [w for row in out for w in row]
+        self.assertEqual(flat.count(0), 3, flat)
+        self.assertTrue(all(1 <= w <= 60 for w in flat if w), flat)
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 3)
+
+    def test_release_frees_a_slot_once(self):
+        a, b, c = (str(uuid.uuid4()) for _ in range(3))
+        self.assertEqual(self.store.acquire_trial_slot(a, 2, 60), 0)
+        self.assertEqual(self.store.acquire_trial_slot(b, 2, 60), 0)
+        self.assertGreater(self.store.acquire_trial_slot(c, 2, 60), 0)
+        self.assertTrue(self.store.release_trial_slot(a))
+        self.assertFalse(self.store.release_trial_slot(a))
+        self.assertEqual(self.store.acquire_trial_slot(c, 2, 60), 0)
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 2)
+
+    def test_expired_lease_is_reclaimed(self):
+        a, b = str(uuid.uuid4()), str(uuid.uuid4())
+        self.assertEqual(self.store.acquire_trial_slot(a, 1, 1), 0)
+        self.assertGreater(self.store.acquire_trial_slot(b, 1, 60), 0)
+        expires = self.one("select expires_at from public.li_trial_slots where slot_id = %s", (a,))[0]
+        self.wait_db_past(expires)
+        self.assertEqual(self.store.acquire_trial_slot(b, 1, 60), 0)
+        self.assertFalse(self.store.release_trial_slot(a))
+
+    def test_invalid_arguments_and_reused_ids_are_refused(self):
+        sid = str(uuid.uuid4())
+        for args in ((sid, 0, 60), (sid, 101, 60), (sid, 2, 0), (sid, 2, 601)):
+            with self.subTest(args=args):
+                self.assertGreater(self.store.acquire_trial_slot(*args), 0)
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 0)
+        self.assertEqual(self.store.acquire_trial_slot(sid, 5, 60), 0)
+        self.assertEqual(self.store.acquire_trial_slot(sid, 5, 60), 60)  # same id: refused, not doubled
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 1)
+
+    def test_trial_spend_ceiling_admits_exactly_its_calls_across_connections(self):
+        key = sha("trial_spend:operator")  # trial.trial_key_hash for the global bucket (no client data)
+        self.admin.execute("delete from public.li_rate_limit_events where bucket = 'trial_spend'")
+        self.admin.commit()
+        a, b = self.new_store(), self.new_store()
+        out = run_concurrently([lambda: [a.take_keyed_rate_limit("trial_spend", key, 5, 86400) for _ in range(5)],
+                                lambda: [b.take_keyed_rate_limit("trial_spend", key, 5, 86400) for _ in range(5)]])
+        self.assertEqual((out[0] + out[1]).count(0), 5)
+
+    def test_api_roles_cannot_touch_the_slots(self):
+        for role in ("anon", "authenticated"):
+            conn = role_connect(self.dbname, role)
+            self.addCleanup(conn.close)
+            with self.subTest(role=role):
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute("select public.li_acquire_trial_slot(%s::uuid, 2, 60)", (str(uuid.uuid4()),))
+                conn.rollback()
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute("select count(*) from public.li_trial_slots")
+                conn.rollback()
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 0)
 
 
 # ---------------------------------------------------------------------------

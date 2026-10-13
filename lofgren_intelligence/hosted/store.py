@@ -52,8 +52,12 @@ class SupabaseStore:
         url: str | None = None,
         service_key: str | None = None,
         publishable_key: str | None = None,
+        *,
+        timeout: float = 30.0,
     ) -> None:
         self.url = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
+        # Per-request timeout of every PostgREST call (the trial passes a shorter one to bound its wall time).
+        self.timeout = float(timeout)
         self.service_key = service_key or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
         self.publishable_key = publishable_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
         if not self.url:
@@ -83,7 +87,7 @@ class SupabaseStore:
         headers = dict(self._headers)
         if prefer:
             headers["prefer"] = prefer
-        return _db(url, method, headers=headers, body=body)
+        return _db(url, method, headers=headers, body=body, timeout=self.timeout)
 
     def rpc(self, name: str, body: dict[str, Any]) -> Any:
         return _db(
@@ -91,6 +95,7 @@ class SupabaseStore:
             "POST",
             headers=self._headers,
             body=body,
+            timeout=self.timeout,
         )
 
     def verify_supabase_user(self, access_token: str) -> dict[str, Any]:
@@ -595,6 +600,35 @@ class SupabaseStore:
         if isinstance(result, bool) or not isinstance(result, (int, float)) or result < 0:
             raise StoreUnavailable("rate limiter returned an invalid answer")
         return int(result)
+
+    def acquire_trial_slot(self, slot_id: str, max_concurrent: int, lease_seconds: int) -> int:
+        """Take one global trial concurrency slot (li_acquire_trial_slot): 0 = taken, else seconds to wait.
+
+        Anything but a non-negative integer answer is a StoreError, so the trial fails closed.
+        """
+        result = self.rpc("li_acquire_trial_slot", {
+            "p_slot_id": slot_id,
+            "p_max_concurrent": int(max_concurrent),
+            "p_lease_seconds": int(lease_seconds),
+        })
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if isinstance(result, bool) or not isinstance(result, int) or result < 0:
+            raise StoreError("trial slot store returned an invalid answer")
+        return result
+
+    def release_trial_slot(self, slot_id: str) -> bool:
+        """Release one trial concurrency slot (li_release_trial_slot). True when this call removed it."""
+        result = self.rpc("li_release_trial_slot", {"p_slot_id": slot_id})
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if not isinstance(result, bool):
+            raise StoreError("trial slot store returned an invalid answer")
+        return result
 
     def list_runs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         return self._select_all(
