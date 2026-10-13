@@ -23,6 +23,7 @@ from .. import __version__
 from .auth import ActivationRefused, AuthError, OAuthService
 from .mcp_sdk import build_mcp
 from . import console, site, trial
+from .runtime_probe import runtime_probe
 from .journey import checkout_return_html, consent_intro_html, landing_html
 from .ratelimit import client_ip, rate_limited
 from .service import AccountDeletionPending, PublicService, PublicServiceError
@@ -57,6 +58,15 @@ def _error(status: int, code: str, description: str | None = None) -> JSONRespon
         body["error_description"] = description
     return JSONResponse(body, status_code=status,
                         headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+def _authorization_unavailable() -> JSONResponse:
+    return JSONResponse(
+        {"error": "temporarily_unavailable",
+         "error_description": "the authorization service is temporarily unavailable; retry later"},
+        status_code=503,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Retry-After": "30"},
+    )
 
 
 async def healthz(request: Request) -> Response:
@@ -125,7 +135,9 @@ async def oauth_register(request: Request) -> Response:
     try:
         body = await _json_body(request, 100_000)
         return JSONResponse(OAuthService(SupabaseStore()).register_client(body), status_code=201)
-    except (ValueError, AuthError, StoreError) as exc:
+    except StoreError:
+        return _authorization_unavailable()
+    except (ValueError, AuthError) as exc:
         return _error(400, "invalid_client_metadata", str(exc))
 
 
@@ -157,7 +169,9 @@ async def oauth_complete(request: Request) -> Response:
             headers["Retry-After"] = str(exc.retry_after)
         return JSONResponse({"error": exc.error, "error_description": str(exc)}, status_code=exc.status,
                             headers=headers)
-    except (ValueError, KeyError, AuthError, StoreError) as exc:
+    except StoreError:
+        return _authorization_unavailable()
+    except (ValueError, KeyError, AuthError) as exc:
         return _error(400, "invalid_request", str(exc))
 
 
@@ -188,12 +202,7 @@ async def oauth_token(request: Request) -> Response:
             return _error(400, "unsupported_grant_type")
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except StoreError:
-        return JSONResponse(
-            {"error": "temporarily_unavailable",
-             "error_description": "the authorization service is temporarily unavailable; retry later"},
-            status_code=503,
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Retry-After": "30"},
-        )
+        return _authorization_unavailable()
     except AuthError as exc:
         return _error(400, "invalid_grant", str(exc))
 
@@ -262,8 +271,8 @@ async def oauth_authorize(request: Request) -> Response:
         return _error(400, "invalid_request", "authorization code + PKCE S256 required")
     try:
         client = SupabaseStore().get_oauth_client(params["client_id"])
-    except StoreError as exc:
-        return _error(503, "temporarily_unavailable", str(exc))
+    except StoreError:
+        return _authorization_unavailable()
     if not client or params["redirect_uri"] not in (client.get("redirect_uris") or []):
         return _error(400, "invalid_client")
     if params["resource"] != public_base() + "/mcp":
@@ -921,6 +930,7 @@ def build_app():
     routes = [
         Route("/", landing, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/internal/runtime-probe", runtime_probe, methods=["POST"]),
         Route("/readyz", readyz, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", oauth_resource_root, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth_server_metadata, methods=["GET"]),
@@ -960,7 +970,7 @@ def build_app():
     if surface == "mcp":
         # Explicit allowlist: new customer/admin routes remain excluded by default.
         allowed = {
-            "/healthz", "/readyz", "/.well-known/oauth-protected-resource",
+            "/healthz", "/readyz", "/internal/runtime-probe", "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
             "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
             "/oauth/revoke", "/oauth/disconnect",
