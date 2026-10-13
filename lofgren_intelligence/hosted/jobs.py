@@ -73,6 +73,11 @@ class JobSettings:
     poll_seconds: float = 5.0
     reclaim_limit: int = 100
     shutdown_grace_seconds: float = 25.0
+    # Consecutive cycles whose store calls were all refused as auth/config errors
+    # (HTTP 401/403, missing configuration) before the worker exits nonzero.
+    max_auth_failures: int = 3
+    # Cap of the exponential poll backoff while the store has transient faults.
+    max_backoff_seconds: float = 60.0
 
     @classmethod
     def from_env(cls) -> "JobSettings":
@@ -93,6 +98,8 @@ class JobSettings:
             poll_seconds=_float_env("LI_WORKER_POLL_SECONDS", 5.0, 0.1),
             reclaim_limit=_int_env("LI_WORKER_RECLAIM_LIMIT", 100, 1),
             shutdown_grace_seconds=_float_env("LI_WORKER_SHUTDOWN_GRACE_SECONDS", 25.0, 0.0),
+            max_auth_failures=min(100, _int_env("LI_WORKER_MAX_AUTH_FAILURES", 3, 1)),
+            max_backoff_seconds=_float_env("LI_WORKER_MAX_BACKOFF_SECONDS", 60.0, 0.1),
         )
 
     def backoff(self, attempts: int) -> int:
@@ -170,6 +177,16 @@ class JobLease:
             self._thread = threading.Thread(target=self._run, name=f"lease-{self.job_id}", daemon=True)
             self._thread.start()
         return self
+
+    def abandon(self) -> None:
+        """Give the job up without touching the store (the shutdown grace elapsed).
+
+        Sets flags only (no lock, no I/O): heartbeats stop, so the lease expires and
+        another worker reclaims the job; any later stage boundary of the abandoned
+        attempt raises LeaseLost, so it can neither finish nor charge.
+        """
+        self.lost = True
+        self._stop.set()
 
     def stop(self) -> None:
         self._stop.set()

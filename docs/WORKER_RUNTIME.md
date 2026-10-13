@@ -84,7 +84,10 @@ settled or marked is left alone.
 | `LI_JOB_QUEUE_TTL_SECONDS` | 86400 | A queued job not started within this fails with `QUEUE_EXPIRED`. |
 | `LI_WORKER_POLL_SECONDS` | 5 | Idle poll interval. |
 | `LI_WORKER_RECLAIM_LIMIT` | 100 | Expired leases handled per cycle. |
-| `LI_WORKER_SHUTDOWN_GRACE_SECONDS` | 25 | Wait for in-flight jobs after SIGTERM. |
+| `LI_WORKER_SHUTDOWN_GRACE_SECONDS` | 25 | Longest wait for in-flight jobs after SIGTERM, counted from the signal; then the process exits. |
+| `LI_WORKER_STORE_TIMEOUT_SECONDS` | 15 | Per-call store timeout of the worker (bounds a call in flight when SIGTERM arrives). |
+| `LI_WORKER_MAX_AUTH_FAILURES` | 3 | Consecutive cycles the store refuses (HTTP 401/403, bad configuration) before the worker exits with code 2. |
+| `LI_WORKER_MAX_BACKOFF_SECONDS` | 60 | Cap of the exponential poll backoff while the store has transient faults. |
 | `LI_SYNC_MAX_WORK_UNITS` / `LI_SYNC_MAX_NETWORK_TASKS` | 40 / 2 | Bound on the synchronous path. |
 
 The worker also needs the service's own variables: `SUPABASE_URL`,
@@ -96,7 +99,34 @@ attempts run out. Refusals such as an invalid input, a budget overrun or a
 case error fail at once. On SIGTERM the worker stops claiming, and running
 jobs requeue at their next stage with `WORKER_SHUTDOWN`, which does not use up
 an attempt. If a worker is killed, its lease expires and another worker
-reclaims the job. Execution is at most one completed run per job, and the
+reclaims the job.
+
+## Shutdown and store errors
+
+- **Signals.** The SIGTERM/SIGINT handler only sets a flag (no lock, no I/O,
+  no logging). The main loop polls it at least every 0.2 seconds, stops
+  claiming and asks running jobs to requeue at their next stage boundary.
+- **Grace is enforced.** The worker waits at most
+  `LI_WORKER_SHUTDOWN_GRACE_SECONDS`, counted from the signal. A job still
+  inside a stage after that is abandoned: its lease stops heartbeating, any
+  later stage boundary of that attempt is refused (it can neither save a result
+  nor charge), and the process exits at once (job threads are daemon threads,
+  and the entry point hard-exits if one is still alive). The lease expires and
+  another worker reclaims the job, which then runs and settles exactly once.
+  Keep grace + store timeout below the host's kill delay (for example Render's
+  `maxShutdownDelaySeconds`; with 45 seconds the defaults give 25 + 15 = 40).
+- **Startup self-check.** Before the loop, the worker reads one row of
+  `li_research_jobs` with the service key. Rejected credentials (HTTP
+  401/403), a missing table (404) or a URL that is not a Supabase REST endpoint
+  exit with code 2 and a clear cause. A transient fault is logged and retried.
+- **During the loop.** Auth/config refusals are logged as errors naming the
+  cause; after `LI_WORKER_MAX_AUTH_FAILURES` consecutive refused cycles the
+  worker exits with code 2. Transient faults (network, timeouts, 408/429/5xx)
+  back off exponentially up to `LI_WORKER_MAX_BACKOFF_SECONDS`, logging the
+  cause; one healthy cycle resets the backoff.
+- **`--once`** exits 0 only when the store was reachable and accepted the
+  worker: 2 for an auth/config refusal, 3 when the store was unreachable.
+- Log lines never contain the service key or the Supabase URL. Execution is at most one completed run per job, and the
 job's single reservation is settled once.
 
 ## Scaling

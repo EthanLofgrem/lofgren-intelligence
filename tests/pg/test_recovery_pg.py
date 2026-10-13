@@ -21,10 +21,16 @@ Proof map:
   R7 lease expiry then reclaim by another worker ..... test_r7_*
   R8 actual usage settlement (release / keep cost) ... test_r8_*
   R9 reopen a saved result after a restart ........... test_r9_*
+  V4 external execution refused, no effect ........... test_v4_*
+
+The V4 proof builds a real approved action through the real store (job -> run -> discovery ->
+artifact -> proposal -> browser approval, all persisted in PostgreSQL) and shows execute_action
+refuses it with LI_EXTERNAL_EXECUTION_ENABLED unset or "false": no executor, adapter or HTTP call,
+and the stored action row is left exactly as approved.
 
 What this does not prove: PostgREST's own HTTP/JSON mapping and JWT role switch, Supabase hosted
-auth, a hosted worker process or real SIGTERM delivery, and V4 external execution (disabled by
-LI_EXTERNAL_EXECUTION_ENABLED before any database access; see tests/test_recovery_proof.py).
+auth, and a hosted worker process or real SIGTERM delivery (see tests/test_worker_hardening.py
+for the local-process shutdown proof).
 """
 
 from __future__ import annotations
@@ -48,9 +54,11 @@ from tests.pg.test_migrations_pg import (
     tearDownModule as _drop_created_databases,
 )
 
+from lofgren_intelligence.discovery.fixtures import warehouse_design
 from lofgren_intelligence.hosted import service as service_module
 from lofgren_intelligence.hosted.jobs import JobLease, JobSettings, LeaseLost
-from lofgren_intelligence.hosted.service import CaseApprovalRequired, PublicService
+from lofgren_intelligence.hosted.service import CaseApprovalRequired, PublicService, PublicServiceError
+from tests.helpers import TEXTS as V4_TEXTS
 from lofgren_intelligence.hosted.worker import Worker
 
 # psycopg is optional outside postgres-proof (the default suite only loads this module by name).
@@ -524,6 +532,55 @@ class RecoveryPgTest(PgCase):
         self.assertEqual(self.counts(), (1, 1))
         self.assertEqual(self.one("select result_run_id from public.li_research_jobs where id = %s",
                                   (job_id,))[0], before["run_id"])
+
+    # ---- V4 -----------------------------------------------------------------------------
+
+    def test_v4_external_execution_is_refused_through_the_real_store_and_performs_no_effect(self):
+        no_network = patch("urllib.request.urlopen", side_effect=AssertionError("no HTTP call may be made"))
+        no_network.start()
+        self.addCleanup(no_network.stop)
+        os.environ["LI_PUBLIC_MAX_DISCOVERY_UNITS"] = "100"
+        # A real approved action, every step persisted in PostgreSQL through the real store.
+        job_id = self.new_service(self.store).start_research(self.user, {
+            "objective": "Is industrial construction in the Phoenix metro increasing?",
+            "texts": dict(V4_TEXTS), "idempotency_key": "v4"}, BASE)["job_id"]
+        self.assertEqual([r["status"] for r in self.worker("w1").run_once()["jobs"]], ["succeeded"])
+        run_id = self.job_row(job_id)[5]
+        discovery = self.service.discover(self.user, {"run_id": run_id, "objective": "Choose a fictional warehouse size",
+                                                      "design": warehouse_design()})
+        built = self.service.build_artifact(self.user, {"discovery_id": discovery["discovery_id"],
+                                                        "kind": "structured_bundle"})
+        with patch.object(service_module.HTTPSWebhookAdapter, "preflight", return_value={"ready": True}):
+            proposed = self.service.propose_action(self.user, {
+                "artifact_id": built["artifact_id"], "target": "https://example.com/hook",
+                "payload": {"hello": "world"}, "cost_usd": 0}, BASE)
+        action_id = proposed["action_id"]
+        self.assertEqual(self.service.approve_action(self.user, action_id)["status"], "approved")
+        row_sql = ("select status, receipt, v5_handoff, executed_at, grant_record, approval_record "
+                   "from public.li_action_proposals where user_id = %s and action_id = %s")
+        approved = self.one(row_sql, (self.user, action_id))
+        self.assertEqual(approved[0], "approved")
+        self.assertIsNotNone(approved[4])
+        self.assertIsNotNone(approved[5])
+        counts_before = self.counts()
+
+        for setting in (None, "false"):
+            with self.subTest(LI_EXTERNAL_EXECUTION_ENABLED=setting),                     patch.dict(os.environ, {}, clear=False),                     patch.object(service_module, "execute_authorized") as execute,                     patch.object(service_module, "HTTPSWebhookAdapter") as adapter:
+                if setting is None:
+                    os.environ.pop("LI_EXTERNAL_EXECUTION_ENABLED", None)
+                else:
+                    os.environ["LI_EXTERNAL_EXECUTION_ENABLED"] = setting
+                store = self.new_rest_store()
+                with self.assertRaisesRegex(PublicServiceError, "EXTERNAL_EXECUTION_DISABLED"):
+                    self.new_service(store).execute_action(self.user, {"action_id": action_id})
+                execute.assert_not_called()
+                adapter.assert_not_called()
+                # The refusal read the real row and wrote nothing.
+                self.assertEqual(store.calls, ["GET li_action_proposals"])
+                self.assertEqual(self.one(row_sql, (self.user, action_id)), approved)
+                self.assertEqual(self.one("select count(*) from public.li_outcomes where user_id = %s",
+                                          (self.user,))[0], 0)
+                self.assertEqual(self.counts(), counts_before, "a refusal charges nothing")
 
 
 if __name__ == "__main__":

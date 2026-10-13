@@ -3,7 +3,8 @@ name: postgres-proof
 # Applies supabase/migrations to a REAL PostgreSQL 16 server (an ephemeral
 # service container) on top of scripts/pg/bootstrap_supabase_stub.sql and runs
 # tests/pg/test_migrations_pg.py and tests/pg/test_recovery_pg.py (the real PublicService
-# and Worker recovery proof) against it. Any failure, error or skipped test
+# and Worker recovery proof, plus the V4 external-execution refusal through the
+# real store) against it. Any failure, error or skipped test
 # fails the job: a skip here would mean nothing was proven.
 #
 # Scope: SQL/RPC behaviour, locking, concurrency and grants on real Postgres.
