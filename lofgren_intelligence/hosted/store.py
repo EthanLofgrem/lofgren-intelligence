@@ -213,6 +213,12 @@ class SupabaseStore:
     def revoke_oauth_token(self, digest: str, client_id: str) -> None:
         self.rpc("li_revoke_oauth_token", {"p_token_hash": digest, "p_client_id": client_id})
 
+    def oauth_refresh_replay(self, digest: str, client_id: str) -> bool:
+        """li_oauth_refresh_replay: True when `digest` is a refresh token of `client_id` that was
+        already consumed (or is being consumed by a concurrent request); the user's connection of
+        that client is then revoked (li_disconnect_oauth_client). Unknown tokens answer False."""
+        return self.rpc("li_oauth_refresh_replay", {"p_token_hash": digest, "p_client_id": client_id}) is True
+
     def put_access_token(self, row: dict[str, Any]) -> None:
         self._table("li_access_tokens", "POST", body=row, prefer="return=minimal")
 

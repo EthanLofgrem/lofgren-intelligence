@@ -17,3 +17,7 @@ Token issuance uses `li_issue_oauth_tokens` to insert access/refresh credentials
 5. Test disconnect through an actual MCP client. Local tests are not a hosted-client receipt.
 
 Do not deploy the API before the migration: its token exchange now deliberately requires atomic issuance and fails closed when that RPC is absent. No credentials, infrastructure charges, or remote database writes are part of this source increment.
+
+## Refresh rotation and replay (forward migration 20261013190000)
+
+`20261013190000_li_oauth_refresh_replay.sql` builds on the three applied OAuth migrations without editing them. A refresh revokes the access token issued with the consumed refresh token; a consumed refresh token presented again (or by another client, or concurrently with the request that consumed it) revokes the whole user/client connection through `li_disconnect_oauth_client`; disconnect also clears those replay tombstones. `/oauth/revoke` and `/oauth/token` answer `401 invalid_client` for a missing or unknown `client_id`. It adds one service-role-only RPC (`li_oauth_refresh_replay`), one table (`li_oauth_consumed_refresh`, RLS on, no API-role grants) and one column (`li_access_tokens.refresh_token_hash`), and deletes the unkeyed limiter rows of the client-keyed buckets. Apply it to staging before deploying the application revision that calls it; it has not been applied or exercised by a hosted client yet.

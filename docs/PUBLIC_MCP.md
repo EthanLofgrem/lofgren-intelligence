@@ -208,8 +208,73 @@ Discovery endpoints:
 - `/oauth/register`
 - `/oauth/authorize`
 - `/oauth/token`
+- `/oauth/revoke` (RFC 7009; advertised as `revocation_endpoint`)
 
 Remote MCP endpoint: `/mcp`.
+
+### Token lifetimes, rotation and revocation
+
+Access tokens live one hour and refresh tokens 90 days; both are opaque and
+only their SHA-256 hashes are stored. The unit of revocation is a user's
+**connection of one client** (`li_disconnect_oauth_client`, migration
+`20261012060000_oauth_disconnect.sql`): every access token of that user and
+client is revoked, and every refresh token and pending authorization code is
+deleted. Issuance (`li_issue_oauth_tokens`) and disconnect share one
+user/client advisory lock, so a consumed grant whose connection was revoked
+meanwhile cannot mint tokens. The forward migration
+`20261013190000_li_oauth_refresh_replay.sql` adds rotation and replay handling
+on top of that schema (no second token-family scheme):
+
+- Refresh tokens rotate (OAuth 2.1 section 4.3.1): `li_consume_refresh_token`
+  consumes the presented refresh token (one winner under concurrency), then
+  `li_issue_oauth_tokens` issues the new pair and, in the same transaction,
+  **revokes the access token issued with the consumed refresh token**. The
+  client has just shown it holds the newer credential; leaving the old access
+  token valid for its remaining hour would only widen the window for a leaked
+  copy. Each access token records the hash of its sibling refresh token for
+  this purpose.
+- **Replay detection.** A consumed refresh token leaves a tombstone (hash,
+  user, client, original expiry). Presenting it again, or presenting it while
+  a concurrent request that consumed it has not issued yet, is replay
+  (`li_oauth_refresh_replay`): the user's connection of that client is
+  revoked, including tokens just issued to the legitimate holder, and the
+  client must authorize again. The check is repeated under the user/client
+  lock, so a concurrent issuance either fails or has its tokens revoked. A
+  refresh token presented by a client other than the one it was issued to is
+  refused and revokes the owner's connection the same way. Disconnect deletes
+  the tombstones, so a credential from before a disconnect cannot revoke a
+  later, fresh consent.
+- **Revocation** (`POST /oauth/revoke`, RFC 7009,
+  `application/x-www-form-urlencoded`): `token` and `client_id` are required
+  (clients are public, so the client identifies itself without a secret);
+  `token_type_hint` is optional and both kinds are always searched. A
+  registered client always gets `200` with an empty body: for a token revoked
+  now, one already revoked or expired, an unknown token, or a token issued to
+  another client (which is not revoked). A missing or unknown `client_id` is
+  `401 invalid_client`; a missing `token` is `400 invalid_request`. A
+  currently valid access **or** refresh token revokes the user's whole
+  connection of that client (stricter than the RFC 7009 minimum), and an
+  invalid historical credential never disconnects a fresh consent
+  (`20261012202113_oauth_revocation_replay.sql`). A revoked access token gets
+  `401` on `/mcp`. The endpoint is `no-store` (with `Pragma: no-cache`),
+  limited per IP like `/oauth/token` (bucket `oauth_revoke`, 60/min), and
+  served on both the full and the dedicated MCP surface. A signed-in user can
+  also disconnect a client without its token (`POST /oauth/disconnect`, see
+  `docs/OAUTH_DISCONNECT.md`).
+- At `/oauth/token`, an unknown or missing `client_id` is `401 invalid_client`
+  (RFC 6749 section 5.2) for both grant types; problems with the code, the
+  verifier, the redirect URI or the refresh token of a known client stay
+  `400 invalid_grant`. Store faults are `503`, never a client error.
+- Access tokens issued before `20261013190000` carry no sibling refresh hash.
+  Refreshing their refresh token cannot identify them, so they are not
+  revoked early and expire within their hour.
+
+Implemented and tested: the behaviour above is covered by unit tests and by
+the real-PostgreSQL proof (`OAuthAndBillingTest`, `OAuthRefreshReplayTest` in
+`tests/pg/test_migrations_pg.py`). Not verified: `20261013190000` has not been
+applied to staging or exercised by a hosted client. Apply it before deploying
+this code: token issuance writes the new `refresh_token_hash` column, and the
+token endpoint calls `li_oauth_refresh_replay`.
 
 ## Founding Free rule
 
@@ -297,6 +362,9 @@ an undecided allowance: an undecided plan fails closed.
 - `SUPABASE_SERVICE_ROLE_KEY` (server only)
 - `SUPABASE_PUBLISHABLE_KEY`
 - `LI_PUBLIC_BASE_URL`
+- `LI_RATE_LIMIT_HMAC_KEY` (server only, at least 32 random characters: the
+  rate-limiter key HMAC secret; without it sign-up and activation fail closed
+  and `/readyz` reports `rate_limit_key`)
 - optional `BRAVE_API_KEY`
 - optional model provider variables
 - actual-cost rates:
@@ -389,7 +457,7 @@ unreachable`, never with table, column or constraint names.
 Rate limits: `/mcp` is limited per user in the database
 (`li_take_rate_limit`). The endpoints reachable before a user is known —
 `/oauth/register` (10/min), `/oauth/authorize` (60/min),
-`/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
+`/oauth/authorize/complete` (20/min), `/oauth/token` and `/oauth/revoke` (60/min each),
 `/account/export` and `/account/delete` (20/min together),
 `/actions/{id}/details` and `/actions/{id}/approve` (60/min together),
 `/cases/{id}/charter` and `/cases/{id}/approve` (60/min together) — are
@@ -400,9 +468,23 @@ these limits are **global**: every request takes a slot through the atomic
 SQL function `li_take_keyed_rate_limit` (migration
 `20261005191819_keyed_rate_limits.sql`, table `li_rate_limit_events`, RLS
 enabled, no anon/authenticated grants), so they hold across serverless
-instances and cold starts. Keys are sent as SHA-256 digests of
-`<bucket>:<ip>`; raw IPs are not stored, and rows are pruned once outside
-their window. Without a configured store (local development) or with
+instances and cold starts. Keys are sent as HMAC-SHA256 digests of
+`<bucket>:<ip>` (or `<bucket>:<email domain>`) keyed by the server secret
+`LI_RATE_LIMIT_HMAC_KEY` (at least 32 characters, set only in the host's
+secret store); raw IPs are not stored, a stored digest cannot be reversed by
+hashing every IPv4 address without the secret, and rows are pruned once
+outside their window. (Until migration `20261013190000` these were unsalted
+SHA-256 digests; that migration deletes them.)
+
+**Missing `LI_RATE_LIMIT_HMAC_KEY` (fail closed).** When the store backend is
+in use and the key is missing or shorter than 32 characters, no digest is
+sent to the database. Client registration, consent completion and Founding
+Free activation (the fail-closed buckets) refuse with `503` and
+`Retry-After`; the other limited endpoints fall back to the per-instance
+limiter (limited, never unlimited). Each such request logs an error, and
+`/readyz` answers `503` with the generic component `rate_limit_key` in
+`missing` (never the value), so a deployment without the key is visibly not
+ready. Without a configured store (local development) or with
 `LI_RATE_LIMIT_BACKEND=memory`, the limiter falls back to process memory,
 which is **per instance**. If the store errors, sign-up and activation
 endpoints (`/oauth/register`, `/oauth/authorize/complete`) **fail closed**
