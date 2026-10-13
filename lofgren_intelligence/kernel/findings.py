@@ -12,7 +12,16 @@ from typing import TYPE_CHECKING
 from ..evidence.scope import merge_scopes
 from ..evidence.types import ClaimStatus, Finding, Unknown
 from ..research.planner import CAPABILITY_SOURCES
-from .answers import CONFIRMED, answer, claim_scope, declared_dependencies, select_claims
+from .answers import (
+    CONFIRMED,
+    answer,
+    claim_scope,
+    declared_dependencies,
+    registered_note,
+    select_claims,
+    set_apart_registrations,
+    without_registrations,
+)
 
 if TYPE_CHECKING:
     from .pipeline import RunResult
@@ -53,17 +62,49 @@ def post_verification_unknowns(r: "RunResult") -> list[Unknown]:
     return out
 
 
-def _answer_text(role: str, statuses: dict[str, int], top: str | None, n_contra: int, n_unknown: int) -> str:
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word.replace('claim', 'claims')}"
+
+
+def independent_lineages(r: "RunResult", claim) -> int:
+    """How many independent source lineages support a claim: the verifier's count when it scored the claim (only
+    temporally eligible evidence), otherwise the independence groups of its supporting evidence."""
+    f = r.factors.get(claim.id)
+    if f is not None:
+        return f.independent_sources
+    g = r.graph
+    return len({g.sources[g.evidence[e].source_id].independence_group for e in claim.supporting
+                if e in g.evidence and g.evidence[e].source_id in g.sources})
+
+
+def status_counts(r: "RunResult", claims: list) -> str:
+    """The headline count of a finding's usable claims by their real status. Only VERIFIED claims are confirmed; a
+    partially verified claim resting on one lineage is a single-source claim, and is said to be unconfirmed."""
+    verified = sum(1 for c in claims if c.status == ClaimStatus.VERIFIED)
+    partial = [c for c in claims if c.status == ClaimStatus.PARTIALLY_VERIFIED]
+    single = sum(1 for c in partial if independent_lineages(r, c) <= 1)
+    parts = []
+    if verified:
+        parts.append(_plural(verified, "verified claim"))
+    if single:
+        parts.append(_plural(single, "single-source claim") + ", not confirmed")
+    if len(partial) - single:
+        parts.append(_plural(len(partial) - single, "partially verified claim") + ", not confirmed")
+    return "; ".join(parts)
+
+
+def _answer_text(role: str, counts: str, top, n_contra: int, n_unknown: int, registered: str = "") -> str:
     if role == "gap":
         return (f"{n_unknown} open unknown(s) remain; each has an acquisition plan below."
                 if n_unknown else "No open unknowns for the sources connected.")
     if role == "contradict":
         return (f"{n_contra} contradiction(s) between independent sources; see below."
                 if n_contra else "No contradiction found among the collected evidence.")
+    tail = f" {registered}" if registered else ""
     if top:
-        confirmed = statuses.get("verified", 0) + statuses.get("partially_verified", 0)
-        return f"Evidence supports: {top.rstrip('.')} ({confirmed} confirmed claim(s))."
-    return "No finding meets the evidence standard yet."
+        lead = "Evidence supports" if top.status == ClaimStatus.VERIFIED else "Evidence suggests, unconfirmed"
+        return f"{lead}: {top.statement.rstrip('.')} ({counts}).{tail}"
+    return f"No finding meets the evidence standard yet.{tail}"
 
 
 class FindingIntegrityError(ValueError):
@@ -82,10 +123,7 @@ def _derivation(question_id: str, claims: list, scopes: dict[str, list[str]]) ->
 
 def _finding(r: "RunResult", question_id: str, question_text: str, role: str, stage: str, claims: list,
              scopes: dict[str, list[str]], derivation: str | None, unknowns: list,
-             finding_id: str = "", named: list[str] | None = None) -> Finding:
-    statuses: dict[str, int] = {}
-    for c in claims:
-        statuses[c.status.value] = statuses.get(c.status.value, 0) + 1
+             finding_id: str = "", named: list[str] | None = None, registered: str = "") -> Finding:
     confirmed = [c for c in claims if c.status in CONFIRMED]
     top = confirmed[0] if confirmed else None
     claim_ids = {c.id for c in claims}
@@ -108,7 +146,7 @@ def _finding(r: "RunResult", question_id: str, question_text: str, role: str, st
     return Finding(
         question_id=question_id,
         question=question_text,
-        answer=_answer_text(role, statuses, top.statement if top else None, len(contradictions), len(unknowns)),
+        answer=_answer_text(role, status_counts(r, claims), top, len(contradictions), len(unknowns), registered),
         claim_ids=[c.id for c in claims],
         evidence_ids=evidence_ids,
         contradiction_ids=[cx.id for cx in contradictions],
@@ -138,7 +176,9 @@ def build_findings(r: "RunResult") -> list[Finding]:
     for q in r.contract.questions:
         unknowns = [u for u in r.unknowns if u.question_id == q.id or (q.role == "gap" and u.status == "open")]
         claims = answer(q, r).claims
-        findings.append(_finding(r, q.id, q.text, q.role, q.stage, claims, claim_scope(q, r), None, unknowns))
+        registered = registered_note(set_apart_registrations(q, r), r)
+        findings.append(_finding(r, q.id, q.text, q.role, q.stage, claims, claim_scope(q, r), None, unknowns,
+                                 registered=registered))
     return findings
 
 
@@ -158,8 +198,10 @@ def synthesis_finding(r: "RunResult", question_ids: list[str], role: str = "stat
     unknowns = [u for u in r.unknowns if u.question_id in ids]
     text = " + ".join(by_id[q].text for q in ids)
     # Every named question is recorded, even one that contributed no claim.
-    return _finding(r, ids[0], text, role, "", select_claims(role, "", pool), scopes, "synthesis", unknowns,
-                    named=ids)
+    kept = without_registrations(role, pool, r)
+    removed = [c for c in pool if c not in kept]
+    return _finding(r, ids[0], text, role, "", select_claims(role, "", kept), scopes,
+                    "synthesis", unknowns, named=ids, registered=registered_note(removed, r))
 
 
 def authorized_questions(f: Finding, r: "RunResult") -> set[str]:

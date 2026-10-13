@@ -78,14 +78,9 @@ class RelationTests(unittest.TestCase):
 
 
 class VerifierTests(unittest.TestCase):
-    def test_numeric_agreement_is_not_transitive_and_is_order_invariant(self):
-        items = tuple((publisher, f"Warehouse space in Phoenix reached {value} million square feet.")
+    def _assert_order_invariant(self, template, expected, contradictions):
+        items = tuple((publisher, template.format(value))
                       for publisher, value in (("A", 100), ("B", 114), ("C", 129)))
-        expected = {
-            100: ({"A", "B"}, {"C"}, ClaimStatus.CONTESTED),
-            114: ({"A", "B", "C"}, set(), ClaimStatus.VERIFIED),
-            129: ({"B", "C"}, {"A"}, ClaimStatus.CONTESTED),
-        }
         for ordering in itertools.permutations(items):
             with self.subTest(order=ordering):
                 graph, _ = graph_with(*ordering)
@@ -100,7 +95,35 @@ class VerifierTests(unittest.TestCase):
                         publishers = lambda ids: {graph.sources[graph.evidence[e].source_id].publisher for e in ids}
                         self.assertEqual((publishers(c.supporting), publishers(c.contradicting), c.status),
                                          expected[round(c.value / 1_000_000)])
-                    self.assertEqual(len(graph.contradictions), 1)
+                    self.assertEqual(len(graph.contradictions), contradictions)
+
+    def test_numeric_agreement_is_not_transitive_and_is_order_invariant(self):
+        # Approximate figures agree within 15%: 114 agrees with 100 and with 129,
+        # yet 100 and 129 (22.5% apart) must not corroborate each other through it.
+        self._assert_order_invariant(
+            "Warehouse space in Phoenix reached about {} million square feet.",
+            {
+                100: ({"A", "B"}, {"C"}, ClaimStatus.CONTESTED),
+                114: ({"A", "B", "C"}, set(), ClaimStatus.VERIFIED),
+                129: ({"B", "C"}, {"A"}, ClaimStatus.CONTESTED),
+            },
+            contradictions=1,
+        )
+
+    def test_exact_figures_agree_only_at_stated_precision_within_tolerance(self):
+        # Exact figures (precision-v2): 100 vs 114 agree (100 is stated to the
+        # hundred million and they are 12.3% apart); 114 vs 129 differ at the
+        # stated precision; 100 vs 129 are 22.5% apart, so the coarse round figure
+        # cannot corroborate them. Nothing is verified; the result is order invariant.
+        self._assert_order_invariant(
+            "Warehouse space in Phoenix reached {} million square feet.",
+            {
+                100: ({"A", "B"}, {"C"}, ClaimStatus.CONTESTED),
+                114: ({"A", "B"}, {"C"}, ClaimStatus.CONTESTED),
+                129: ({"C"}, {"A", "B"}, ClaimStatus.CONTESTED),
+            },
+            contradictions=2,
+        )
 
     def test_independent_confirmation_verifies(self):
         g, (a, b) = graph_with(
