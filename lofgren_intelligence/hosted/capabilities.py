@@ -115,6 +115,7 @@ def registered_tools(base_url: str = "https://capabilities.invalid") -> list[str
 
 def manifest(tool_names: list[str] | None = None) -> dict[str, Any]:
     from .service import ADHOC_UNIT_COSTS
+    from .trial import trial_manifest
 
     names = sorted(tool_names if tool_names is not None else registered_tools())
     unclassified = sorted(set(names) - set(TOOL_LEVELS))
@@ -157,6 +158,8 @@ def manifest(tool_names: list[str] | None = None) -> dict[str, Any]:
         "levels": levels,
         "tools": tools,
         "not_proven": list(NOT_PROVEN),
+        # The anonymous /mcp-trial endpoint is a separate server; its tools are trial-only and never on /mcp.
+        "trial": trial_manifest(),
     }
 
 

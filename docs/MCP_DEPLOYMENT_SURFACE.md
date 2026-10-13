@@ -34,3 +34,13 @@ metadata returns it unchanged. This matches the MCP SDK's canonical HTTP URL
 serialization. The MCP resource remains the exact origin plus `/mcp`; OAuth
 endpoint paths are unchanged. Preflight compares these identities exactly
 rather than treating distinct issuer strings as interchangeable.
+
+## Anonymous trial endpoint
+
+With `LI_TRIAL_ENABLED=true` (disabled by default), the dedicated MCP surface
+also serves `/mcp-trial`: a separate, anonymous MCP server with three bounded,
+trial-only, `noauth` tools, store-backed fail-closed abuse controls, a global
+concurrency bound and an operator-wide ceiling (5 research calls per day by
+default). It also requires `LI_TRIAL_IP_HMAC_KEY` and the
+`20261011120000_li_trial_slots` migration; without either it refuses every
+request. `/mcp` and its OAuth checks are unchanged. See `docs/MCP_TRIAL.md`.
