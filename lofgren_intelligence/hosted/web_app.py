@@ -84,7 +84,7 @@ def _unavailable(where: str, detail: str, *, misconfigured: bool) -> JSONRespons
         {"error": "server_error" if misconfigured else "temporarily_unavailable",
          "error_description": UNAVAILABLE_DESCRIPTION},
         status_code=503,
-        headers={"Retry-After": str(UNAVAILABLE_RETRY_AFTER_S), "Cache-Control": "no-store"},
+        headers={"Retry-After": str(UNAVAILABLE_RETRY_AFTER_S), "Cache-Control": "no-store", "Pragma": "no-cache"},
     )
 
 
