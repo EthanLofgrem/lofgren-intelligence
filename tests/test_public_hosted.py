@@ -103,6 +103,59 @@ class FakeStore:
         row = self.refresh_tokens.pop(digest, None)
         return row if row and not row.get("used_at") else None
 
+    # In-memory model of li_rotate_refresh_token (migration 20261013120000).
+    def _revoke_family(self, grant_id, digest):
+        stamp = "revoked"
+        for row in self.refresh_tokens.values():
+            if (grant_id is not None and row.get("grant_id") == grant_id) or row["token_hash"] == digest:
+                row["revoked_at"] = row.get("revoked_at") or stamp
+                row["used_at"] = row.get("used_at") or stamp
+        if grant_id is not None:
+            for row in self.access_tokens.values():
+                if row.get("grant_id") == grant_id and not row.get("revoked_at"):
+                    row["revoked_at"] = stamp
+
+    def rotate_refresh_token(self, digest, client_id, new_refresh, new_access, access_s, refresh_s):
+        import uuid
+        from datetime import datetime, timedelta, timezone
+        row = self.refresh_tokens.get(digest)
+        if not row:
+            return {"status": "invalid"}
+        grant = row.get("grant_id")
+        if row.get("used_at") or row.get("revoked_at") or row["client_id"] != client_id:
+            fresh = not row.get("used_at") and not row.get("revoked_at")
+            self._revoke_family(grant, digest)
+            return {"status": "invalid" if fresh else "replayed"}
+        now = datetime.now(timezone.utc)
+        if datetime.fromisoformat(row["expires_at"]) <= now:
+            return {"status": "invalid"}
+        self._fk(row["user_id"])
+        row["used_at"] = now.isoformat()
+        if grant is None:
+            grant = str(uuid.uuid4())
+        else:
+            for other in self.access_tokens.values():
+                if other.get("grant_id") == grant and not other.get("revoked_at"):
+                    other["revoked_at"] = now.isoformat()
+        base = {k: row[k] for k in ("user_id", "client_id", "scope", "resource")}
+        self.access_tokens[new_access] = {**base, "token_hash": new_access, "grant_id": grant,
+                                          "expires_at": (now + timedelta(seconds=access_s)).isoformat()}
+        self.refresh_tokens[new_refresh] = {**base, "token_hash": new_refresh, "grant_id": grant,
+                                            "expires_at": (now + timedelta(seconds=refresh_s)).isoformat()}
+        return {"status": "rotated", **base, "grant_id": grant}
+
+    # In-memory model of li_revoke_oauth_token.
+    def revoke_oauth_token(self, digest, client_id):
+        row = self.refresh_tokens.get(digest)
+        if row and row["client_id"] == client_id:
+            self._revoke_family(row.get("grant_id"), digest)
+            return "refresh_token"
+        row = self.access_tokens.get(digest)
+        if row and row["client_id"] == client_id:
+            row["revoked_at"] = row.get("revoked_at") or "revoked"
+            return "access_token"
+        return "none"
+
     def save_run(self, row):
         self._fk(row["user_id"])
         self.runs[(row["user_id"], row["run_id"])] = dict(row)

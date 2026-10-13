@@ -19,11 +19,11 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 from .. import __version__
-from .auth import ActivationRefused, AuthError, OAuthService
+from .auth import ActivationRefused, AuthError, OAuthService, UnknownClient
 from .mcp_sdk import STORE_FAULT, build_mcp
 from . import console, site, trial
-from .journey import checkout_return_html, consent_intro_html, landing_html
-from .ratelimit import UNAVAILABLE_RETRY_AFTER_S, client_ip, rate_limited
+from .journey import CONSENT_CSS, checkout_return_html, consent_intro_html, landing_html
+from .ratelimit import UNAVAILABLE_RETRY_AFTER_S, client_ip, rate_limit_key_configured, rate_limited
 from .service import AccountDeletionPending, PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
 from .store import StoreError, StoreNotConfigured, StoreUnavailable, SupabaseStore
@@ -104,6 +104,11 @@ async def readyz(request: Request) -> Response:
     if not release_sha:
         missing.append("release_sha")
         missing_vars.append("LI_RELEASE_SHA")
+    # Without the limiter HMAC secret, registration, consent completion and Founding
+    # Free activation refuse (fail closed, hosted/ratelimit.py); say so here first.
+    if not rate_limit_key_configured():
+        missing.append("rate_limit_key")
+        missing_vars.append("LI_RATE_LIMIT_HMAC_KEY (missing or shorter than 32 characters)")
     if missing:
         _LOG.error("readiness: missing configuration %s", ", ".join(missing_vars))
         return JSONResponse({"ready": False, "missing": missing}, status_code=503)
@@ -141,6 +146,8 @@ async def oauth_server_metadata(request: Request) -> Response:
         "authorization_endpoint": base + "/oauth/authorize",
         "token_endpoint": base + "/oauth/token",
         "registration_endpoint": base + "/oauth/register",
+        "revocation_endpoint": base + "/oauth/revoke",
+        "revocation_endpoint_auth_methods_supported": ["none"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
@@ -226,8 +233,49 @@ async def oauth_token(request: Request) -> Response:
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except SERVER_FAULTS as exc:
         return _server_fault("oauth_token", exc)
+    except UnknownClient:
+        # RFC 6749 5.2: an unknown (or missing) client_id is a client authentication
+        # failure, invalid_client with 401, not a grant problem.
+        return _error(401, "invalid_client", "unknown OAuth client")
     except (AuthError, StoreError) as exc:
         return _error(400, "invalid_grant", str(exc))
+
+
+async def oauth_revoke(request: Request) -> Response:
+    """RFC 7009 token revocation for public clients.
+
+    Form parameters: token (required), client_id (required: clients are public,
+    so the client identifies itself without a secret), token_type_hint
+    (optional, access_token or refresh_token). A registered client always gets
+    200 with an empty body, whether the token was revoked now, was already
+    revoked, is unknown or belongs to another client (RFC 7009 section 2.2).
+    """
+    raw = await request.body()
+    if len(raw) > 100_000:
+        return _error(413, "invalid_request", "request body too large")
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed revocation request")
+    if any(len(values) != 1 for values in form.values()):
+        return _error(400, "invalid_request", "duplicate revocation parameters")
+    get = lambda key: (form.get(key) or [""])[0]
+    client_id = get("client_id")
+    if not client_id:
+        return _error(401, "invalid_client", "client_id is required")
+    token = get("token")
+    if not token:
+        return _error(400, "invalid_request", "token is required")
+    try:
+        OAuthService(SupabaseStore()).revoke(token=token, client_id=client_id,
+                                             token_type_hint=get("token_type_hint"))
+    except SERVER_FAULTS as exc:
+        return _server_fault("oauth_revoke", exc)
+    except UnknownClient:
+        return _error(401, "invalid_client", "unknown OAuth client")
+    except StoreError as exc:
+        return _server_fault("oauth_revoke", StoreUnavailable(str(exc)))
+    return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 async def oauth_authorize(request: Request) -> Response:
@@ -279,6 +327,7 @@ main{{width:min(92vw,480px);background:#151922;border:1px solid #2a3240;border-r
 h1{{font-size:24px;margin:0 0 6px}}p{{color:#aeb8c7}}input,button{{width:100%;box-sizing:border-box;padding:12px;margin:8px 0;border-radius:9px}}
 input{{background:#0e1218;color:white;border:1px solid #344054}}button{{background:#2563eb;color:white;border:0;font-weight:700;cursor:pointer}}
 small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
+{CONSENT_CSS}
 </style></head>
 <body><main>{consent_intro}
 <button id="continue" hidden>Approve and continue</button>
@@ -830,7 +879,7 @@ def _public_headers(path: str, headers: list[tuple[bytes, bytes]]) -> list[tuple
     pragma = False
     if path in ("/mcp", "/mcp-trial") or path.startswith("/oauth/"):
         cache = b"no-store"
-        pragma = path == "/oauth/token"
+        pragma = path in ("/oauth/token", "/oauth/revoke")
     elif path.startswith("/.well-known/"):
         cache = METADATA_CACHE_CONTROL
     drop = {b"vary"} | ({b"cache-control"} if cache else set()) | ({b"pragma"} if pragma else set())
@@ -1005,6 +1054,7 @@ def build_app():
         Route("/oauth/authorize", rate_limited("oauth_authorize", oauth_authorize), methods=["GET"]),
         Route("/oauth/authorize/complete", rate_limited("oauth_complete", oauth_complete), methods=["POST"]),
         Route("/oauth/token", rate_limited("oauth_token", oauth_token), methods=["POST"]),
+        Route("/oauth/revoke", rate_limited("oauth_revoke", oauth_revoke), methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
         Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
@@ -1037,6 +1087,7 @@ def build_app():
             "/healthz", "/readyz", "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
             "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
+            "/oauth/revoke",
             "/actions/{action_id:str}", "/actions/{action_id:str}/details", "/actions/{action_id:str}/approve",
             "/cases/{case_id:str}", "/cases/{case_id:str}/charter", "/cases/{case_id:str}/approve",
             "/static/vendor/{name:str}",

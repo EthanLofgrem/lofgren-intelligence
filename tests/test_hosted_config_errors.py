@@ -29,6 +29,8 @@ MISCONFIGURED = {
     "SUPABASE_PUBLISHABLE_KEY": "publishable-test-key",
     "LI_RELEASE_SHA": "0" * 40,
     "LI_RATE_LIMIT_BACKEND": "memory",
+    # A dummy test value, not a secret: the limiter HMAC key is configured here.
+    "LI_RATE_LIMIT_HMAC_KEY": "test-only-rate-limit-hmac-key-not-a-secret",
 }
 CONFIGURED = {**MISCONFIGURED, "SUPABASE_SERVICE_ROLE_KEY": "service-test-key"}
 UNSET = ("SUPABASE_SERVICE_ROLE_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_SECRET_KEY")
@@ -207,7 +209,7 @@ class RealClientErrorsUnchangedTests(_Base):
                      400, "invalid_grant")
         self._expect(self.client.post("/oauth/token", data={
             "grant_type": "refresh_token", "refresh_token": "nope", "client_id": "licl_unknown"}),
-            400, "invalid_grant")
+            401, "invalid_client")
 
 
 class _Rows:

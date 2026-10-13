@@ -479,7 +479,7 @@ class PrivilegeTest(PgCase):
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
         self.assertIn("li_save_research_job_result", expected)
-        self.assertEqual(len(expected), 26, sorted(expected))
+        self.assertEqual(len(expected), 28, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -1476,6 +1476,189 @@ def wait_until_lock_waiting(admin, pid: int, limit: float = 15.0) -> None:
             return
         time.sleep(0.05)
     raise AssertionError(f"backend {pid} never waited on a lock")
+
+
+@pg_test
+class OAuthTokenFamilyTest(PgCase):
+    """li_rotate_refresh_token and li_revoke_oauth_token (migration 20261013120000).
+
+    Refresh rotation is one transaction under a row lock: consume, revoke the family's
+    previous access token, insert the new pair. Replay revokes the whole family.
+    RFC 7009 revocation of a refresh token revokes its family; of an access token, itself.
+    """
+
+    ACCESS_S, REFRESH_S = 3600, 90 * 86400
+
+    def setUp(self):
+        super().setUp()
+        self.user = self.new_user()
+        self.client_id = self.new_client()
+
+    def new_client(self) -> str:
+        client = f"licl_{uuid.uuid4().hex[:12]}"
+        self.svc.execute("insert into public.li_oauth_clients(client_id, client_name, redirect_uris, grant_types, "
+                         "response_types, token_endpoint_auth_method) values (%s, 'c', '[]', '[]', '[]', 'none')",
+                         (client,))
+        return client
+
+    def issue(self, grant: str | None = "new", client: str | None = None, refresh_expires: str = "1 day"):
+        """The pair an authorization-code exchange inserts (the store's PostgREST inserts, in SQL)."""
+        grant = str(uuid.uuid4()) if grant == "new" else grant
+        access, refresh = sha(f"a:{uuid.uuid4()}"), sha(f"r:{uuid.uuid4()}")
+        client = client or self.client_id
+        self.svc.execute("insert into public.li_access_tokens(token_hash, user_id, client_id, resource, expires_at, "
+                         "grant_id) values (%s, %s, %s, 'https://li.test/mcp', now() + interval '1 hour', %s)",
+                         (access, self.user, client, grant))
+        self.svc.execute("insert into public.li_refresh_tokens(token_hash, user_id, client_id, resource, expires_at, "
+                         "grant_id) values (%s, %s, %s, 'https://li.test/mcp', now() + %s::interval, %s)",
+                         (refresh, self.user, client, refresh_expires, grant))
+        return grant, access, refresh
+
+    def rotate(self, refresh, client=None, store=None):
+        new_access, new_refresh = sha(f"a:{uuid.uuid4()}"), sha(f"r:{uuid.uuid4()}")
+        result = (store or self.store).rotate_refresh_token(refresh, client or self.client_id, new_refresh,
+                                                             new_access, self.ACCESS_S, self.REFRESH_S)
+        return result, new_access, new_refresh
+
+    def access(self, digest):
+        return self.one("select revoked_at, grant_id, user_id::text, client_id, scope, resource, "
+                        "expires_at > now() + interval '59 minutes' from public.li_access_tokens "
+                        "where token_hash = %s", (digest,))
+
+    def refresh_row(self, digest):
+        return self.one("select used_at, revoked_at, grant_id from public.li_refresh_tokens where token_hash = %s",
+                        (digest,))
+
+    def live_tokens(self, grant):
+        return (self.one("select count(*) from public.li_access_tokens where grant_id = %s and revoked_at is null",
+                         (grant,))[0],
+                self.one("select count(*) from public.li_refresh_tokens where grant_id = %s and used_at is null "
+                         "and revoked_at is null", (grant,))[0])
+
+    def test_rotation_consumes_revokes_the_previous_access_token_and_keeps_the_family(self):
+        grant, access, refresh = self.issue()
+        result, new_access, new_refresh = self.rotate(refresh)
+        self.assertEqual(result["status"], "rotated")
+        self.assertEqual((result["user_id"], result["client_id"], result["grant_id"]),
+                         (self.user, self.client_id, grant))
+        self.assertIsNotNone(self.refresh_row(refresh)[0])
+        self.assertIsNotNone(self.access(access)[0], "the previous access token must be revoked")
+        row = self.access(new_access)
+        self.assertIsNone(row[0])
+        self.assertEqual((str(row[1]), row[2], row[3], row[4], row[5], row[6]),
+                         (grant, self.user, self.client_id, "mcp", "https://li.test/mcp", True))
+        self.assertEqual(str(self.refresh_row(new_refresh)[2]), grant)
+        self.assertEqual(self.live_tokens(grant), (1, 1))
+        # Through the store's real RPC name and argument names.
+        self.assertIn("li_rotate_refresh_token", self.store.calls)
+
+    def test_replaying_a_used_refresh_token_revokes_the_whole_family(self):
+        grant, access, refresh = self.issue()
+        _, a2, r2 = self.rotate(refresh)
+        _, a3, r3 = self.rotate(r2)
+        other_grant, other_access, other_refresh = self.issue()
+        result, a4, r4 = self.rotate(refresh)
+        self.assertEqual(result, {"status": "replayed"})
+        self.assertEqual(self.live_tokens(grant), (0, 0))
+        self.assertIsNotNone(self.access(a3)[0])
+        self.assertIsNotNone(self.refresh_row(r3)[1])
+        # Nothing was issued for the replay, and the current refresh token is now refused too.
+        self.assertIsNone(self.access(a4))
+        self.assertEqual(self.rotate(r3)[0], {"status": "replayed"})
+        # Another authorization (family) of the same user is untouched.
+        self.assertEqual(self.live_tokens(other_grant), (1, 1))
+
+    def test_concurrent_rotations_of_one_token_issue_once_and_burn_the_family(self):
+        grant, _, refresh = self.issue()
+        a, b = self.new_store(), self.new_store()
+        got = run_concurrently([lambda: self.rotate(refresh, store=a)[0], lambda: self.rotate(refresh, store=b)[0]])
+        self.assertEqual(sorted(g["status"] for g in got), ["replayed", "rotated"])
+        # The loser waited on the row lock, then saw the token used and revoked the family,
+        # including the pair the winner had just inserted: nothing escapes.
+        self.assertEqual(self.live_tokens(grant), (0, 0))
+        self.assertEqual(self.one("select count(*) from public.li_access_tokens where grant_id = %s", (grant,))[0], 2)
+
+    def test_another_client_presenting_the_token_is_refused_and_burns_the_family(self):
+        grant, access, refresh = self.issue()
+        other = self.new_client()
+        result, new_access, _ = self.rotate(refresh, client=other)
+        self.assertEqual(result, {"status": "invalid"})
+        self.assertIsNone(self.access(new_access))
+        self.assertEqual(self.live_tokens(grant), (0, 0))
+
+    def test_expired_unknown_and_malformed_requests_change_nothing(self):
+        grant, access, refresh = self.issue(refresh_expires="-1 second")
+        self.assertEqual(self.rotate(refresh)[0], {"status": "invalid"})
+        self.assertEqual(self.rotate(sha("unknown"))[0], {"status": "invalid"})
+        self.assertEqual(self.live_tokens(grant), (1, 1))
+        good_grant, _, good = self.issue()
+        for args in ((good, self.client_id, "nothex", sha("x"), 3600, 60),
+                     (good, self.client_id, good, sha("x"), 3600, 60),
+                     (good, self.client_id, sha("y"), sha("y"), 3600, 60),
+                     (good, "", sha("y"), sha("x"), 3600, 60),
+                     (good, self.client_id, sha("y"), sha("x"), 0, 60),
+                     (good, self.client_id, sha("y"), sha("x"), 3600, 10**9)):
+            with self.subTest(args=args[2:]):
+                self.assertEqual(self.store.rotate_refresh_token(*args), {"status": "invalid"})
+        self.assertEqual(self.live_tokens(good_grant), (1, 1))
+        self.assertIsNone(self.refresh_row(good)[0])
+
+    def test_a_legacy_token_without_a_family_starts_one(self):
+        _, access, refresh = self.issue(grant=None)
+        result, new_access, new_refresh = self.rotate(refresh)
+        self.assertEqual(result["status"], "rotated")
+        grant = result["grant_id"]
+        self.assertTrue(grant)
+        self.assertEqual(str(self.access(new_access)[1]), grant)
+        self.assertEqual(str(self.refresh_row(new_refresh)[2]), grant)
+        # The legacy access token cannot be tied to the refresh token; it expires on its own.
+        self.assertIsNone(self.access(access)[0])
+        # A replay of the legacy token now finds no family to revoke, but is still refused.
+        self.assertEqual(self.rotate(refresh)[0], {"status": "replayed"})
+
+    def test_revoking_a_refresh_token_revokes_its_family(self):
+        grant, access, refresh = self.issue()
+        _, a2, r2 = self.rotate(refresh)
+        other_grant, _, _ = self.issue()
+        self.assertEqual(self.store.revoke_oauth_token(r2, self.client_id), "refresh_token")
+        self.assertEqual(self.live_tokens(grant), (0, 0))
+        self.assertIsNotNone(self.access(a2)[0])
+        self.assertEqual(self.live_tokens(other_grant), (1, 1))
+        self.assertEqual(self.rotate(r2)[0], {"status": "replayed"})
+        # Idempotent: an already-revoked token answers again and changes nothing.
+        revoked_at = self.refresh_row(r2)[1]
+        self.assertEqual(self.store.revoke_oauth_token(r2, self.client_id), "refresh_token")
+        self.assertEqual(self.refresh_row(r2)[1], revoked_at)
+        self.assertIn("li_revoke_oauth_token", self.store.calls)
+
+    def test_revoking_an_access_token_revokes_only_it(self):
+        grant, access, refresh = self.issue()
+        self.assertEqual(self.store.revoke_oauth_token(access, self.client_id), "access_token")
+        self.assertIsNotNone(self.access(access)[0])
+        self.assertEqual(self.live_tokens(grant), (0, 1))
+        self.assertEqual(self.store.revoke_oauth_token(access, self.client_id), "access_token")
+        self.assertEqual(self.rotate(refresh)[0]["status"], "rotated")
+
+    def test_unknown_or_another_clients_token_changes_nothing(self):
+        grant, access, refresh = self.issue()
+        other = self.new_client()
+        for digest in (access, refresh):
+            self.assertEqual(self.store.revoke_oauth_token(digest, other), "none")
+        self.assertEqual(self.store.revoke_oauth_token(sha("unknown"), self.client_id), "none")
+        self.assertEqual(self.store.revoke_oauth_token("nothex", self.client_id), "none")
+        self.assertEqual(self.live_tokens(grant), (1, 1))
+
+    def test_api_roles_cannot_rotate_or_revoke(self):
+        _, access, refresh = self.issue()
+        for role in ("anon", "authenticated"):
+            conn = role_connect(self.dbname, role)
+            self.addCleanup(conn.close)
+            for call, args in (("select public.li_revoke_oauth_token(%s, %s)", (refresh, self.client_id)),
+                               ("select public.li_rotate_refresh_token(%s, %s, %s, %s, 3600, 3600)",
+                                (refresh, self.client_id, sha("n1"), sha("n2")))):
+                with self.subTest(role=role, call=call[14:35]), self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute(call, args)
+        self.assertIsNone(self.refresh_row(refresh)[0])
 
 
 @pg_test

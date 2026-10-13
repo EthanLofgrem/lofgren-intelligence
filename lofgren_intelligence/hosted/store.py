@@ -183,6 +183,42 @@ class SupabaseStore:
             return rows[0] if rows else None
         return rows if isinstance(rows, dict) else None
 
+    def rotate_refresh_token(
+        self,
+        refresh_hash: str,
+        client_id: str,
+        new_refresh_hash: str,
+        new_access_hash: str,
+        access_seconds: int,
+        refresh_seconds: int,
+    ) -> dict[str, Any]:
+        """li_rotate_refresh_token: consume the presented refresh token, revoke its family's
+        earlier access tokens and insert the new pair, atomically. A replay revokes the family.
+
+        Returns {"status": "rotated", user_id, client_id, scope, resource, grant_id},
+        {"status": "replayed"} or {"status": "invalid"}; an unreadable answer is "invalid".
+        """
+        result = self.rpc("li_rotate_refresh_token", {
+            "p_token_hash": refresh_hash,
+            "p_client_id": client_id,
+            "p_new_refresh_hash": new_refresh_hash,
+            "p_new_access_hash": new_access_hash,
+            "p_access_seconds": int(access_seconds),
+            "p_refresh_seconds": int(refresh_seconds),
+        })
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if not isinstance(result, dict) or result.get("status") not in ("rotated", "replayed", "invalid"):
+            return {"status": "invalid"}
+        return result
+
+    def revoke_oauth_token(self, token_hash: str, client_id: str) -> str:
+        """li_revoke_oauth_token (RFC 7009): 'refresh_token', 'access_token' or 'none'."""
+        result = self.rpc("li_revoke_oauth_token", {"p_token_hash": token_hash, "p_client_id": client_id})
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        return result if result in ("refresh_token", "access_token") else "none"
+
     def revoke_access_token(self, token_hash: str) -> None:
         self._table(
             "li_access_tokens",

@@ -208,8 +208,52 @@ Discovery endpoints:
 - `/oauth/register`
 - `/oauth/authorize`
 - `/oauth/token`
+- `/oauth/revoke` (RFC 7009; advertised as `revocation_endpoint`)
 
 Remote MCP endpoint: `/mcp`.
+
+### Token lifetimes, rotation and revocation
+
+Access tokens live one hour and refresh tokens 90 days; both are opaque and
+only their SHA-256 hashes are stored. The tokens of one authorization form a
+**family** (a shared `grant_id`, migration
+`20261013120000_li_oauth_token_families.sql`):
+
+- Refresh tokens rotate (OAuth 2.1 section 4.3.1): every refresh consumes the
+  presented refresh token, **revokes the family's previous access token** and
+  issues a new pair, in one database transaction (`li_rotate_refresh_token`).
+  The previous access token is revoked because the client has just shown it
+  holds a newer credential; leaving it valid for its remaining hour would only
+  widen the window for a leaked copy.
+- **Replay detection.** Presenting a refresh token that was already used (or
+  revoked) revokes the whole family: the current refresh token and access token
+  stop working at once, and the client must authorize again. A refresh token
+  presented by a client other than the one it was issued to is refused and
+  burns its family the same way. Two concurrent refreshes with the same token
+  therefore end the family: one rotates, the other is a replay.
+- **Revocation** (`POST /oauth/revoke`, `application/x-www-form-urlencoded`):
+  `token` and `client_id` are required (clients are public, so the client
+  identifies itself without a secret); `token_type_hint` (`access_token` or
+  `refresh_token`) is optional and both kinds are always searched. A
+  registered client always gets `200` with an empty body: for a token revoked
+  now, one already revoked, an unknown token, or a token issued to another
+  client (which is not revoked). A missing or unknown `client_id` is `401
+  invalid_client`; a missing `token` is `400 invalid_request`. Revoking a
+  refresh token revokes its family, including the access token issued
+  alongside it; revoking an access token revokes only that token. A revoked
+  access token gets `401` on `/mcp`. The endpoint is `no-store` (with
+  `Pragma: no-cache`), limited per IP like `/oauth/token` (60/min), and served
+  on both the full and the dedicated MCP surface.
+- At `/oauth/token`, an unknown or missing `client_id` is `401 invalid_client`
+  (RFC 6749 section 5.2) for both grant types; problems with the code, the
+  verifier, the redirect URI or the refresh token of a known client stay
+  `400 invalid_grant`.
+- Tokens issued before the family migration have no `grant_id`. Refreshing one
+  starts a new family; the legacy access token issued alongside it cannot be
+  identified, so it is not revoked early and expires within its hour.
+
+Apply the migration before deploying this code: token issuance
+writes the new `grant_id` column.
 
 ## Founding Free rule
 
@@ -297,6 +341,9 @@ an undecided allowance: an undecided plan fails closed.
 - `SUPABASE_SERVICE_ROLE_KEY` (server only)
 - `SUPABASE_PUBLISHABLE_KEY`
 - `LI_PUBLIC_BASE_URL`
+- `LI_RATE_LIMIT_HMAC_KEY` (server only, at least 32 random characters: the
+  rate-limiter key HMAC secret; without it sign-up and activation fail closed
+  and `/readyz` reports `rate_limit_key`)
 - optional `BRAVE_API_KEY`
 - optional model provider variables
 - actual-cost rates:
@@ -389,7 +436,7 @@ unreachable`, never with table, column or constraint names.
 Rate limits: `/mcp` is limited per user in the database
 (`li_take_rate_limit`). The endpoints reachable before a user is known —
 `/oauth/register` (10/min), `/oauth/authorize` (60/min),
-`/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
+`/oauth/authorize/complete` (20/min), `/oauth/token` and `/oauth/revoke` (60/min each),
 `/account/export` and `/account/delete` (20/min together),
 `/actions/{id}/details` and `/actions/{id}/approve` (60/min together),
 `/cases/{id}/charter` and `/cases/{id}/approve` (60/min together) — are
@@ -400,9 +447,23 @@ these limits are **global**: every request takes a slot through the atomic
 SQL function `li_take_keyed_rate_limit` (migration
 `20261005191819_keyed_rate_limits.sql`, table `li_rate_limit_events`, RLS
 enabled, no anon/authenticated grants), so they hold across serverless
-instances and cold starts. Keys are sent as SHA-256 digests of
-`<bucket>:<ip>`; raw IPs are not stored, and rows are pruned once outside
-their window. Without a configured store (local development) or with
+instances and cold starts. Keys are sent as HMAC-SHA256 digests of
+`<bucket>:<ip>` (or `<bucket>:<email domain>`) keyed by the server secret
+`LI_RATE_LIMIT_HMAC_KEY` (at least 32 characters, set only in the host's
+secret store); raw IPs are not stored, a stored digest cannot be reversed by
+hashing every IPv4 address without the secret, and rows are pruned once
+outside their window. (Until migration `20261013120000` these were unsalted
+SHA-256 digests; that migration deletes them.)
+
+**Missing `LI_RATE_LIMIT_HMAC_KEY` (fail closed).** When the store backend is
+in use and the key is missing or shorter than 32 characters, no digest is
+sent to the database. Client registration, consent completion and Founding
+Free activation (the fail-closed buckets) refuse with `503` and
+`Retry-After`; the other limited endpoints fall back to the per-instance
+limiter (limited, never unlimited). Each such request logs an error, and
+`/readyz` answers `503` with the generic component `rate_limit_key` in
+`missing` (never the value), so a deployment without the key is visibly not
+ready. Without a configured store (local development) or with
 `LI_RATE_LIMIT_BACKEND=memory`, the limiter falls back to process memory,
 which is **per instance**. If the store errors, sign-up and activation
 endpoints (`/oauth/register`, `/oauth/authorize/complete`) **fail closed**

@@ -11,7 +11,10 @@ Two backends, one rule (sliding window of `limit` requests per `window` s):
   (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`), every take goes through
   the atomic SQL function `li_take_keyed_rate_limit`, so the limit holds
   across all serverless instances and survives cold starts. Keys are sent as
-  SHA-256 digests; raw IPs and email domains never reach the database.
+  HMAC-SHA256 digests of "<bucket>:<key>" under the server secret
+  `LI_RATE_LIMIT_HMAC_KEY` (at least 32 characters); raw IPs and email
+  domains never reach the database, and without the secret a stored digest
+  cannot be reversed by hashing every IPv4 address.
 * **In-memory (per instance).** Used when the store is not configured (local
   development, tests) or `LI_RATE_LIMIT_BACKEND=memory`, and as the fallback
   when the store errors for an ordinary bucket. In memory the limit is per
@@ -21,11 +24,22 @@ Fail closed: for the sign-up/activation buckets (`FAIL_CLOSED_BUCKETS`) a store
 error refuses the request (HTTP 503 with Retry-After) instead of falling back,
 because an attacker who can make the store error must not gain unlimited
 registrations or Founding Free activations.
+
+Missing key: when the store backend is in use but `LI_RATE_LIMIT_HMAC_KEY` is
+missing or shorter than 32 characters, no digest is sent to the database at
+all. The fail-closed buckets refuse (503 with Retry-After: no client
+registration, consent completion or Founding Free activation) and the ordinary
+buckets fall back to the per-instance in-memory limiter (still limited, never
+unlimited), and every such request logs an error. `/readyz` reports the
+deployment as not ready with the generic component `rate_limit_key` (never the
+value), so the misconfiguration is visible before any user hits it.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import logging
 import math
 import os
 import threading
@@ -45,6 +59,8 @@ DEFAULT_LIMITS: dict[str, tuple[int, int]] = {
     "oauth_authorize": (60, 60),
     "oauth_complete": (20, 60),
     "oauth_token": (60, 60),
+    # RFC 7009 token revocation (/oauth/revoke): limited like the token endpoint.
+    "oauth_revoke": (60, 60),
     "account": (20, 60),
     "actions": (60, 60),
     "cases": (60, 60),
@@ -66,11 +82,19 @@ FAIL_CLOSED_BUCKETS = frozenset({"oauth_register", "oauth_complete", "activation
                                  "trial_ip", "trial_global", "trial_call_ip", "trial_spend"})
 
 MAX_TRACKED_KEYS = 10_000
+RATE_LIMIT_HMAC_ENV = "LI_RATE_LIMIT_HMAC_KEY"
+MIN_RATE_LIMIT_HMAC_KEY_CHARS = 32
+
+_LOG = logging.getLogger("lofgren_intelligence.ratelimit")
 UNAVAILABLE_RETRY_AFTER_S = 30
 
 
 class RateLimitUnavailable(RuntimeError):
     """The global limiter could not answer for a fail-closed bucket; refuse the request."""
+
+
+class RateLimitKeyMissing(RateLimitUnavailable):
+    """LI_RATE_LIMIT_HMAC_KEY is missing or too short: no keyed digest can be computed."""
 
 
 class SlidingWindowLimiter:
@@ -125,8 +149,33 @@ _limit_for = limit_for  # backwards-compatible name
 
 
 def rate_key(bucket: str, key: str) -> str:
-    """The digest stored for (bucket, key); the raw key never leaves the process."""
+    """Unkeyed SHA-256 of (bucket, key), only for constant keys that carry no client data
+    (the trial's operator-wide buckets). Client keys (IPs, email domains) use keyed_rate_key."""
     return hashlib.sha256(f"{bucket}:{key}".encode("utf-8")).hexdigest()
+
+
+def rate_limit_hmac_key() -> bytes | None:
+    """The limiter HMAC secret, or None when missing or shorter than the minimum."""
+    key = os.environ.get(RATE_LIMIT_HMAC_ENV, "").strip()
+    if len(key) < MIN_RATE_LIMIT_HMAC_KEY_CHARS:
+        return None
+    return key.encode("utf-8")
+
+
+def rate_limit_key_configured() -> bool:
+    return rate_limit_hmac_key() is not None
+
+
+def keyed_rate_key(bucket: str, key: str) -> str:
+    """The digest stored for (bucket, client key): HMAC-SHA256 under LI_RATE_LIMIT_HMAC_KEY.
+
+    The raw key never leaves the process. Raises RateLimitKeyMissing without the secret.
+    """
+    secret = rate_limit_hmac_key()
+    if secret is None:
+        raise RateLimitKeyMissing(f"{RATE_LIMIT_HMAC_ENV} is missing or shorter than "
+                                  f"{MIN_RATE_LIMIT_HMAC_KEY_CHARS} characters")
+    return hmac.new(secret, f"{bucket}:{key}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def store_backend_configured() -> bool:
@@ -150,8 +199,16 @@ def take(bucket: str, key: str, *, store: Any = None, limit: int | None = None,
     window = default_window if window is None else window
     if store is not None or store_backend_configured():
         try:
+            digest = keyed_rate_key(bucket, key)
+        except RateLimitKeyMissing:
+            _LOG.error("rate limiter: %s is not configured; bucket %s %s", RATE_LIMIT_HMAC_ENV, bucket,
+                       "refuses" if bucket in FAIL_CLOSED_BUCKETS else "uses the per-instance limiter")
+            if bucket in FAIL_CLOSED_BUCKETS:
+                raise
+            return LIMITER.take(bucket, key, limit, window)
+        try:
             backend = store if store is not None else SupabaseStore()
-            return float(backend.take_keyed_rate_limit(bucket, rate_key(bucket, key), limit, window))
+            return float(backend.take_keyed_rate_limit(bucket, digest, limit, window))
         except Exception:
             if bucket in FAIL_CLOSED_BUCKETS:
                 raise RateLimitUnavailable("rate limiter is unavailable") from None

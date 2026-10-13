@@ -35,7 +35,9 @@ STATE_READS = ("self.one(", "self.admin.execute(", "admin.execute(", "conn.execu
                "self.entitlement(", "self.li_functions(", "has_table_privilege", "has_sequence_privilege",
                "with admin_connect(",
                # RecoveryPgTest helpers, each a self.one(...) read on the admin connection.
-               "self.job_row(", "self.counts(", "self.event(")
+               "self.job_row(", "self.counts(", "self.event(",
+               # OAuthTokenFamilyTest helpers, each a self.one(...) read on the admin connection.
+               "self.access(", "self.refresh_row(", "self.live_tokens(")
 # Tests that prove a session property rather than table state.
 NO_TABLE_STATE = {"test_auth_uid_stub_reads_the_session_claim"}
 

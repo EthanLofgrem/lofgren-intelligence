@@ -15,6 +15,7 @@ import secrets
 import time
 import re
 import os
+import uuid
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,10 @@ from .store import SupabaseStore
 
 class AuthError(RuntimeError):
     pass
+
+
+class UnknownClient(AuthError):
+    """The client_id names no registered, active client (RFC 6749 5.2 invalid_client, HTTP 401)."""
 
 
 class ActivationRefused(AuthError):
@@ -99,6 +104,20 @@ def _valid_redirect(uri: str) -> bool:
     return p.scheme == "http" and host in _LOOPBACK_HOSTS
 
 
+ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
+REFRESH_TOKEN_LIFETIME = timedelta(days=90)
+
+
+def _token_response(access: str, refresh: str, scope: str) -> dict[str, Any]:
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "Bearer",
+        "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
+        "scope": scope or "mcp",
+    }
+
+
 @dataclass(frozen=True)
 class Principal:
     user_id: str
@@ -163,7 +182,7 @@ class OAuthService:
     def _client(self, client_id: str, redirect_uri: str | None = None) -> dict[str, Any]:
         row = self.store.get_oauth_client(client_id)
         if not row:
-            raise AuthError("unknown OAuth client")
+            raise UnknownClient("unknown OAuth client")
         if redirect_uri is not None and redirect_uri not in (row.get("redirect_uris") or []):
             raise AuthError("redirect_uri is not registered for this client")
         return row
@@ -249,10 +268,15 @@ class OAuthService:
                 )
 
     def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str) -> dict[str, Any]:
+        """Issue the first access/refresh pair of a new token family (one authorization).
+
+        Both tokens carry the same grant_id; every refresh of the family keeps it
+        (li_rotate_refresh_token), so a replay or an RFC 7009 revocation of a
+        refresh token can revoke the whole family.
+        """
         access = new_opaque("lit_")
         refresh = new_opaque("lir_")
-        access_lifetime = timedelta(hours=1)
-        refresh_lifetime = timedelta(days=90)
+        grant_id = str(uuid.uuid4())
         self.store.put_access_token(
             {
                 "token_hash": token_hash(access),
@@ -260,7 +284,8 @@ class OAuthService:
                 "client_id": client_id,
                 "scope": scope or "mcp",
                 "resource": resource,
-                "expires_at": (now() + access_lifetime).isoformat(),
+                "expires_at": (now() + ACCESS_TOKEN_LIFETIME).isoformat(),
+                "grant_id": grant_id,
             }
         )
         self.store.put_refresh_token(
@@ -270,16 +295,11 @@ class OAuthService:
                 "client_id": client_id,
                 "scope": scope or "mcp",
                 "resource": resource,
-                "expires_at": (now() + refresh_lifetime).isoformat(),
+                "expires_at": (now() + REFRESH_TOKEN_LIFETIME).isoformat(),
+                "grant_id": grant_id,
             }
         )
-        return {
-            "access_token": access,
-            "refresh_token": refresh,
-            "token_type": "Bearer",
-            "expires_in": int(access_lifetime.total_seconds()),
-            "scope": scope or "mcp",
-        }
+        return _token_response(access, refresh, scope)
 
     def exchange_code(
         self,
@@ -303,13 +323,54 @@ class OAuthService:
         return self._issue_tokens(str(row["user_id"]), client_id, str(row.get("scope") or "mcp"), str(row.get("resource") or ""))
 
     def refresh(self, *, refresh_token: str, client_id: str) -> dict[str, Any]:
+        """Rotate a refresh token (OAuth 2.1 section 4.3.1, public clients).
+
+        One atomic store call (li_rotate_refresh_token) consumes the presented
+        token, revokes the access token(s) issued earlier in the same family and
+        inserts the new pair. The previous access token is revoked because the
+        client has just shown it holds a newer credential: leaving it valid for
+        up to an hour would only widen the window for a leaked copy. Presenting
+        an already-used (or revoked) refresh token is treated as replay: the
+        whole family, including tokens issued to the legitimate client by the
+        earlier rotation, is revoked and the client must authorize again.
+        """
         self._client(client_id)
-        row = self.store.consume_refresh_token(token_hash(refresh_token))
-        if not row:
+        if not refresh_token:
             raise AuthError("refresh token is invalid, expired or already used")
-        if row.get("client_id") != client_id:
-            raise AuthError("refresh token client mismatch")
-        return self._issue_tokens(str(row["user_id"]), client_id, str(row.get("scope") or "mcp"), str(row.get("resource") or ""))
+        access = new_opaque("lit_")
+        refresh = new_opaque("lir_")
+        result = self.store.rotate_refresh_token(
+            token_hash(refresh_token),
+            client_id,
+            token_hash(refresh),
+            token_hash(access),
+            int(ACCESS_TOKEN_LIFETIME.total_seconds()),
+            int(REFRESH_TOKEN_LIFETIME.total_seconds()),
+        )
+        status = result.get("status") if isinstance(result, dict) else None
+        if status == "replayed":
+            raise AuthError("refresh token was already used; the authorization has been revoked")
+        if status != "rotated":
+            raise AuthError("refresh token is invalid, expired or already used")
+        return _token_response(access, refresh, str(result.get("scope") or "mcp"))
+
+    def revoke(self, *, token: str, client_id: str, token_type_hint: str = "") -> str:
+        """RFC 7009 revocation for a public client.
+
+        `client_id` must name a registered client (else AuthError -> invalid_client).
+        The token is revoked only if it was issued to that client. Unknown,
+        already-revoked and other clients' tokens change nothing and are not an
+        error (RFC 7009 section 2.2), so the answer cannot be used to probe
+        which token strings exist. A refresh token revokes its whole family
+        (the access tokens issued alongside it included); an access token
+        revokes itself. `token_type_hint` is accepted and ignored: one atomic
+        store call searches both token kinds (RFC 7009 section 2.1 lets the
+        server extend the search past the hint). Returns the kind found or "none".
+        """
+        self._client(client_id)
+        if not token:
+            return "none"
+        return self.store.revoke_oauth_token(token_hash(token), client_id)
 
     def authenticate(self, bearer: str) -> Principal:
         if not bearer:

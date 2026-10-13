@@ -82,10 +82,13 @@ database, identity provider or Stripe API answers `503`
 and one generic description. The exact cause (for example which variable is
 missing) is written to the server log only. `/readyz` lists generic missing
 components (`database`, `authorization_provider`, `public_base_url`,
-`release_sha`) and logs the variable names. A bearer token on a route that does
+`release_sha`, `rate_limit_key`) and logs the variable names
+(`rate_limit_key`: `LI_RATE_LIMIT_HMAC_KEY` is missing or shorter than 32
+characters; without it registration, consent completion and activation fail
+closed, see `docs/PUBLIC_MCP.md`). No value is ever reported. A bearer token on a route that does
 not use it is ignored; an unknown token on `/mcp` is `401 invalid_token` with a
 `resource_metadata` challenge. `/mcp` and every `/oauth/*` response is
-`no-store` (token responses add `Pragma: no-cache`); OAuth metadata documents
+`no-store` (token and revocation responses add `Pragma: no-cache`); OAuth metadata documents
 are `public, max-age=300`.
 
 CORS allows the public base URL plus the documented browser MCP client
