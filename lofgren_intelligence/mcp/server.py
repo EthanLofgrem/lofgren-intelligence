@@ -275,7 +275,14 @@ PRODUCTION_TOOLS: list[dict[str, Any]] = [
      "inputSchema": _obj(["artifact_id"], _ART),
      "outputSchema": _out_schema(["kind", "ready", "handoff", "problems"])},
 ]
-TOOLS = TOOLS + DISCOVERY_TOOLS + PRODUCTION_TOOLS
+CONTEXT_TOOLS = [{"name": "li_analyze_context", "description": "Analyze a submitted minimized prompt and rough context budget offline. No execution, credentials, network, or billing measurement.",
+ "inputSchema": {"type": "object", "additionalProperties": False,
+ "properties": {"prompt": {"type": "string", "minLength": 1, "maxLength": 32768},
+ "context_window": {"type": "integer", "minimum": 1, "maximum": 2000000, "default": 8192},
+ "reserved_output": {"type": "integer", "minimum": 0, "maximum": 2000000, "default": 1024},
+ "existing_context": {"type": "integer", "minimum": 0, "maximum": 2000000, "default": 0}}, "required": ["prompt"]},
+ "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}}]
+TOOLS = TOOLS + DISCOVERY_TOOLS + PRODUCTION_TOOLS + CONTEXT_TOOLS
 # Older tool names kept working for existing clients.
 ALIASES = {"compile_intent": "compile_objective", "estimate_cost": "plan_research"}
 
@@ -300,6 +307,7 @@ class Server:
         self.discoveries: dict[str, Any] = {}
         self.artifacts: dict[str, Any] = {}
         self.handlers: dict[str, Callable[[dict], dict]] = {
+            "li_analyze_context": self.t_analyze_context,
             "compile_objective": self.t_compile_objective,
             "plan_research": self.t_plan_research,
             "investigate": self.t_investigate,
@@ -389,6 +397,15 @@ class Server:
         })
 
     # -- tools ---------------------------------------------------------------
+    def t_analyze_context(self, a: dict) -> dict:
+        from ..token_machine import analyze_prompt
+        if set(a) - {"prompt", "context_window", "reserved_output", "existing_context"}:
+            raise ToolError("unsupported context analysis arguments")
+        try:
+            return _out(analyze_prompt(**a))
+        except (ValueError, TypeError):
+            raise ToolError("invalid bounded context analysis input") from None
+
     def t_compile_objective(self, a: dict) -> dict:
         return _out(to_dict(self._contract(a["objective"], a)))
 

@@ -1,3 +1,5 @@
+> Historical checkpoint identities below are retained for provenance. For the current candidate, verify PR #45 head SHA and exact-source CI; do not reuse an older checkpoint as current.
+
 # Remaining acceptance register
 
 Checkpoint: remote `0074472d896fab72af029fa6c2cf449ca0c2ae77`; source review against equivalent local `410f16c1f6aab707bf9136d9c69e913d1c6402a4`. Owners below are work lanes, not assertions of completed work. All future fixes require their own exact-source evidence.

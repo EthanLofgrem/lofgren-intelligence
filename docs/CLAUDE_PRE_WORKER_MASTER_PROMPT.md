@@ -1,3 +1,5 @@
+> Historical checkpoint identities below are retained for provenance. For the current candidate, verify PR #45 head SHA and exact-source CI; do not reuse an older checkpoint as current.
+
 # Claude Code master prompt — complete LI acceptance at zero cost
 
 ## Mission and authority

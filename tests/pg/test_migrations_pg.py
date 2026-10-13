@@ -63,7 +63,7 @@ LI_TABLES = {
     "li_activation_counter", "li_accounts", "li_entitlements", "li_oauth_clients", "li_oauth_codes",
     "li_access_tokens", "li_refresh_tokens", "li_runs", "li_usage_events", "li_rate_events",
     "li_billing_events", "li_discoveries", "li_artifacts", "li_action_proposals", "li_outcomes",
-    "li_improvements", "li_usage_reservations", "li_rate_limit_events", "li_cases", "li_case_charters",
+    "li_github_link_states", "li_github_connections", "li_improvements", "li_usage_reservations", "li_rate_limit_events", "li_cases", "li_case_charters",
     "li_case_approvals", "li_case_events", "li_research_jobs",
 }
 INTERNAL_FUNCTIONS = {"li_research_job_account", "li_research_job_abandon_settlement"}
@@ -1812,3 +1812,75 @@ class TargetedClaimTest(PgCase):
         self.assertEqual(self.store.revise_case(args[2],args[1],1,'ready_for_approval',sha('revision'),{'objective':'new'},{}),2)
         self.assertIsNone(self.store.claim_targeted_research_job(*args))
         self.assertEqual(self.one("select status,attempts from public.li_research_jobs where id=%s", (args[0],)), ("queued", 0))
+
+
+@pg_test
+class GitHubLinkTest(PgCase):
+    CALLBACK = "https://li.example/github/callback"
+
+    def begin(self, subject=None):
+        subject = subject or str(uuid.uuid4())
+        state = sha(str(uuid.uuid4()))
+        self.assertTrue(self.svc.execute("select public.li_github_begin_link(%s,%s,%s,%s)", (subject,state,"v"*43,self.CALLBACK)).fetchone()[0])
+        return subject,state
+
+    def consume(self, subject, state, callback=None):
+        return self.svc.execute("select public.li_github_consume_link(%s,%s,%s)", (subject,state,callback or self.CALLBACK)).fetchone()[0]
+
+    def finish(self, subject, state, identity=7654321):
+        return self.svc.execute("select public.li_github_link_identity(%s,%s,%s)", (subject,identity,state)).fetchone()[0]
+
+    def test_replay_and_callback_binding(self):
+        subject,state=self.begin()
+        self.assertIsNone(self.consume(str(uuid.uuid4()),state))
+        self.assertIsNone(self.consume(subject,state,"https://wrong.example/callback"))
+        self.assertFalse(self.finish(subject,state))
+        self.assertEqual(self.consume(subject,state),{"verifier":"v"*43})
+        self.assertIsNone(self.consume(subject,state))
+        self.assertTrue(self.finish(subject,state,123456))
+        self.assertFalse(self.finish(subject,state,123456))
+        self.assertEqual(self.one("select github_user_id from public.li_github_connections where subject=%s",(subject,))[0],123456)
+
+    def test_expired_consumed_state_cannot_finalize(self):
+        subject,state=self.begin();self.consume(subject,state)
+        self.admin.execute("update public.li_github_link_states set expires_at=clock_timestamp()-interval '1 second' where state_hash=%s",(state,))
+        self.assertFalse(self.finish(subject,state))
+        self.assertEqual(self.one("select count(*) from public.li_github_connections where subject=%s",(subject,))[0],0)
+
+    def test_disconnect_invalidates_inflight_callback(self):
+        subject,state=self.begin();self.consume(subject,state)
+        self.assertTrue(self.svc.execute("select public.li_github_disconnect(%s)",(subject,)).fetchone()[0])
+        self.assertFalse(self.finish(subject,state))
+        self.assertEqual(self.one("select count(*) from public.li_github_link_states where subject=%s",(subject,))[0],0)
+        self.assertEqual(self.one("select count(*) from public.li_github_connections where subject=%s",(subject,))[0],0)
+
+    def test_cross_user_identity_collision_preserves_first_owner(self):
+        first,state=self.begin();self.consume(first,state);self.assertTrue(self.finish(first,state,987654))
+        second,state2=self.begin();self.consume(second,state2);self.assertFalse(self.finish(second,state2,987654))
+        self.assertEqual(str(self.one("select subject from public.li_github_connections where github_user_id=987654")[0]),first)
+        self.assertEqual(self.one("select count(*) from public.li_github_connections where subject=%s",(second,))[0],0)
+
+    def test_selection_rejects_cross_identity_duplicates_nulls(self):
+        subject,state=self.begin();self.consume(subject,state);self.assertTrue(self.finish(subject,state,56789))
+        for identity,repositories in ((1,[11]),(56789,[11,11]),(56789,[None]),(56789,[]),(56789,[-1])):
+            self.assertFalse(self.svc.execute("select public.li_github_select_repositories(%s,%s,%s,%s::bigint[])",(subject,identity,222,repositories)).fetchone()[0])
+        self.assertTrue(self.svc.execute("select public.li_github_select_repositories(%s,%s,%s,%s::bigint[])",(subject,56789,222,[11,12])).fetchone()[0])
+        self.assertEqual(self.one("select installation_id,repository_ids from public.li_github_connections where subject=%s",(subject,)),(222,[11,12]))
+
+    def test_concurrent_disconnect_and_finalize_cannot_restore_link(self):
+        subject,state=self.begin();self.consume(subject,state)
+        connections=[role_connect(self.dbname) for _ in range(2)]
+        for conn in connections:self.addCleanup(conn.close)
+        results=run_concurrently([
+            lambda:connections[0].execute("select public.li_github_disconnect(%s)",(subject,)).fetchone()[0],
+            lambda:connections[1].execute("select public.li_github_link_identity(%s,%s,%s)",(subject,333456,state)).fetchone()[0]])
+        self.assertTrue(results[0])
+        self.assertEqual(self.one("select count(*) from public.li_github_connections where subject=%s",(subject,))[0],0)
+        self.assertEqual(self.one("select count(*) from public.li_github_link_states where subject=%s",(subject,))[0],0)
+
+    def test_new_generation_invalidates_old_callback(self):
+        subject,state=self.begin();self.consume(subject,state)
+        _,new_state=self.begin(subject)
+        self.assertFalse(self.finish(subject,state))
+        self.consume(subject,new_state);self.assertTrue(self.finish(subject,new_state,333678))
+        self.assertEqual(self.one("select github_user_id from public.li_github_connections where subject=%s",(subject,))[0],333678)

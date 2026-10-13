@@ -103,3 +103,27 @@ repository-access boundaries and revocation verified.
 
 Inspected 2026-10-13 UTC. Live provider configuration and separate-user evidence
 remain unavailable. No working connection destination is advertised.
+
+## Prepared callback service (2026-10-13)
+
+`hosted/github_onboarding.py` now provides a disabled-by-default optional service
+for PKCE start, one-shot callback, explicit live-verified repository selection,
+subject-specific status and local disconnect. The proposed new migration
+`20261013193000_github_optional_link.sql` supplies backend-only atomic RPCs and
+RLS-denied tables. It has NOT been applied or executed against PostgreSQL.
+Unit tests use fake store/provider contracts; they do not establish SQL execution,
+real GitHub authorization or end-to-end usability.
+
+Callback completion retains a short-lived consumed state generation through code
+exchange; disconnect invalidates this generation, so delayed callbacks cannot
+recreate a disconnected link. Numeric GitHub identity is globally unique and
+cannot silently replace a subject's different existing link. PKCE verifier is
+short-lived backend-only state; provider credentials are never stored here.
+
+Integration requirements still outstanding: verified authenticated subject from
+LI auth (never request parameters), actual GitHub provider adapter with bounded
+HTTPS exchange and authoritative identity/current repository checks, protected
+route wiring, signed webhook invalidation, UI and PostgreSQL concurrency proof.
+Stored selections are intent, never standalone operation authorization; every
+repository operation must recheck live user/installation/permission intersection.
+Public anonymous LI MCP continues to require no GitHub connection.
