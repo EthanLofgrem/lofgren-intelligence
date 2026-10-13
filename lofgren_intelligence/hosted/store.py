@@ -443,6 +443,29 @@ class SupabaseStore:
             "p_hold_grace_seconds": int(hold_grace_seconds),
         }), "li_claim_research_job")
 
+    def get_targeted_usage_proof(self, user_id: str, reservation_id: str) -> dict:
+        reservations = self._table("li_usage_reservations", query={
+            "select": "id,user_id,job_id,status,actual_units", "user_id": f"eq.{user_id}",
+            "id": f"eq.{reservation_id}", "limit": "1"})
+        events = self._table("li_usage_events", query={
+            "select": "id,user_id,run_id,units,known_cost_usd", "user_id": f"eq.{user_id}",
+            "id": f"eq.{reservation_id}", "limit": "1"})
+        return {"reservation": reservations[0] if reservations else None,
+                "event": events[0] if events else None}
+
+    def get_targeted_case_approval(self, user_id: str, case_id: str, approval_id: str) -> dict | None:
+        rows = self._table("li_case_approvals", query={"select": "*", "user_id": f"eq.{user_id}",
+                "case_id": f"eq.{case_id}", "id": f"eq.{approval_id}", "limit": "1"})
+        return rows[0] if rows else None
+
+    def claim_targeted_research_job(self, job_id: str, user_id: str, case_id: str,
+                                   content_hash: str, expected_input: dict, worker: str) -> dict | None:
+        return self._rpc_row(self.rpc("li_claim_targeted_research_job", {
+            "p_id": job_id, "p_user_id": user_id, "p_case_id": case_id,
+            "p_content_hash": content_hash, "p_expected_input": expected_input,
+            "p_worker": worker,
+        }), "li_claim_targeted_research_job")
+
     def heartbeat_research_job(
         self, job_id: str, worker: str, lease_seconds: int, hold_grace_seconds: int,
         checkpoint: dict[str, Any] | None = None, cost_so_far: float | None = None,

@@ -75,6 +75,8 @@ class TrialBounds:
 
 
 BOUNDS = TrialBounds()
+# Set only by the fixed internal subprocess entrypoint, never by request/environment.
+ISOLATION_CHILD_PROCESS = False
 _call_slots = threading.BoundedSemaphore(BOUNDS.max_concurrent_calls)
 
 # Rate buckets (all store-backed, fail closed). Defaults; LI_TRIAL_* env may change them.
@@ -563,12 +565,34 @@ def build_trial_mcp(base_url: str) -> TrialMCPServer:
 class TrialEndpoint:
     """ASGI endpoint for /mcp-trial around the trial server's Streamable HTTP app."""
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, transport_security: Any = None) -> None:
         self.inner = inner
+        from mcp.server.transport_security import TransportSecurityMiddleware
+        self.transport_security = (TransportSecurityMiddleware(transport_security)
+                                   if transport_security is not None else None)
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         from starlette.authentication import AuthCredentials, UnauthenticatedUser
         from starlette.concurrency import run_in_threadpool
+
+        request_deadline = time.monotonic() + 50.0
+        if self.transport_security is not None:
+            invalid = await self.transport_security.validate_request(
+                Request(scope), is_post=scope.get("method") == "POST")
+            if invalid is not None:
+                await invalid(scope, receive, send)
+                return
+        isolation = os.environ.get("LI_TRIAL_ISOLATION_MODE", "off").strip().lower()
+        if isolation not in {"off", "required"}:
+            await JSONResponse({"error": "temporarily_unavailable"}, status_code=503,
+                               headers={"Cache-Control": "no-store"})(scope, receive, send)
+            return
+        isolated_parent = isolation == "required" and not ISOLATION_CHILD_PROCESS
+        if isolated_parent and os.environ.get("LI_TRIAL_ISOLATION_VERIFIED", "").strip().lower() != "true":
+            await JSONResponse({"error": "temporarily_unavailable",
+                                "error_description": "hosted process isolation is not verified"}, status_code=503,
+                               headers={"Cache-Control": "no-store"})(scope, receive, send)
+            return
 
         # Bound bytes before the MCP SDK parses JSON. A total read deadline also
         # refuses slow/chunked upload bodies; it does not cancel running research.
@@ -598,6 +622,45 @@ class TrialEndpoint:
             if size > BOUNDS.max_request_bytes:
                 await JSONResponse({"error": "request_too_large"}, status_code=413,
                                    headers={"Cache-Control": "no-store"})(scope, receive, send)
+            return
+        if isolated_parent:
+            from .process_watchdog import ChildRefused, run_json_child
+            from starlette.responses import Response
+            if not _call_slots.acquire(blocking=False):
+                await JSONResponse({"error": "trial_busy"}, status_code=429,
+                                   headers={"Cache-Control": "no-store"})(scope, receive, send)
+                return
+            async def disconnected():
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+            allowed_headers = {b"accept", b"content-type", b"mcp-protocol-version", b"mcp-method", b"mcp-name", b"host", b"origin"}
+            headers = {k.decode("ascii").lower(): v.decode("latin-1")
+                       for k, v in scope.get("headers", []) if k.lower() in allowed_headers}
+            try:
+                # Admission, reservation and research all occur inside the child
+                # and are covered by this request-wide process watchdog.
+                result = await run_json_child("lofgren_intelligence.hosted.trial_child", {
+                    "body": b"".join(chunks).decode("utf-8"), "headers": headers,
+                    "method": scope.get("method", "POST"), "ip": ratelimit.client_ip(Request(scope)),
+                }, deadline=request_deadline, disconnected=disconnected())
+                if (set(result) != {"status", "headers", "body"} or
+                    not isinstance(result["status"], int) or not 100 <= result["status"] <= 599 or
+                    not isinstance(result["headers"], dict) or not isinstance(result["body"], str) or
+                    len(result["body"].encode()) > 550_000):
+                    raise ChildRefused("invalid child response")
+                response_headers = {k: v for k, v in result["headers"].items()
+                                    if k in {"content-type", "cache-control", "pragma", "retry-after"}}
+                response_headers["cache-control"] = "no-store"
+                await Response(result["body"], status_code=result["status"], headers=response_headers)(scope, receive, send)
+            except (ChildRefused, UnicodeError, ValueError):
+                await JSONResponse({"error": "trial_unavailable",
+                                    "error_description": "bounded execution refused; no success result is available"},
+                                   status_code=503, headers={"Cache-Control": "no-store"})(scope, receive, send)
+            finally:
+                # run_json_child kills and reaps before returning or raising.
+                _call_slots.release()
             return
         delivered = False
         original_receive = receive
@@ -723,7 +786,7 @@ def mount_trial(app: Any, base_url: str, **http_kwargs: Any) -> TrialDispatch:
                 yield state
 
     app.router.lifespan_context = lifespan
-    return TrialDispatch(app, TrialEndpoint(endpoint))
+    return TrialDispatch(app, TrialEndpoint(endpoint, http_kwargs.get("transport_security")))
 
 
 def trial_manifest(base_url: str = "https://capabilities.invalid") -> dict[str, Any]:

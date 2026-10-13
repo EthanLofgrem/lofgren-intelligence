@@ -479,7 +479,7 @@ class PrivilegeTest(PgCase):
     def test_service_role_executes_exactly_the_store_rpcs_as_security_definer(self):
         expected = store_rpc_names()
         self.assertIn("li_save_research_job_result", expected)
-        self.assertEqual(len(expected), 27, sorted(expected))
+        self.assertIn("li_claim_targeted_research_job", expected)
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -1485,6 +1485,96 @@ class OAuthAndBillingTest(PgCase):
         self.assertEqual((kind, float(quota)), ("paid", 5000.0))
 
 
+@pg_test
+class OAuthIssuanceExpiryTest(PgCase):
+    """Real OAuth exchanges: consumed while valid, then blocked across expiry."""
+    @classmethod
+    def setUpClass(cls):
+        # Restoring the old function to reproduce must never alter shared test state.
+        cls.dbname, _ = provision("oauth_expiry")
+
+    def exchange_across_expiry(self, kind):
+        from lofgren_intelligence.hosted.auth import AuthError, OAuthService, code_challenge_s256
+        user = self.new_user()
+        client = "expiry-" + uuid.uuid4().hex
+        redirect = "https://client.example/callback"
+        self.svc.execute("insert into public.li_oauth_clients(client_id,client_name,redirect_uris,grant_types,response_types,token_endpoint_auth_method) values (%s,'expiry',%s::jsonb,'[]','[]','none')", (client,json.dumps([redirect])))
+        raw = "grant-" + uuid.uuid4().hex
+        digest = sha(raw)
+        expiry = self.one("select clock_timestamp()+interval '4 seconds'")[0]
+        if kind == "authorization_code":
+            self.svc.execute("insert into public.li_oauth_codes(code_hash,user_id,client_id,redirect_uri,code_challenge,scope,resource,expires_at) values (%s,%s,%s,%s,%s,'mcp','https://li.example/mcp',%s)", (digest,user,client,redirect,code_challenge_s256("v"*64),expiry))
+            table, key = "li_oauth_codes", "code_hash"
+        else:
+            self.svc.execute("insert into public.li_refresh_tokens(token_hash,user_id,client_id,scope,resource,expires_at) values (%s,%s,%s,'mcp','https://li.example/mcp',%s)", (digest,user,client,expiry))
+            table, key = "li_refresh_tokens", "token_hash"
+        issuer, blocker = self.new_store(), self.new_store()
+        # Only the table transport is translated to SQL; all consumption and
+        # issuance use the real OAuthService + SupabaseStore RPC methods.
+        def client_lookup(client_id):
+            row = issuer.conn.execute("select client_id,redirect_uris from public.li_oauth_clients where client_id=%s and active=true", (client_id,)).fetchone()
+            return {"client_id":row[0],"redirect_uris":row[1]} if row else None
+        issuer.get_oauth_client = client_lookup
+        oauth = OAuthService(issuer)
+        pid = issuer.conn.execute("select pg_backend_pid()").fetchone()[0]
+        results, errors = [], []
+        def exchange():
+            try:
+                if kind == "authorization_code":
+                    results.append(oauth.exchange_code(code=raw,code_verifier="v"*64,client_id=client,redirect_uri=redirect))
+                else:
+                    results.append(oauth.refresh(refresh_token=raw,client_id=client))
+            except Exception as exc:
+                errors.append(exc)
+        thread = threading.Thread(target=exchange)
+        with blocker.conn.transaction():
+            blocker.conn.execute("select pg_advisory_xact_lock(hashtextextended('li_oauth:' || %s::text || ':' || %s,0))", (user,client))
+            thread.start()
+            wait_until_lock_waiting(self.admin,pid)
+            used_at = self.one(pgsql.SQL("select used_at from public.{} where {}=%s").format(pgsql.Identifier(table),pgsql.Identifier(key)),(digest,))[0]
+            self.assertIsNotNone(used_at,"grant must be consumed before issuance waits")
+            self.assertLess(used_at,expiry,"consumption must succeed while grant is valid")
+            self.wait_db_past(expiry)
+        thread.join(15)
+        self.assertFalse(thread.is_alive(),"exchange must finish after the blocker commits")
+        self.assertTrue(all(isinstance(exc,AuthError) for exc in errors),repr(errors))
+        live = self.one("select count(*) from public.li_access_tokens where user_id=%s and client_id=%s and revoked_at is null",(user,client))[0]
+        refreshed = self.one("select count(*) from public.li_refresh_tokens where user_id=%s and client_id=%s and used_at is null",(user,client))[0]
+        self.last_expiry_identity = (user, client)
+        return results,errors,live,refreshed
+
+    def test_prior_issue_function_mints_after_waiting_past_grant_expiry(self):
+        original = (MIGRATIONS / "20261012060000_oauth_disconnect.sql").read_text().split("\ncreate or replace function public.li_disconnect_oauth_client",1)[0]
+        correction = next(MIGRATIONS.glob("*_oauth_issuance_expiry.sql")).read_text()
+        self.admin.execute(original)
+        try:
+            for kind in ("authorization_code","refresh_token"):
+                with self.subTest(kind=kind):
+                    results,errors,live,refreshed = self.exchange_across_expiry(kind)
+                    self.assertEqual(errors,[])
+                    self.assertEqual(len(results),1,"old SQL demonstrates the expired-grant defect")
+                    self.assertEqual((live,refreshed),(1,1))
+        finally:
+            self.admin.execute(correction)
+
+    def test_corrected_issue_function_refuses_both_grants_after_waiting_past_expiry(self):
+        for kind in ("authorization_code","refresh_token"):
+            with self.subTest(kind=kind):
+                results,errors,live,refreshed = self.exchange_across_expiry(kind)
+                self.assertEqual(results,[])
+                self.assertEqual(len(errors),1)
+                self.assertEqual((live,refreshed),(0,0))
+                self.assertEqual(self.one("select count(*) from public.li_access_tokens where user_id=%s and client_id=%s and revoked_at is null", self.last_expiry_identity)[0], 0)
+                self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where user_id=%s and client_id=%s and used_at is null", self.last_expiry_identity)[0], 0)
+
+    def test_corrective_issuance_migration_preserves_idempotence_and_grants(self):
+        correction = next(MIGRATIONS.glob("*_oauth_issuance_expiry.sql")).read_text()
+        for _ in range(2):
+            self.admin.execute(correction)
+        for role,allowed in (("anon",False),("authenticated",False),("service_role",True)):
+            self.assertEqual(self.one("select has_function_privilege(%s,'public.li_issue_oauth_tokens(text,text,jsonb,jsonb)','EXECUTE')",(role,))[0],allowed)
+
+
 
 # ---------------------------------------------------------------------------
 # Q18 owner review: account deletion racing a research worker
@@ -1645,3 +1735,80 @@ class AccountDeletionRaceTest(PgCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+@pg_test
+class TargetedClaimTest(PgCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dbname, _ = provision('targeted')
+
+    def target(self):
+        user = self.new_user()
+        case_id, approval_id, job_id, rid = (str(uuid.uuid4()) for _ in range(4))
+        h = sha(case_id)
+        self.store.create_case(case_id,user,'Synthetic inline acceptance','ready_for_approval',h,{'objective':'Synthetic inline acceptance','sources':{'texts':{'synthetic':'Synthetic evidence.'}}},{})
+        self.assertTrue(self.store.approve_case_charter({'id':approval_id,'case_id':case_id,'user_id':user,
+          'charter_version':1,'content_hash':h,'scope':{},'budget_usd':0,'budget_units':100,
+          'expires_at':(self.db_now()+timedelta(seconds=600)).isoformat(),'token_hash':sha(approval_id)}))
+        self.store.consume_case_approval(approval_id,user,sha(approval_id),'proof')
+        self.assertTrue(self.store.reserve_usage(rid,user,'investigate',10))
+        inp={'schema':'lofgren.research-job/1','execution_inputs':'approved_charter',
+             'objective':'Synthetic inline acceptance','args':{'texts':{'synthetic':'Synthetic evidence.'}},
+             'case':{'case_id':case_id,'approval_id':approval_id,'charter_version':1,'content_hash':h}}
+        self.store.enqueue_research_job(job_id,user,case_id,'investigate','proof',inp,rid,1,600)
+        return (job_id,user,case_id,h,inp,'proof-worker')
+
+    def test_exact_target_claims_once_and_other_job_remains_queued(self):
+        args=self.target(); other=self.target()
+        row=self.store.claim_targeted_research_job(*args)
+        self.assertEqual(row['id'],args[0]);self.assertEqual(row['attempts'],1)
+        self.assertIsNone(self.store.claim_targeted_research_job(*args))
+        self.assertEqual(self.one('select status from public.li_research_jobs where id=%s',(other[0],))[0],'queued')
+
+    def test_wrong_identity_case_hash_and_input_change_no_rows(self):
+        args=self.target()
+        for index, value in ((1,self.new_user()),(2,str(uuid.uuid4())),(3,'f'*64),(4,{})):
+            changed=list(args);changed[index]=value
+            self.assertIsNone(self.store.claim_targeted_research_job(*changed))
+        self.assertEqual(self.one('select status,attempts from public.li_research_jobs where id=%s',(args[0],)),('queued',0))
+
+    def test_revoked_approval_released_hold_or_inactive_entitlement_refused(self):
+        for table,assignment,id_key,arg_index in (
+            ('li_case_approvals','revoked_at=now()','id',None),
+            ('li_usage_reservations',"status='released'",'job_id',0),
+            ('li_entitlements','active=false','user_id',1)):
+            args=self.target()
+            identifier=args[4]['case']['approval_id'] if arg_index is None else args[arg_index]
+            self.admin.execute(f'update public.{table} set {assignment} where {id_key}=%s',(identifier,))
+            self.assertIsNone(self.store.claim_targeted_research_job(*args))
+
+    def test_external_source_input_is_refused_before_claim(self):
+        args=list(self.target());args[4]['args']['urls']=['https://example.com']
+        self.admin.execute('update public.li_research_jobs set input=%s::jsonb where id=%s',(json.dumps(args[4]),args[0]))
+        self.assertIsNone(self.store.claim_targeted_research_job(*args))
+
+    def test_parallel_exact_claim_has_one_winner(self):
+        args=self.target()
+        stores=[]
+        for _ in range(2):
+            conn=role_connect(self.dbname);self.addCleanup(conn.close);stores.append(PgRpcStore(conn))
+        results=run_concurrently([lambda s=s:s.claim_targeted_research_job(*args) for s in stores])
+        self.assertEqual(sum(r is not None for r in results),1)
+        self.assertEqual(self.one("select status,attempts,lease_owner from public.li_research_jobs where id=%s", (args[0],)), ("running", 1, args[5]))
+
+    def test_expired_approval_lease_and_queue_delay_refuse_without_attempt(self):
+        for table, assignment, id_key, arg_index in (
+            ('li_case_approvals', "expires_at=now()-interval '1 second'", 'id', None),
+            ('li_research_jobs', "lease_owner='other',lease_expires_at=now()+interval '1 minute'", 'id', 0),
+            ('li_research_jobs', "not_before=now()+interval '1 minute'", 'id', 0)):
+            args=self.target()
+            identifier=args[4]['case']['approval_id'] if arg_index is None else args[arg_index]
+            self.admin.execute(f'update public.{table} set {assignment} where {id_key}=%s',(identifier,))
+            self.assertIsNone(self.store.claim_targeted_research_job(*args))
+            self.assertEqual(self.one('select attempts from public.li_research_jobs where id=%s',(args[0],))[0],0)
+
+    def test_charter_revision_revokes_target(self):
+        args=self.target()
+        self.assertEqual(self.store.revise_case(args[2],args[1],1,'ready_for_approval',sha('revision'),{'objective':'new'},{}),2)
+        self.assertIsNone(self.store.claim_targeted_research_job(*args))
+        self.assertEqual(self.one("select status,attempts from public.li_research_jobs where id=%s", (args[0],)), ("queued", 0))

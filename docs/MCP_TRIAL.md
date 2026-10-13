@@ -199,3 +199,37 @@ The current OpenAI documentation was consulted for the `securitySchemes`
 placement. ChatGPT's handling of a separate noauth connector beside an OAuth
 connector has not been observed. No hosted deployment of the trial exists.
 
+
+
+## Process-watchdog candidate (not hosted-verified)
+
+`LI_TRIAL_ISOLATION_MODE=required` routes the entire anonymous HTTP operation,
+including database admission and spending reservation, through a fresh fixed
+internal subprocess. It fails closed unless
+`LI_TRIAL_ISOLATION_VERIFIED=true` is explicitly configured after a successful
+exact-deployment probe. Unset or `off` preserves the existing cooperative local
+mode; it does not assert hard interruption. Neither setting enables the trial:
+`LI_TRIAL_ENABLED` remains separately off by default.
+
+The request-wide 50-second clock begins before reading the upload body. The
+parent bounds serialized input/output, strips bearer/cookie credentials, accepts
+no executable client operation, and kills/reaps the child process group on
+timeout, disconnect, cancellation or excessive output before releasing capacity.
+Accounting remains the shared database admission implementation inside the
+child. Uncertain work does not cause a refund or fabricated successful receipt.
+This is a POSIX candidate; unavailable isolation refuses execution.
+Only an exact environment allowlist reaches the child: necessary trial/runtime
+configuration and the internal Supabase backend credential. Paid model, search,
+billing, browser, repository, hosting and cloud credentials are excluded. The
+parent validates Host/Origin with the same SDK policy before admission/spawn;
+bounded Origin is also preserved for child-side validation. Client forwarding
+headers do not cross this boundary: the parent's configured trust policy selects
+the accountability IP once, and the child uses that value as its socket peer.
+
+Local tests terminate real blocked children (including ignored SIGTERM), flood
+output, disconnect and cancel parent tasks, verify process reaping, and exercise
+the fixed child failing closed with no configured store. These are not Vercel
+runtime proof. Before enabling this mode publicly, verify subprocess startup,
+latency, kill/reap behavior, concurrency, successful free-source retrieval and
+shared budget conservation on the exact hosted SHA below the configured
+60-second invocation ceiling. Do not set the verification flag from local tests.
