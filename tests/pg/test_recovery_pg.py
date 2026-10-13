@@ -43,7 +43,6 @@ from tests.pg.test_migrations_pg import (
     StoreError,
     provision,
     psycopg,
-    pgsql,
     role_connect,
     run_concurrently,
     tearDownModule as _drop_created_databases,
@@ -53,6 +52,13 @@ from lofgren_intelligence.hosted import service as service_module
 from lofgren_intelligence.hosted.jobs import JobLease, JobSettings, LeaseLost
 from lofgren_intelligence.hosted.service import CaseApprovalRequired, PublicService
 from lofgren_intelligence.hosted.worker import Worker
+
+# psycopg is optional outside postgres-proof (the default suite only loads this module by name).
+if psycopg is not None:
+    import psycopg.types.json  # noqa: F401 - Jsonb
+    from psycopg import sql as pgsql
+else:  # pragma: no cover - depends on the environment
+    pgsql = None
 
 pg_test = unittest.skipUnless(DSN, SKIP_REASON)
 
