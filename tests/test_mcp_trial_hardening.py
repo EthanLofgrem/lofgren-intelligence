@@ -10,6 +10,7 @@ import ast
 import contextlib
 import hashlib
 import hmac
+import http.client
 import http.server
 import json
 import os
@@ -126,6 +127,13 @@ class Upstream:
                 for _ in range(LIMIT // len(chunk) + 4):
                     self.wfile.write(chunk)
 
+            def route_short(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "1000")
+                self.end_headers()
+                self.wfile.write(b'{"partial": ')  # then the server closes: a truncated body
+
             def route_missing(self):
                 self.send(404, b"{}")
 
@@ -216,6 +224,12 @@ class FetcherBoundTests(unittest.TestCase):
                     get(f, self.up.url(path))
                 self.assertLessEqual(f.bytes_read, LIMIT + trial_fetch.READ_CHUNK)
         self.assertEqual(trial.BOUNDS.max_body_bytes, 1_000_000)
+
+    def test_truncated_body_is_a_failure_not_a_short_success(self):
+        f = fetcher()
+        with self.assertRaises(http.client.IncompleteRead):
+            get(f, self.up.url("/short"))
+        self.assertEqual(self.up.hits, {"/short": 1})
 
     def test_deadline_cuts_a_server_that_never_sends_headers(self):
         f = fetcher(deadline_s=1.0, op_timeout_s=10.0)  # the socket timeout alone would wait 10 s

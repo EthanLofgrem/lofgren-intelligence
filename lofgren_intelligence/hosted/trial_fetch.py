@@ -205,6 +205,12 @@ class TrialFetcher:
                 if total > self.max_body_bytes:
                     raise ValueError(f"upstream body exceeds the trial limit of {self.max_body_bytes} bytes")
                 chunks.append(chunk)
+            # A socket shut by the watchdog reads as end-of-file on some platforms (Linux): never return that
+            # truncated body as a complete one.
+            if self.aborted or self.remaining() <= 0:
+                raise TimeoutError("the trial time bound was reached while reading the upstream body")
+            if declared_bytes is not None and total != declared_bytes:
+                raise http.client.IncompleteRead(b"", max(0, declared_bytes - total))
             return status, response_headers, b"".join(chunks)
         except ValueError:
             if self.aborted:
