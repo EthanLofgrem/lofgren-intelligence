@@ -7,6 +7,7 @@ server or narrowly-scoped SECURITY DEFINER RPCs.
 
 from __future__ import annotations
 
+import json
 import os
 import urllib.error
 import urllib.parse
@@ -32,11 +33,24 @@ class StoreNotConfigured(StoreUnavailable):
     """The deployment is missing store configuration (a server misconfiguration)."""
 
 
+class StoreAuthError(StoreUnavailable):
+    """The store rejected the service credentials (HTTP 401/403): a wrong or revoked key.
+
+    Retrying cannot fix it. The message never contains the key or the URL. Public
+    endpoints still answer it as an unavailable dependency (it subclasses StoreUnavailable).
+    """
+
+
+_AUTH_STATUSES = (401, 403)
+
+
 def _db(url: str, method: str, **kw: Any) -> Any:
     """Call Supabase without leaking PostgREST/schema details to public callers."""
     try:
         return json_request(url, method, **kw).body
     except HTTPError as exc:
+        if exc.status in _AUTH_STATUSES:
+            raise StoreAuthError(f"database rejected the service credentials (HTTP {exc.status})") from None
         raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
     except (urllib.error.URLError, OSError, ValueError):
         raise StoreUnavailable("database is unreachable") from None
@@ -97,6 +111,35 @@ class SupabaseStore:
             body=body,
             timeout=self.timeout,
         )
+
+    def check_connection(self) -> None:
+        """Cheap authenticated read of the job queue: the worker's startup self-check.
+
+        Raises StoreAuthError for rejected credentials, StoreNotConfigured when the URL is
+        not a usable Supabase REST endpoint or the job queue table is missing, and
+        StoreUnavailable for a transient fault (network, timeout, 408/429/5xx). Messages
+        never contain the key or the URL.
+        """
+        url = with_query(f"{self.url}/rest/v1/li_research_jobs", {"select": "id", "limit": "1"})
+        try:
+            body = json_request(url, "GET", headers=self._headers, timeout=min(self.timeout, 10.0)).body
+        except HTTPError as exc:
+            if exc.status in _AUTH_STATUSES:
+                raise StoreAuthError(f"database rejected the service credentials (HTTP {exc.status})") from None
+            if exc.status in (408, 429) or exc.status >= 500:
+                raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
+            if exc.status == 404:
+                raise StoreNotConfigured("the job queue table was not found (HTTP 404): check SUPABASE_URL "
+                                         "and that the migrations are applied") from None
+            raise StoreNotConfigured(f"database refused the self-check (HTTP {exc.status})") from None
+        except json.JSONDecodeError:
+            raise StoreNotConfigured("SUPABASE_URL did not answer like a Supabase REST endpoint") from None
+        except ValueError:
+            raise StoreNotConfigured("SUPABASE_URL is not a usable endpoint") from None
+        except (urllib.error.URLError, OSError):
+            raise StoreUnavailable("database is unreachable") from None
+        if not isinstance(body, list):
+            raise StoreNotConfigured("SUPABASE_URL did not answer like a Supabase REST endpoint")
 
     def verify_supabase_user(self, access_token: str) -> dict[str, Any]:
         key = self.publishable_key or self.service_key
