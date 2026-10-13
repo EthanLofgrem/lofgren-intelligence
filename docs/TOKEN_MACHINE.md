@@ -13,3 +13,5 @@ Intent/risk classification uses explicit English word markers and can miss cases
 This implementation incurs no model-provider calls. Hosting quotas, client subscriptions and infrastructure costs are outside its cost measurement. It is an initial bounded component, not autonomous intelligence or proof of all-client compatibility.
 
 Local MCP exposes read-only `li_analyze_context` with a minimized prompt and three optional budget fields. It accepts no credential, approval, command or arbitrary tool-definition inputs. The public remote trial remains disabled; this registration does not enable it.
+
+Set `include_server_catalog=true` to estimate the serialized LI advertised tool catalog. This does not identify which definitions the AI host loaded, its caching behavior, or actual model token usage. Default false leaves tool overhead unmeasured.

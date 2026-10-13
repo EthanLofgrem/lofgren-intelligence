@@ -13,3 +13,11 @@ class TokenMachineMCPTests(unittest.TestCase):
         for args in ({'prompt':'hi','context_window':True},{'prompt':'hi','approve':True},{'prompt':'hi','existing_context':8192},{'prompt':'secret','reserved_output':float('nan')}):
             with self.assertRaises(ToolError):
                 Server().handlers['li_analyze_context'](args)
+
+    def test_catalog_estimate_is_explicit_and_never_claims_host_loading(self):
+        result = Server().handlers['li_analyze_context']({'prompt':'Research a source','include_server_catalog':True})['structured']
+        self.assertEqual(result['context']['supplied_tool_count'],len(TOOLS))
+        self.assertGreater(result['context']['tool_tokens_estimate'],0)
+        self.assertEqual(result['context']['catalog_scope'],'server_advertised_not_host_loaded')
+        with self.assertRaises(ToolError):
+            Server().handlers['li_analyze_context']({'prompt':'hi','include_server_catalog':1})

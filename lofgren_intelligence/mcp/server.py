@@ -280,7 +280,8 @@ CONTEXT_TOOLS = [{"name": "li_analyze_context", "description": "Analyze a submit
  "properties": {"prompt": {"type": "string", "minLength": 1, "maxLength": 32768},
  "context_window": {"type": "integer", "minimum": 1, "maximum": 2000000, "default": 8192},
  "reserved_output": {"type": "integer", "minimum": 0, "maximum": 2000000, "default": 1024},
- "existing_context": {"type": "integer", "minimum": 0, "maximum": 2000000, "default": 0}}, "required": ["prompt"]},
+ "existing_context": {"type": "integer", "minimum": 0, "maximum": 2000000, "default": 0},
+ "include_server_catalog": {"type": "boolean", "default": False, "description": "Estimate LI advertised catalog overhead, not tools actually loaded by the host."}}, "required": ["prompt"]},
  "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}}]
 TOOLS = TOOLS + DISCOVERY_TOOLS + PRODUCTION_TOOLS + CONTEXT_TOOLS
 # Older tool names kept working for existing clients.
@@ -399,10 +400,16 @@ class Server:
     # -- tools ---------------------------------------------------------------
     def t_analyze_context(self, a: dict) -> dict:
         from ..token_machine import analyze_prompt
-        if set(a) - {"prompt", "context_window", "reserved_output", "existing_context"}:
+        if set(a) - {"prompt", "context_window", "reserved_output", "existing_context", "include_server_catalog"}:
             raise ToolError("unsupported context analysis arguments")
         try:
-            return _out(analyze_prompt(**a))
+            options = dict(a)
+            include = options.pop("include_server_catalog", False)
+            if type(include) is not bool:
+                raise ValueError("catalog option must be Boolean")
+            result = analyze_prompt(**options, tool_definitions=TOOLS if include else None)
+            result["context"]["catalog_scope"] = "server_advertised_not_host_loaded" if include else "not_supplied"
+            return _out(result)
         except (ValueError, TypeError):
             raise ToolError("invalid bounded context analysis input") from None
 
