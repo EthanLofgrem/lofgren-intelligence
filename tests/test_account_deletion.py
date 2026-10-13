@@ -234,8 +234,12 @@ class DeletionTestBase(JobTestBase):
             self.store.usage.append({"id": "ev-" + uid, "user_id": uid, "run_id": "RR-SAME",
                                      "operation": "investigate", "units": 1.0, "known_cost_usd": 0.0,
                                      "unpriced_components": []})
-        self.tokens = {uid: OAuthService(self.store)._issue_tokens(uid, "client-1", "mcp", RESOURCE)
-                       for uid in ("u1", "u2")}
+        self.tokens = {}
+        for uid in ("u1", "u2"):
+            self.store.put_oauth_code({"code_hash": "fixture-" + uid, "user_id": uid,
+                                      "client_id": "client-1", "used_at": "fixture"})
+            self.tokens[uid] = OAuthService(self.store)._issue_tokens(uid, "client-1", "mcp", RESOURCE,
+                                        grant_kind="authorization_code", grant_hash="fixture-" + uid)
         for uid in ("u1", "u2"):
             self.store.put_oauth_code({"code_hash": "code-" + uid, "user_id": uid, "client_id": "client-1"})
 

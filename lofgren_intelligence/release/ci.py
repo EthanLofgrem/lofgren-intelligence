@@ -36,6 +36,7 @@ VALID_GATE_SCOPES = frozenset({"integration-validation", "release-candidate"})
 RELEASE_CANDIDATE_REFS = frozenset({
     "build/rc-candidate-3",
     "build/li-release-hardening-oct11",
+    "build/li-integrated-oct13",
 })
 HEX_OBJECT_ID = re.compile(r"^[0-9a-f]{40}$")
 

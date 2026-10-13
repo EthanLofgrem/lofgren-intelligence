@@ -313,6 +313,20 @@ class ReleaseGateReceiptTests(unittest.TestCase):
                 jobs=self._jobs(),
             )
 
+    def test_current_integrated_candidate_uses_release_scope(self):
+        receipt = build_release_gate_receipt(
+            source_sha="1" * 40,
+            source_tree="2" * 40,
+            run_id=456,
+            workflow="tests",
+            event="push",
+            ref_name="build/li-integrated-oct13",
+            scope="release-candidate",
+            jobs=self._jobs(),
+        )
+        self.assertEqual(receipt["scope"], "release-candidate")
+        self.assertEqual(receipt["workflow"]["ref_name"], "build/li-integrated-oct13")
+
     def test_receipt_from_another_allowed_candidate_ref_is_rejected(self):
         receipt = build_release_gate_receipt(
             source_sha="1" * 40,

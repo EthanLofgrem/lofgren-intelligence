@@ -910,7 +910,9 @@ class CapabilityManifestTests(unittest.TestCase):
 # candidate itself, in workflow order. Each runs the exact-SHA V2-V6 gate jobs on push.
 RC_GATE_BRANCHES = ("build/release-candidate", "build/rc-durable-jobs", "build/rc-supabase-pin",
                     "build/rc-plan-catalog", "build/rc-integrated", "build/rc-clarification-domains",
-                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11")
+                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11",
+                    "build/li-account-response-cache", "build/oauth-atomic-disconnect",
+                    "build/li-integrated-oct13")
 
 
 class CITriggerTests(unittest.TestCase):
@@ -978,9 +980,13 @@ class CITriggerTests(unittest.TestCase):
         cond = self._job_condition(text, "release-gate-receipt")
         self.assertIn("always() && github.event_name == 'push'", cond)
         self.assertNotIn("pull_request", cond)
-        for branch in ("build/rc-candidate-3", "build/li-release-hardening-oct11"):
+        for branch in (
+            "build/rc-candidate-3",
+            "build/li-release-hardening-oct11",
+            "build/li-integrated-oct13",
+        ):
             self.assertIn(f"github.ref_name == '{branch}'", cond)
-        self.assertEqual(cond.count("github.ref_name =="), 2)
+        self.assertEqual(cond.count("github.ref_name =="), 3)
         start = text.index("\n  release-gate-receipt:\n")
         block = text[start:]
         for job in ("test", "v2-ready-for-v3", "v3-ready-for-v4", "v4-ready-for-v5",
