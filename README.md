@@ -89,11 +89,22 @@ Configure a compatible local MCP client to start the installed executable:
 
 Client configuration formats differ. The executable must be available to the client; an absolute virtual-environment executable path may be necessary. This is local stdio configuration, not proof of hosted ChatGPT compatibility.
 
+The local stdio server (`lofgren mcp`, contract `lofgren.mcp/3`) covers V1–V3 for developer use. It checks every tool
+call against the tool's `inputSchema` and the hosted size limits (objective/claim 8000 characters, at most 20
+documents, 250000 characters of inline text, 12 URLs) and answers a bad call with an `INPUT_INVALID: ...` tool error.
+It is a trusted local tool: `files`, `tle_path` and a `sources_manifest` path read the caller's own disk. Only regular
+files of a supported document type (txt, md, csv, json, html, rst) within the size limits are read; set
+`LOFGREN_MCP_FILES_ROOT=/some/dir` to confine every local path to that directory.
+
 ## Hosted MCP and release work
 
 The dedicated integration endpoint is `https://lofgren-intelligence-mcp.vercel.app/mcp`. It requires LI authorization. An anonymous **401 is expected**; health or discovery success alone does not establish usable research. Do not distribute administrative credentials or hosting bypass secrets to clients.
 
 Current release work focuses on hosted-worker delivery, real OAuth/client acceptance, recovery and settlement, bounded anonymous-trial review, and exact-revision release evidence. [PUBLIC_STATUS.md](docs/PUBLIC_STATUS.md) separates implemented features from demonstrated delivery.
+
+Hosted refusals reach the client as `<CODE>: reason` with a stable code (`UNSAFE_URL`, `INPUT_INVALID`,
+`MANIFEST_INVALID`, `EXECUTION_REFUSED`, `IMPROVEMENT_REFUSED`, or a service code such as `QUOTA_EXCEEDED`);
+unexpected failures stay a generic error. See [docs/PUBLIC_MCP.md](docs/PUBLIC_MCP.md#typed-refusals).
 
 **Not proven:** complete customer deployment, real clients, hosted recovery, backup/restore and `PublicMCPReady`. These require retained operational evidence; code certification alone is insufficient.
 

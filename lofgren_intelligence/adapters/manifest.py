@@ -14,6 +14,12 @@ evidence item records the retrieval time, the sha256 of the exact bytes read and
 file. A page that cannot be read, has an unsupported content type or does not match the manifest's expected
 hash is reported as a note, never silently dropped. The manifest is bounded (file size, number of sources,
 field lengths) and fails closed on anything it does not recognise.
+
+Every listed source ends each question with a status: ``used`` (a passage of it became evidence),
+``no_passages`` (it was read but nothing in it was relevant) or ``failed`` (it could not be read). Whenever a
+source was not used for a question, a note lists the status of every manifest entry, so a page that was
+fetched but yielded nothing is on the run's record; the run turns that note into an unknown that the research
+receipt carries. Evidence from a used source records ``source_status: used`` with its manifest entry.
 """
 
 from __future__ import annotations
@@ -41,6 +47,10 @@ _ENTRY_FIELDS = {"url": MAX_URL_CHARS, "title": 300, "publisher": 200, "sha256":
 _TOP_FIELDS = {"schema", "description", "sources"}
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _TEXT_TYPES = ("text/html", "text/plain", "text/csv", "text/markdown", "application/json", "application/xhtml+xml")
+STATUS_USED = "used"
+STATUS_NO_PASSAGES = "no_passages"
+STATUS_FAILED = "failed"
+SOURCE_STATUSES = (STATUS_USED, STATUS_NO_PASSAGES, STATUS_FAILED)
 
 
 class ManifestError(ValueError):
@@ -180,6 +190,7 @@ class OperatorSourcesAdapter(_PassageAdapter):
         self.fetched: list[_Fetched] | None = None
         self._labels_by_source: dict[str, tuple[dict, list[str]]] = {}
         self._reported = False
+        self._used_entries: set[int] = set()
 
     def available(self) -> bool:
         return bool(self.manifest.sources)
@@ -221,7 +232,8 @@ class OperatorSourcesAdapter(_PassageAdapter):
             src = Source(kind=SourceKind.WEB, title=f.entry.get("title") or url, uri=url,
                          publisher=f.entry.get("publisher") or host, retrieved_at=f.retrieved_at,
                          license=self.license, quality=self.quality)
-            data = {"source_class": SELECTION_LABEL, "selection": SELECTION_LABEL, "url": url,
+            data = {"source_class": SELECTION_LABEL, "selection": SELECTION_LABEL, "source_status": STATUS_USED,
+                    "url": url,
                     "retrieved_at": f.retrieved_at, "content_sha256": f.sha256, "content_bytes": f.bytes,
                     "content_type": f.content_type, "manifest_sha256": self.manifest.sha256,
                     "manifest_entry": f.index,
@@ -236,6 +248,36 @@ class OperatorSourcesAdapter(_PassageAdapter):
     def _labels(self, source: Source) -> tuple[dict, list[str]]:
         data, steps = self._labels_by_source.get(source.id, ({}, []))
         return dict(data), list(steps)
+
+    def source_statuses(self, used_entries: set[int] | None = None) -> list[dict[str, Any]]:
+        """Every manifest entry with its status: used, no_passages or failed.
+
+        `used_entries` are the entries that yielded evidence (default: for any question gathered so far).
+        """
+        used = self._used_entries if used_entries is None else used_entries
+        out: list[dict[str, Any]] = []
+        for f in self.fetch_all():
+            if f.outcome != OUTCOME_COMPLETE:
+                status, reason = STATUS_FAILED, f.error
+            elif f.index in used:
+                status, reason = STATUS_USED, ""
+            else:
+                status, reason = STATUS_NO_PASSAGES, "read, but no passage was relevant"
+            out.append({"entry": f.index, "url": f.entry["url"], "title": f.entry.get("title", ""),
+                        "status": status, "reason": reason, "content_sha256": f.sha256 or None,
+                        "retrieved_at": f.retrieved_at, "manifest_sha256": self.manifest.sha256})
+        return out
+
+    def gather(self, question: Any, contract: Any) -> Any:
+        result = super().gather(question, contract)
+        used_now = {ev.data.get("manifest_entry") for _, ev in result.items}
+        self._used_entries |= {i for i in used_now if isinstance(i, int)}
+        statuses = self.source_statuses(used_now)
+        if any(s["status"] != STATUS_USED for s in statuses):
+            listed = "; ".join(f"entry {s['entry']} {s['url']} {s['status']}" for s in statuses)
+            result.notes.append(f"{self.id}: operator-selected source status for '{question.text}' "
+                                f"(manifest {self.manifest.sha256[:12]}): {listed}")
+        return result
 
     def _retrieval_notes(self) -> list[str]:
         if self._reported:  # run-level facts: reported once

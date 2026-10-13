@@ -36,6 +36,10 @@ from ..orbital.tle import parse_tle_text
 from ..report.markdown import render_markdown
 from ..research.planner import gap_unknowns, plan_research
 from ..verification.engine import Verifier
+from .inputs import (
+    LOCAL_MAX_RECORDS, MAX_DOCUMENTS, MAX_OBJECTIVE_CHARS, MAX_PASS_HOURS, MAX_PATH_CHARS, MAX_TEXT_CHARS,
+    MAX_TLE_TEXT_CHARS, MAX_URL_LENGTH, MAX_URLS, InputInvalid, check_limits, check_local_paths, schema_errors,
+)
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CONTRACT = "lofgren.mcp/3"  # V1 and V2 tools unchanged; V3 production tools added
@@ -56,29 +60,41 @@ INSTRUCTIONS = (
     + CONTRACT + "."
 )
 
+_TEXT = {"type": "string", "minLength": 1, "maxLength": MAX_OBJECTIVE_CHARS}
+_LAT = {"type": "number", "minimum": -90, "maximum": 90}
+_LON = {"type": "number", "minimum": -180, "maximum": 180}
+_SPEND = {"type": "number", "minimum": 0, "description": "Research spend cap in USD (default 5)."}
 _SOURCE_PROPS: dict[str, Any] = {
-    "files": {"type": "array", "items": {"type": "string"}, "description": "Local documents or folders to use as evidence."},
-    "texts": {"type": "object", "additionalProperties": {"type": "string"},
-              "description": "Inline documents: title -> text."},
-    "urls": {"type": "array", "items": {"type": "string"}, "description": "Public web pages to read."},
+    "files": {"type": "array", "maxItems": MAX_DOCUMENTS, "items": {"type": "string", "maxLength": MAX_PATH_CHARS},
+              "description": "Local documents or folders to use as evidence (txt, md, csv, json, html, rst; regular "
+                             f"files only; at most {MAX_DOCUMENTS} documents and {MAX_TEXT_CHARS} bytes in total). "
+                             "The local server reads the caller's own disk; set LOFGREN_MCP_FILES_ROOT to confine it."},
+    "texts": {"type": "object", "maxProperties": MAX_DOCUMENTS,
+              "additionalProperties": {"type": "string", "maxLength": MAX_TEXT_CHARS},
+              "description": f"Inline documents: title -> text (at most {MAX_DOCUMENTS} documents and "
+                             f"{MAX_TEXT_CHARS} characters in total)."},
+    "urls": {"type": "array", "maxItems": MAX_URLS, "items": {"type": "string", "maxLength": MAX_URL_LENGTH},
+             "description": "Public web pages to read."},
     "search": {"type": "string", "enum": ["brave"], "description": "Discover web pages (needs BRAVE_API_KEY)."},
     "europepmc": {"type": "string", "maxLength": 500,
                   "description": "Search Europe PMC literature (free API; abstracts only, retracted papers excluded)."},
     "trials": {"type": "string", "maxLength": 500,
                "description": "Search ClinicalTrials.gov registrations (free API; a registration is not "
                               "evidence of efficacy)."},
-    "max_records": {"type": "integer", "minimum": 1, "maximum": 100,
-                    "description": "Records per public-source query (default 20)."},
-    "sources_manifest": {"type": "string",
+    "max_records": {"type": "integer", "minimum": 1, "maximum": LOCAL_MAX_RECORDS,
+                    "description": f"Records per public-source query, 1-{LOCAL_MAX_RECORDS} on this local server "
+                                   "(default 20; the hosted service caps it at 20)."},
+    "sources_manifest": {"type": "string", "maxLength": MAX_PATH_CHARS,
                          "description": "Local JSON manifest of operator-selected public URLs "
                                         "(lofgren.sources-manifest/1)."},
-    "lat": {"type": "number"},
-    "lon": {"type": "number"},
-    "tle_path": {"type": "string", "description": "File of orbital elements for pass prediction."},
+    "lat": _LAT,
+    "lon": _LON,
+    "tle_path": {"type": "string", "maxLength": MAX_PATH_CHARS,
+                 "description": "File of orbital elements for pass prediction."},
     "fetch_orbits": {"type": "boolean", "description": "Fetch current elements from CelesTrak."},
     "imagery": {"type": "boolean", "description": "Search open Sentinel-2 / Landsat catalogs."},
     "plan": {"type": "string", "enum": sorted(PLANS)},
-    "max_spend_usd": {"type": "number", "description": "Research spend cap in USD (default 5)."},
+    "max_spend_usd": _SPEND,
 }
 _RUN = {"run_id": {"type": "string", "description": "The research ID returned by investigate or verify_claim."}}
 
@@ -106,25 +122,25 @@ TOOLS: list[dict[str, Any]] = [
     {"name": "compile_objective",
      "description": "Turn an objective into an Outcome Contract: linked research questions, constraints, evidence "
                     "standard, spend cap and actions that need approval.",
-     "inputSchema": _obj(["objective"], {"objective": {"type": "string"}, "max_spend_usd": {"type": "number"},
-                                          "lat": {"type": "number"}, "lon": {"type": "number"}})},
+     "inputSchema": _obj(["objective"], {"objective": _TEXT, "max_spend_usd": _SPEND,
+                                          "lat": _LAT, "lon": _LON})},
     {"name": "plan_research",
      "description": "Plan an investigation without running it: gather tasks in dependency order, capability gaps "
                     "as acquisition plans, and the price estimate.",
-     "inputSchema": _obj(["objective"], {"objective": {"type": "string"}, **_SOURCE_PROPS})},
+     "inputSchema": _obj(["objective"], {"objective": _TEXT, **_SOURCE_PROPS})},
     {"name": "investigate",
      "description": "Run the evidence loop on an objective. Returns a run_id, typed findings and open unknowns.",
-     "inputSchema": _obj(["objective"], {"objective": {"type": "string"}, **_SOURCE_PROPS,
+     "inputSchema": _obj(["objective"], {"objective": _TEXT, **_SOURCE_PROPS,
                                           "approve": {"type": "boolean"}}),
      "outputSchema": _RUN_SUMMARY_SCHEMA},
     {"name": "verify_claim",
      "description": "Check one factual claim against the supplied evidence. Returns a run_id and typed findings.",
-     "inputSchema": _obj(["claim"], {"claim": {"type": "string"}, **_SOURCE_PROPS}),
+     "inputSchema": _obj(["claim"], {"claim": _TEXT, **_SOURCE_PROPS}),
      "outputSchema": _RUN_SUMMARY_SCHEMA},
     {"name": "get_finding",
      "description": "One finding with its claims, evidence ids, contradictions, unknowns, scope and confidence.",
      "inputSchema": _obj(["run_id"], {**_RUN, "finding_id": {"type": "string"},
-                                       "question_index": {"type": "integer", "description": "1-based"}})},
+                                       "question_index": {"type": "integer", "minimum": 1, "description": "1-based"}})},
     {"name": "find_contradictions",
      "description": "The contradiction graph of a run: conflicting claims, kind, scope and what would resolve each.",
      "inputSchema": _obj(["run_id"], _RUN)},
@@ -148,13 +164,17 @@ TOOLS: list[dict[str, Any]] = [
     {"name": "satellite_passes",
      "description": "Predict when open-data imaging satellites (Sentinel, Landsat, Terra, Aqua, VIIRS) pass over a "
                     "location, from public orbital elements. Predictions, not acquisition schedules.",
-     "inputSchema": _obj(["lat", "lon"], {"lat": {"type": "number"}, "lon": {"type": "number"},
-                                          "hours": {"type": "number"}, "min_elevation_deg": {"type": "number"},
-                                          "tle_path": {"type": "string"}, "tle_text": {"type": "string"},
+     "inputSchema": _obj(["lat", "lon"], {"lat": _LAT, "lon": _LON,
+                                          "hours": {"type": "number", "exclusiveMinimum": 0,
+                                                    "maximum": MAX_PASS_HOURS},
+                                          "min_elevation_deg": {"type": "number", "minimum": 0, "maximum": 90},
+                                          "tle_path": {"type": "string", "maxLength": MAX_PATH_CHARS},
+                                          "tle_text": {"type": "string", "maxLength": MAX_TLE_TEXT_CHARS},
                                           "fetch": {"type": "boolean"}})},
     {"name": "pricing",
      "description": "Plans, and the monthly bill for a given usage on each plan.",
-     "inputSchema": _obj([], {"standard_units": {"type": "number"}, "heavy_jobs": {"type": "integer"}})},
+     "inputSchema": _obj([], {"standard_units": {"type": "number", "minimum": 0},
+                              "heavy_jobs": {"type": "integer", "minimum": 0}})},
 ]
 _DISC = {"discovery_id": {"type": "string", "description": "The discovery_id returned by discover."}}
 _DESIGN = {"type": "object", "description": "Structured design space: model, value_metric, success, distributions, "
@@ -180,7 +200,7 @@ DISCOVERY_TOOLS: list[dict[str, Any]] = [
      "description": "Run V2 Discovery on a finished V1 run: frame, prior art, gaps, hypotheses and counter-hypotheses, "
                     "connections, candidates with simulation, sensitivity and optimization, the discovery verifier, an "
                     "explicit decision, a receipt and (when a candidate is selected) a V3 handoff.",
-     "inputSchema": _obj(["run_id", "objective"], {**_RUN, "objective": {"type": "string"}, "design": _DESIGN,
+     "inputSchema": _obj(["run_id", "objective"], {**_RUN, "objective": _TEXT, "design": _DESIGN,
                                                     "prior_art": _PRIOR_ART}),
      "outputSchema": _out_schema(["discovery_id", "outcome", "candidates", "hypotheses", "findings", "kind"],
                                  {"outcome": {"type": "string"}, "kind": {"const": "discovery"}})},
@@ -278,6 +298,20 @@ PRODUCTION_TOOLS: list[dict[str, Any]] = [
 TOOLS = TOOLS + DISCOVERY_TOOLS + PRODUCTION_TOOLS
 # Older tool names kept working for existing clients.
 ALIASES = {"compile_intent": "compile_objective", "estimate_cost": "plan_research"}
+SCHEMAS: dict[str, dict[str, Any]] = {t["name"]: t["inputSchema"] for t in TOOLS}
+# Tools whose handler may read the local disk (the local file policy applies to them).
+_LOCAL_PATH_TOOLS = frozenset({"plan_research", "investigate", "verify_claim", "satellite_passes"})
+
+
+def check_arguments(name: str, args: Any) -> None:
+    """Refuse arguments that break the tool's inputSchema, the size limits or the local file policy."""
+    tool = ALIASES.get(name, name)
+    problems = schema_errors(SCHEMAS[tool], args)
+    if problems:
+        raise InputInvalid("; ".join(problems[:10]))
+    check_limits(args)
+    if tool in _LOCAL_PATH_TOOLS:
+        check_local_paths(args)
 
 
 class ToolError(Exception):
@@ -684,9 +718,16 @@ class Server:
                 result = {"tools": TOOLS}
             elif method == "tools/call":
                 params = msg.get("params") or {}
-                name, args = params.get("name"), params.get("arguments") or {}
+                name, args = params.get("name"), params.get("arguments")
+                args = {} if args is None else args
                 if name not in self.handlers:
                     return _error(mid, -32602, f"unknown tool: {name}")
+                try:
+                    check_arguments(name, args)
+                except InputInvalid as exc:
+                    # A tool execution error, not a protocol error, so the calling model can read and correct it.
+                    return {"jsonrpc": "2.0", "id": mid, "result": {
+                        "content": [{"type": "text", "text": f"INPUT_INVALID: {exc}"}], "isError": True}}
                 try:
                     out = self.handlers[name](args)
                     result = {"content": [{"type": "text", "text": out["text"]}],

@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__, build_registry
-from .adapters.public_api import MAX_RECORDS_CEILING
+from .adapters.manifest import ManifestError
+from .adapters.net import UnsafeURL
+from .adapters.public_api import MAX_RECORDS_CEILING, check_query
 from .billing.pricing import PLANS, cheapest_plan, monthly_bill
 from .intent.compiler import compile_intent
 from .kernel.pipeline import estimate_run, run_investigation
@@ -42,6 +44,19 @@ def _max_records(text: str) -> int:
     return value
 
 
+# The hosted MCP service reads at most this many records per public-source query.
+HOSTED_MAX_RECORDS = 20
+
+
+def _query(what: str):
+    def parse(text: str) -> str:
+        try:
+            return check_query(text, what)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from None
+    return parse
+
+
 def _add_sources(p: argparse.ArgumentParser) -> None:
     p.add_argument("objective", help="what you want to know, verify or accomplish")
     p.add_argument("--files", nargs="*", default=[], help="documents or folders to use as evidence")
@@ -53,12 +68,13 @@ def _add_sources(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sensors", nargs="*", default=[], help="CSV readings from your own sensors")
     p.add_argument("--sensors-authorized", action="store_true",
                    help="confirm you own or are authorized to read these sensors")
-    p.add_argument("--europepmc", metavar="QUERY",
+    p.add_argument("--europepmc", metavar="QUERY", type=_query("--europepmc"),
                    help="search Europe PMC literature (free API; abstracts only, retracted papers excluded)")
-    p.add_argument("--trials", metavar="QUERY",
+    p.add_argument("--trials", metavar="QUERY", type=_query("--trials"),
                    help="search ClinicalTrials.gov registrations (free API; a registration is not efficacy evidence)")
     p.add_argument("--max-records", dest="max_records", type=_max_records, default=20, metavar="N",
-                   help=f"records per public-source query, 1-{MAX_RECORDS_CEILING} (default 20)")
+                   help=f"records per public-source query, 1-{MAX_RECORDS_CEILING} for this local CLI (default 20; "
+                        f"the hosted MCP service caps it at {HOSTED_MAX_RECORDS})")
     p.add_argument("--sources-manifest", dest="sources_manifest", metavar="FILE",
                    help="JSON manifest of operator-selected public URLs (lofgren.sources-manifest/1)")
     p.add_argument("--lat", type=float)
@@ -145,7 +161,16 @@ def cmd_investigate(args: argparse.Namespace) -> int:
 def cmd_calibration(args: argparse.Namespace) -> int:
     log = PredictionLog(args.log)
     if args.claim:
-        n = log.resolve(args.claim, args.correct == "yes")
+        if args.correct is None:
+            print("lofgren calibration: error: --claim needs --correct yes|no", file=sys.stderr)
+            return 2
+        # Check first so an unknown id leaves the log untouched (resolve rewrites the file).
+        pending = any(r.get("claim_id") == args.claim for r in log.pending())
+        n = log.resolve(args.claim, args.correct == "yes") if pending else 0
+        if n == 0:
+            print(f"lofgren calibration: error: no unresolved prediction for claim {args.claim!r} in {args.log}; "
+                  "nothing was recorded", file=sys.stderr)
+            return 1
         print(f"recorded outcome for {n} prediction(s) of {args.claim}")
     summary = log.summary()
     print(json.dumps(summary, indent=2))
@@ -448,7 +473,13 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     _utf8_output()
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except (UnsafeURL, ManifestError) as exc:
+        # An expected, fail-closed refusal of an input source: say why, without a traceback.
+        kind = "unsafe URL" if isinstance(exc, UnsafeURL) else "invalid source manifest"
+        print(f"lofgren {args.command}: error: {kind}: {exc}", file=sys.stderr)
+        return 2
 
 
 def _utf8_output() -> None:
