@@ -120,6 +120,8 @@ lofgren calibration --log predictions.jsonl --claim CL-... --correct yes
 # the receipt's evidence entries.
 lofgren investigate "Does metformin reduce cardiovascular events?" --europepmc "metformin cardiovascular outcomes" \
   --trials "metformin cardiovascular" --max-records 20 --sources-manifest sources.json  # lofgren.sources-manifest/1
+# --max-records is 1-100 on the local CLI and stdio MCP server; the hosted MCP service caps it at 20.
+# Every manifest source is recorded with its status: used, no_passages (read, nothing relevant) or failed.
 
 # Web discovery (Brave Search API key) and model choice
 BRAVE_API_KEY=... lofgren investigate "..." --search brave
@@ -176,7 +178,16 @@ Tools return structured data, not narrative. The hosted service (`/mcp`) registe
 - **Improvement (V6):** `evaluate_improvement`, `get_improvement`.
 - **Account / billing:** `account_status`, `billing_portal`, `create_checkout`, `pricing`, `usage_status`. `create_checkout` refuses until billing is enabled and economically certified.
 
-The local stdio server (`lofgren mcp`, contract `lofgren.mcp/3`) covers V1–V3 for developer use: it has `export_knowledge_map` instead of `export_knowledge_map2`, adds `create_v4_handoff`, `verify_artifact`, `get_artifact_file` and `get_production_receipt`, and has no V4–V6, account or billing tools.
+The local stdio server (`lofgren mcp`, contract `lofgren.mcp/3`) covers V1–V3 for developer use: it has `export_knowledge_map` instead of `export_knowledge_map2`, adds `create_v4_handoff`, `verify_artifact`, `get_artifact_file` and `get_production_receipt`, and has no V4–V6, account or billing tools. It checks every tool call against the tool's `inputSchema` and the
+hosted size limits (objective/claim 8000 characters, at most 20 documents, 250000 characters of inline text, 12 URLs)
+and answers a bad call with an `INPUT_INVALID: ...` tool error. It is a trusted local tool: `files`, `tle_path` and a
+`sources_manifest` path read the caller's own disk. Only regular files of a supported document type (txt, md, csv,
+json, html, rst) within the size limits are read; set `LOFGREN_MCP_FILES_ROOT=/some/dir` to confine every local path
+to that directory.
+
+Hosted refusals reach the client as `<CODE>: reason` with a stable code (`UNSAFE_URL`, `INPUT_INVALID`,
+`MANIFEST_INVALID`, `EXECUTION_REFUSED`, `IMPROVEMENT_REFUSED`, or a service code such as `QUOTA_EXCEEDED`);
+unexpected failures stay a generic error. See [docs/PUBLIC_MCP.md](docs/PUBLIC_MCP.md#typed-refusals).
 
 Not proven by this repository: deployment, real clients, backup/restore, the Supabase owner settings, and PublicMCPReady.
 
