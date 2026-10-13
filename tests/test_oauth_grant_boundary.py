@@ -39,12 +39,13 @@ class OAuthGrantBoundaryTests(unittest.TestCase):
                         self.oauth.refresh(refresh_token="refresh", client_id="client-1")
         self.store.put_access_token.assert_not_called()
         self.store.put_refresh_token.assert_not_called()
+        self.store.issue_oauth_tokens.assert_not_called()
 
     def test_valid_grant_preserves_permissions(self):
         self.store.consume_refresh_token.return_value = self.grant
         result = self.oauth.refresh(refresh_token="refresh", client_id="client-1")
         self.assertEqual(result["scope"], "mcp")
-        self.assertEqual(self.store.put_access_token.call_args.args[0]["resource"], self.grant["resource"])
+        self.assertEqual(self.store.issue_oauth_tokens.call_args.args[2]["resource"], self.grant["resource"])
 
     def test_redirect_control_characters_and_non_strings_rejected(self):
         for uri in ("https://client.example/\ncallback", " https://client.example/callback", 123, None):

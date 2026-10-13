@@ -109,6 +109,39 @@ class AnonymousSurfaceTests(TrialTestBase):
         self.assertEqual(root["resource"], ENV["LI_PUBLIC_BASE_URL"] + "/mcp")
         self.assertEqual(root["trial"]["tools"], list(trial.TRIAL_TOOLS))
 
+    def test_no_account_discovery_advertises_enforced_input_limits(self):
+        listed = self.post(rpc("tools/list", {}, 2))
+        self.assertEqual(listed.status_code, 200)
+        for item in listed.json()["result"]["tools"]:
+            props = item["inputSchema"]["properties"]
+            text = props.get("question", props.get("claim"))
+            self.assertEqual(text["minLength"], 1)
+            self.assertEqual(text["maxLength"], trial.BOUNDS.max_question_chars)
+            self.assertEqual(props["source"]["enum"], list(trial.TRIAL_SOURCES))
+            query = next(b for b in props["query"]["anyOf"] if b["type"] == "string")
+            self.assertEqual(query["maxLength"], trial.BOUNDS.max_query_chars)
+            if "options" in props:
+                self.assertEqual(props["options"]["minItems"], 2)
+                self.assertEqual(props["options"]["maxItems"], trial.BOUNDS.max_options)
+                self.assertEqual(props["options"]["items"]["maxLength"], trial.BOUNDS.max_option_chars)
+
+    def test_no_account_current_protocol_lists_only_restricted_tools(self):
+        version = "2026-07-28"
+        headers = {"MCP-Protocol-Version": version, "Mcp-Method": "tools/list"}
+        params = {"_meta": {"io.modelcontextprotocol/protocolVersion": version,
+                            "io.modelcontextprotocol/clientInfo": {"name": "audit", "version": "1"},
+                            "io.modelcontextprotocol/clientCapabilities": {}}}
+        listed = self.post(rpc("tools/list", params, 2), headers)
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(sorted(t["name"] for t in listed.json()["result"]["tools"]), sorted(trial.TRIAL_TOOLS))
+        self.assertNotIn("Mcp-Session-Id", listed.headers)
+        self.assertNotIn("WWW-Authenticate", listed.headers)
+        bad = self.post(rpc("tools/list", params, 3),
+                        {"MCP-Protocol-Version": version, "Mcp-Method": "tools/call"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(bad.json()["error"]["code"], -32020)
+        self.assertIn("mcp-method header does not match", bad.json()["error"]["message"])
+
     def test_trial_is_disabled_by_default_and_only_on_mcp_surface(self):
         for env in ({"LI_TRIAL_ENABLED": ""}, {"LI_DEPLOYMENT_SURFACE": "full"}):
             with self.subTest(env=env), patch.dict(os.environ, env):
@@ -130,6 +163,44 @@ class AnonymousSurfaceTests(TrialTestBase):
                 self.assertIn("/mcp", result["content"][0]["text"])
                 self.assertEqual(result["_meta"]["li/account_required"]["resource"],
                                  ENV["LI_PUBLIC_BASE_URL"] + "/mcp")
+
+
+class PreviewDeploymentHostTests(unittest.TestCase):
+    preview_host = "li-current-abc.vercel.app"
+
+    def test_exact_preview_host_and_origin_work_but_other_hosts_are_refused(self):
+        with patch.dict(os.environ, {**TRIAL_ENV, "VERCEL_ENV": "preview", "VERCEL_URL": self.preview_host}), \
+                patch.object(trial, "SupabaseStore", return_value=TrialOnlyStore()):
+            with TestClient(web_app.build_app(), base_url="https://" + self.preview_host) as client:
+                response = client.post(trial.TRIAL_PATH, json=INIT,
+                                       headers={**HEADERS, "Origin": "https://" + self.preview_host})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIn("result", response.json())
+                metadata = client.get("/.well-known/oauth-protected-resource").json()
+                self.assertEqual(metadata["resource"], ENV["LI_PUBLIC_BASE_URL"] + "/mcp")
+                self.assertEqual(client.post("/mcp", json=INIT, headers=HEADERS).status_code, 401)
+                for host in ("li-other.vercel.app", "attacker.example", self.preview_host + ":444"):
+                    denied = client.post(trial.TRIAL_PATH, json=INIT,
+                                         headers={**HEADERS, "Host": host,
+                                                  "X-Forwarded-Host": self.preview_host})
+                    self.assertEqual(denied.status_code, 421, denied.text)
+                denied_origin = client.post(trial.TRIAL_PATH, json=INIT,
+                                            headers={**HEADERS, "Origin": "https://li-other.vercel.app"})
+                self.assertEqual(denied_origin.status_code, 403)
+
+    def test_production_does_not_trust_preview_hostname(self):
+        with patch.dict(os.environ, {**TRIAL_ENV, "VERCEL_ENV": "production", "VERCEL_URL": self.preview_host}), \
+                patch.object(trial, "SupabaseStore", return_value=TrialOnlyStore()):
+            with TestClient(web_app.build_app(), base_url="https://" + self.preview_host) as client:
+                self.assertEqual(client.post(trial.TRIAL_PATH, json=INIT, headers=HEADERS).status_code, 421)
+
+    def test_malformed_preview_configuration_fails_startup(self):
+        for value in ("https://li-a.vercel.app", "*.vercel.app", "li-a.vercel.app:443",
+                      "li-a.vercel.app/path", "li-a.vercel.app.attacker.example", "li_a.vercel.app"):
+            with self.subTest(value=value), patch.dict(os.environ,
+                    {**TRIAL_ENV, "VERCEL_ENV": "preview", "VERCEL_URL": value}):
+                with self.assertRaisesRegex(RuntimeError, "VERCEL_URL"):
+                    web_app.build_app()
 
 
 class RealPipelineTests(TrialTestBase):
