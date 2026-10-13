@@ -27,12 +27,17 @@ class RuntimeProbeTests(unittest.TestCase):
             self.assertEqual(self.request(env, {'Authorization':'Bearer '+'x'*32,'Content-Length':'1'}).status_code, 400)
             spawn.assert_not_called()
 
-    @unittest.skipUnless(os.name=='posix', 'POSIX process isolation')
     def test_real_launch_network_block_secret_stripping_timeout_kill_and_reap(self):
         env={'VERCEL_ENV':'preview','LI_RUNTIME_PROBE_TOKEN':'x'*32,
              'OPENAI_API_KEY':'should-never-reach-child','SUPABASE_SERVICE_ROLE_KEY':'should-never-reach-child',
              'VERCEL_GIT_COMMIT_SHA':'a'*40}
         result=self.request(env, {'Authorization':'Bearer '+'x'*32})
+        if os.name!='posix':
+            # Process isolation is POSIX-only: elsewhere the probe fails closed, never passes.
+            self.assertEqual(result.status_code,503,result.text)
+            self.assertEqual(result.json(),{'probe':'runtime-process/1','passed':False,'error':'runtime_unavailable'})
+            self.assertNotIn('should-never',result.text)
+            return
         self.assertEqual(result.status_code,200,result.text)
         for key in ('passed','launch','network_denied','clean_environment','timeout','kill','reap','pid_absent'):
             self.assertIs(result.json()[key],True,key)

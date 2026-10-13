@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -8,6 +9,10 @@ from unittest.mock import patch
 from lofgren_intelligence.hosted.targeted_worker import safe_environment, supervise_once, validate_target, run_target, main
 
 class TargetedWorkerTests(unittest.TestCase):
+    def setUp(self):
+        # main() silences all logging for its own CLI process (logging.disable); restore it so
+        # later tests in this process still see their log records.
+        self.addCleanup(logging.disable, logging.NOTSET)
     def target(self):
         return {'application_sha':'b'*40,'job_id':'00000000-0000-4000-8000-000000000001','user_id':'00000000-0000-4000-8000-000000000002',
           'case_id':'00000000-0000-4000-8000-000000000003','content_hash':'a'*64,

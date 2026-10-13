@@ -13,7 +13,27 @@ from unittest.mock import patch
 from lofgren_intelligence.hosted import process_watchdog as watchdog
 
 
-@unittest.skipUnless(os.name == "posix", "isolated mode fails closed outside POSIX")
+def posix_or_fail_closed(cls):
+    """Run each proof on POSIX. Elsewhere isolation is unavailable by design, so each test
+    instead proves that it fails closed: ChildRefused before any process is created."""
+    async def fail_closed(self):
+        spawned = []
+
+        async def create(*args, **kwargs):
+            spawned.append(args)
+            raise AssertionError("no child may be created outside POSIX")
+        with patch.object(asyncio, "create_subprocess_exec", create):
+            with self.assertRaisesRegex(watchdog.ChildRefused, "isolation is unavailable"):
+                await watchdog.run_json_child("lofgren_intelligence.hosted.trial_child", {},
+                                              deadline=time.monotonic() + 5)
+        self.assertEqual(spawned, [])
+    if os.name != "posix":
+        for name in [n for n in vars(cls) if n.startswith("test_")]:
+            setattr(cls, name, fail_closed)
+    return cls
+
+
+@posix_or_fail_closed
 class WatchdogTests(unittest.IsolatedAsyncioTestCase):
     async def launch(self, script, *, deadline=0.25, disconnected=None):
         original = asyncio.create_subprocess_exec

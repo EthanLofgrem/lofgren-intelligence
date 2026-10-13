@@ -10,6 +10,23 @@ Checkpoint: 2026-10-13 UTC (2026-10-12 America/Phoenix). This is a dated evidenc
 
 The stable authenticated MCP endpoint remains `https://lofgren-intelligence-mcp.vercel.app/mcp` on **b3204f00ba84d8133743fa1e9398a89225190dad**. It requires LI authorization; an anonymous 401 is expected. It is not a verified public no-account connection destination. The separate `/mcp-trial` endpoint is disabled. No administrative bypass secret belongs in a user's MCP configuration.
 
+## Unified integration candidate (build/li-unified-oct13)
+
+`build/li-unified-oct13` merges the PR #45 line above with the separately verified source branches of the
+other integration line (OAuth/MCP fault semantics, V1 verification fixes D1-D3/D10, clarification D4/D6,
+interface fixes D7-D12, evidence-ledger TOCTOU and clock hardening, trial runtime bounds, recovery proof and
+worker hardening). Status of that branch: **implemented and locally tested; not deployed and not
+hosted-verified.** It is not the revision staging serves. Its CI results belong to its exact commit, not to
+this page.
+
+Before any deployment of that branch, staging needs two further forward-only migrations that are **not yet
+applied**: `20261013190000_li_oauth_refresh_replay.sql` (refresh rotation revokes the superseded access token;
+refresh-token replay revokes the client connection; required before deploying, because token issuance and the
+token endpoint use it) and `20261011120000_li_trial_slots.sql` (global trial concurrency; required only before
+enabling the trial). It also needs the secret `LI_RATE_LIMIT_HMAC_KEY` (at least 32 characters): without it
+`/readyz` reports `rate_limit_key` and client registration, consent completion and Founding Free activation
+fail closed. The trial stays disabled; enabling it would additionally need `LI_TRIAL_IP_HMAC_KEY`.
+
 ## Remaining release requirements
 
 | Area | Status | Required evidence |
