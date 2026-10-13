@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import os
+from contextvars import ContextVar
 import anyio
 from typing import Any, Callable
 
@@ -23,7 +24,7 @@ from mcp.types import ToolAnnotations
 
 from .auth import AuthError, token_hash, validated_access_record
 from .service import PublicService, PublicServiceError
-from .store import SupabaseStore
+from .store import StoreUnavailable, SupabaseStore
 from .routing import AssessmentResult, DesiredOutput, RequestSummary, assess_request
 
 
@@ -41,15 +42,28 @@ INSTRUCTIONS = (
 )
 
 
+# The SDK resolves any Authorization: Bearer header in middleware on EVERY route,
+# before routing. A store fault there must not crash unrelated routes: the
+# verifier records it here and reports "no identity"; the web app answers 503
+# only where the identity was required (an /mcp request refused as 401).
+STORE_FAULT: ContextVar[list[BaseException] | None] = ContextVar("li_store_fault", default=None)
+
+
 class OpaqueTokenVerifier(TokenVerifier):
     def __init__(self, resource_url: str) -> None:
         self.resource_url = resource_url
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        store = SupabaseStore()
-        # PostgREST is synchronous. Keep the ASGI event loop responsive while
-        # the SDK's bounded thread pool performs this identity lookup.
-        row = await anyio.to_thread.run_sync(store.get_access_token, token_hash(token))
+        try:
+            store = SupabaseStore()
+            # PostgREST is synchronous. Keep the ASGI event loop responsive while
+            # the SDK's bounded thread pool performs this identity lookup.
+            row = await anyio.to_thread.run_sync(store.get_access_token, token_hash(token))
+        except StoreUnavailable as exc:
+            faults = STORE_FAULT.get()
+            if faults is not None:
+                faults.append(exc)
+            return None  # Unverified: protected routes still refuse.
         try:
             user_id, client_id, resource, scopes, expiry = validated_access_record(row)
         except AuthError:
