@@ -313,7 +313,7 @@ def checkout_plans(catalog: Catalog | None = None, env: Mapping[str, str] | None
     Only an `available` plan sold as a subscription, with a decided allowance
     and a price configured for the current Stripe mode, qualifies.
     """
-    out: dict[str, str] = {}
+    candidates: dict[str, str] = {}
     for p in (catalog or CATALOG).plans:
         if p.status != AVAILABLE or p.checkout_mode != "subscription":
             continue
@@ -321,13 +321,22 @@ def checkout_plans(catalog: Catalog | None = None, env: Mapping[str, str] | None
             continue
         price = configured_price_id(p, env)
         if price:
-            out[p.id] = price
-    return out
+            candidates[p.id] = price
+    # A Price ID is an entitlement identity. When two available plans share
+    # one, checkout knows the requested plan but the webhook cannot recover it
+    # from Stripe's subscription. Remove every ambiguous mapping rather than
+    # granting whichever plan happens to appear first.
+    prices = list(candidates.values())
+    collisions = {price for price in prices if prices.count(price) > 1}
+    return {plan_id: price for plan_id, price in candidates.items() if price not in collisions}
 
 
 def plan_for_price(price_id: str | None, catalog: Catalog | None = None,
                    env: Mapping[str, str] | None = None) -> CatalogPlan | None:
-    """The grantable plan a Stripe price id belongs to, or None (an unknown price grants nothing)."""
+    """The single grantable plan a Stripe price id belongs to, or None.
+
+    Unknown and ambiguously configured price ids both grant nothing.
+    """
     if not price_id:
         return None
     cat = catalog or CATALOG

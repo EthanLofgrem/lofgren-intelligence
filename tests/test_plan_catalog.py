@@ -233,6 +233,34 @@ class CheckoutAllowlistTests(unittest.TestCase):
         with _env(**STRIPE_TEST_ENV):
             self.assertEqual(checkout_plans(undecided), {})
 
+    def test_duplicate_price_ids_make_every_ambiguous_plan_unsellable(self):
+        catalog = open_researcher_catalog()
+        catalog = catalog.replace_plan(
+            "good_idea",
+            status=AVAILABLE,
+            allowance=cat.Allowance(units=3000, window=cat.QUOTA_WINDOW),
+            checkout_mode="subscription",
+        )
+        env = {**STRIPE_TEST_ENV, "LI_STRIPE_PRICE_ID_GOOD_IDEA_TEST": TEST_PRICE_ID}
+        with _env(**env):
+            self.assertEqual(checkout_plans(catalog), {})
+            self.assertIsNone(plan_for_price(TEST_PRICE_ID, catalog))
+
+    def test_duplicate_price_id_cannot_create_checkout(self):
+        catalog = open_researcher_catalog()
+        catalog = catalog.replace_plan(
+            "good_idea",
+            status=AVAILABLE,
+            allowance=cat.Allowance(units=3000, window=cat.QUOTA_WINDOW),
+            checkout_mode="subscription",
+        )
+        with _env(**STRIPE_TEST_ENV, LI_STRIPE_PRICE_ID_GOOD_IDEA_TEST=TEST_PRICE_ID,
+                  STRIPE_SECRET_KEY="sk_test_dummy"), patch.object(li_stripe, "stripe_post") as post:
+            for plan_id in ("researcher", "good_idea"):
+                with self.subTest(plan=plan_id), self.assertRaisesRegex(StripeError, "not available"):
+                    create_checkout("u1", plan_id=plan_id, success_url="s", cancel_url="c", catalog=catalog)
+        post.assert_not_called()
+
     def test_create_checkout_uses_the_server_price_and_never_takes_one(self):
         sent = {}
         with _env(**STRIPE_TEST_ENV, STRIPE_SECRET_KEY="sk_test_dummy"), \
@@ -246,6 +274,21 @@ class CheckoutAllowlistTests(unittest.TestCase):
         self.assertEqual(sent["line_items[0][price]"], TEST_PRICE_ID)
         self.assertEqual(sent["metadata[li_plan_id]"], "researcher")
         self.assertEqual(sent["metadata[li_catalog_version]"], CATALOG_VERSION)
+        self.assertRegex(sent["integration_identifier"], r"^[A-Za-z]{8}$")
+        self.assertNotIn("payment_method_types", sent)
+        self.assertNotIn("automatic_tax", sent)
+
+    def test_all_stripe_api_calls_pin_the_reviewed_contract_version(self):
+        requests = []
+        with _env(STRIPE_SECRET_KEY="rk_test_dummy"), \
+                patch.object(li_stripe, "_stripe_call", side_effect=lambda req: requests.append(req) or {}):
+            li_stripe.stripe_post("/v1/checkout/sessions", {"mode": "subscription"})
+            li_stripe.stripe_get("/v1/subscriptions/sub_test")
+            li_stripe.stripe_delete("/v1/subscriptions/sub_test")
+        self.assertEqual(len(requests), 3)
+        for request in requests:
+            with self.subTest(method=request.get_method()):
+                self.assertEqual(request.get_header("Stripe-version"), li_stripe.STRIPE_API_VERSION)
 
     def test_mode_must_match_the_secret_key(self):
         with _env(**STRIPE_TEST_ENV, STRIPE_SECRET_KEY="sk_live_dummy"), \
@@ -344,6 +387,18 @@ class WebhookCatalogTests(unittest.TestCase):
         sub = {"id": "sub_x", "status": "active", "items": {"data": [{"price": {"id": "price_a"}}]}}
         with patch.object(li_stripe, "stripe_get", return_value=sub):
             self.assertEqual(li_stripe.current_subscription("sub_x"), {"status": "active", "price_ids": ["price_a"]})
+
+    def test_existing_subscription_owner_wins_and_conflicting_metadata_is_rejected(self):
+        store = FakeStore(activation_number=1001, kind="paid", quota=2000)
+        store.entitlement.update({"plan_id": "researcher", "stripe_subscription_id": "sub_t", "active": True})
+        event = {"id": "evt_owner", "type": "customer.subscription.updated", "livemode": False,
+                 "data": {"object": {"id": "sub_t", "customer": "cus_t", "status": "active",
+                                     "metadata": {"li_user_id": "u2"}}}}
+        with _env(**STRIPE_TEST_ENV), self.assertRaisesRegex(StripeError, "stored LI owner"):
+            apply_webhook(store, event, subscription_status=active_researcher,
+                          catalog=open_researcher_catalog())
+        self.assertNotIn("evt_owner", store.billing_events)
+        self.assertEqual(store.entitlement["user_id"], "u1")
 
 
 class EconomicGatePlanTests(unittest.TestCase):
