@@ -1,0 +1,42 @@
+# Worker-only deployment. Application revision is pinned independently of this Blueprint.
+services:
+  - type: worker
+    name: li-staging-worker
+    runtime: python
+    repo: https://github.com/EthanLofgrem/lofgren-intelligence
+    branch: deploy/li-staging-worker
+    region: oregon
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 45
+    buildCommand: >-
+      git fetch origin e232ced165a31ab66124decb1f0fe9ea4b9057ac &&
+      git checkout --detach e232ced165a31ab66124decb1f0fe9ea4b9057ac &&
+      test "$(git rev-parse HEAD)" = "e232ced165a31ab66124decb1f0fe9ea4b9057ac" &&
+      python -m pip install uv==0.12.23 &&
+      uv sync --frozen --extra hosted --no-dev
+    startCommand: .venv/bin/python -m lofgren_intelligence.hosted.worker
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.12"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: LI_RELEASE_SHA
+        value: "e232ced165a31ab66124decb1f0fe9ea4b9057ac"
+      - key: LI_PUBLIC_BASE_URL
+        value: https://lofgren-intelligence-mcp.vercel.app
+      - key: LI_EXTERNAL_EXECUTION_ENABLED
+        value: "false"
+      - key: SUPABASE_URL
+        value: https://pzoxinhycjquaalflbwe.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: LI_WORKER_CONCURRENCY
+        value: "1"
+      - key: LI_WORKER_LEASE_SECONDS
+        value: "120"
+      - key: LI_WORKER_HEARTBEAT_SECONDS
+        value: "30"
+      - key: LI_WORKER_SHUTDOWN_GRACE_SECONDS
+        value: "25"

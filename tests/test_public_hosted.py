@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -81,9 +82,38 @@ class FakeStore:
         self.oauth_codes[row["code_hash"]] = dict(row)
 
     def consume_oauth_code(self, digest):
-        row = self.oauth_codes.pop(digest, None)
+        row = self.oauth_codes.get(digest)
         # li_consume_oauth_code: a used code is refused.
-        return row if row and not row.get("used_at") else None
+        if not row or row.get("used_at"):
+            return None
+        row["used_at"] = "consumed"
+        return dict(row)
+
+    def issue_oauth_tokens(self, grant_kind, digest, access, refresh):
+        grants = self.oauth_codes if grant_kind == "authorization_code" else self.refresh_tokens
+        row = grants.get(digest)
+        if not row or not row.get("used_at"):
+            return False
+        self.put_access_token(access)
+        self.put_refresh_token(refresh)
+        del grants[digest]
+        return True
+
+    def disconnect_oauth_client(self, user_id, client_id):
+        for row in self.access_tokens.values():
+            if row["user_id"] == user_id and row["client_id"] == client_id:
+                row["revoked_at"] = "revoked"
+        for grants in (self.oauth_codes, self.refresh_tokens):
+            for digest, row in list(grants.items()):
+                if row["user_id"] == user_id and row["client_id"] == client_id:
+                    del grants[digest]
+
+    def revoke_oauth_token(self, digest, client_id):
+        row = self.access_tokens.get(digest) or self.refresh_tokens.get(digest)
+        if (row and row["client_id"] == client_id and not row.get("revoked_at")
+                and not row.get("used_at")
+                and datetime.fromisoformat(row["expires_at"]) > datetime.now(timezone.utc)):
+            self.disconnect_oauth_client(row["user_id"], client_id)
 
     def put_access_token(self, row):
         self._fk(row.get("user_id"))
@@ -100,8 +130,11 @@ class FakeStore:
 
     def consume_refresh_token(self, digest):
         # li_consume_refresh_token: a used refresh token is refused.
-        row = self.refresh_tokens.pop(digest, None)
-        return row if row and not row.get("used_at") else None
+        row = self.refresh_tokens.get(digest)
+        if not row or row.get("used_at"):
+            return None
+        row["used_at"] = "consumed"
+        return dict(row)
 
     def save_run(self, row):
         self._fk(row["user_id"])
@@ -320,6 +353,20 @@ class FakeStore:
             row["updated_at"] = now
             self._hold(row, row["lease_expires_at"] + timedelta(seconds=max(int(hold_grace_seconds or 0), 0)))
             return self._job_out(row)
+
+    def save_research_job_result(self, job_id, worker, run, checkpoint, lease_seconds, hold_grace_seconds):
+        with self._job_lock:
+            row = self.jobs.get(job_id)
+            if (not row or not worker or row["lease_owner"] != worker
+                    or row["status"] not in ("running", "cancel_requested")
+                    or row["lease_expires_at"] is None or row["lease_expires_at"] <= self._job_now()
+                    or run["user_id"] != row["user_id"]):
+                return None
+            if row["checkpoint"].get("phase") == "result_saved":
+                return self._job_out(row) if row["checkpoint"]["run_id"] == run["run_id"] else None
+            self.save_run(run)
+            return self.heartbeat_research_job(job_id, worker, lease_seconds, hold_grace_seconds,
+                                               checkpoint, checkpoint["units"])
 
     def complete_research_job(self, job_id, worker, run_id, cost_so_far):
         with self._job_lock:

@@ -72,6 +72,11 @@ entries); the paid webhook no longer grants `LI_PAID_WEEKLY_UNITS` (default
   available + subscription + decided allowance + configured price; only
   `plan_id` is accepted from clients. A Price ID must identify exactly one
   available plan; duplicate mappings make every affected plan unsellable.
+  Stripe API requests pin `2026-08-26.dahlia`, and Checkout emits that
+  contract's eight-letter `integration_identifier`. The identifier is opaque
+  request correlation, never account, tenant, price or entitlement authority.
+  Payment methods remain Stripe-hosted; automatic tax remains off until tax
+  registration and configuration are separately verified.
 - Webhook (`stripe.apply_webhook`): subscription price id -> catalog plan ->
   catalog allowance; an unknown price, planned plan or undecided allowance
   grants nothing. An ambiguously configured price also grants nothing.

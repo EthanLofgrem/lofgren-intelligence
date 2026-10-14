@@ -1,3 +1,4 @@
+import itertools
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +78,30 @@ class RelationTests(unittest.TestCase):
 
 
 class VerifierTests(unittest.TestCase):
+    def test_numeric_agreement_is_not_transitive_and_is_order_invariant(self):
+        items = tuple((publisher, f"Warehouse space in Phoenix reached {value} million square feet.")
+                      for publisher, value in (("A", 100), ("B", 114), ("C", 129)))
+        expected = {
+            100: ({"A", "B"}, {"C"}, ClaimStatus.CONTESTED),
+            114: ({"A", "B", "C"}, set(), ClaimStatus.VERIFIED),
+            129: ({"B", "C"}, {"A"}, ClaimStatus.CONTESTED),
+        }
+        for ordering in itertools.permutations(items):
+            with self.subTest(order=ordering):
+                graph, _ = graph_with(*ordering)
+                for repeat in range(3):
+                    # Persistence must preserve the distinction between direct
+                    # evidence and verifier-derived corroboration.
+                    if repeat:
+                        graph = EvidenceGraph.from_json(graph.to_json())
+                    Verifier().verify(graph)
+                    graph.validate()
+                    for c in graph.claims.values():
+                        publishers = lambda ids: {graph.sources[graph.evidence[e].source_id].publisher for e in ids}
+                        self.assertEqual((publishers(c.supporting), publishers(c.contradicting), c.status),
+                                         expected[round(c.value / 1_000_000)])
+                    self.assertEqual(len(graph.contradictions), 1)
+
     def test_independent_confirmation_verifies(self):
         g, (a, b) = graph_with(
             ("Journal", "Completed warehouse space in the Phoenix metro reached 14 million square feet."),

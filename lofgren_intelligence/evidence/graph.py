@@ -116,6 +116,7 @@ class Edge:
     src: str
     dst: str
     relation: str
+    verifier_derived: bool = False
 
 
 @dataclass
@@ -194,7 +195,8 @@ class EvidenceGraph:
             raise ClaimConflict(f"claim {existing.id}: calculation {incoming.calculation_id} conflicts with the "
                                 f"stored {existing.calculation_id}", existing.id, "calculation_id")
 
-    def link(self, evidence_id: str, claim_id: str, relation: EdgeRelation | str) -> None:
+    def link(self, evidence_id: str, claim_id: str, relation: EdgeRelation | str, *,
+             verifier_derived: bool = False) -> None:
         """Record that evidence supports or contradicts a claim. Any other relation raises UnknownRelation."""
         rel = _relation(relation)
         if rel not in LINK_RELATIONS:
@@ -210,7 +212,13 @@ class EvidenceGraph:
                                       f"it cannot also be linked as {rel.value}")
         if evidence_id not in bucket:
             bucket.append(evidence_id)
-            self._edge(evidence_id, claim_id, rel.value)
+            self.edges.append(Edge(evidence_id, claim_id, rel.value, verifier_derived))
+        elif not verifier_derived:
+            # An explicit primary association supersedes an earlier inferred
+            # association; future verification must retain that direct evidence.
+            for edge in self.edges:
+                if (edge.src, edge.dst, edge.relation) == (evidence_id, claim_id, rel.value):
+                    edge.verifier_derived = False
 
     def add_contradiction(self, cx: Contradiction) -> Contradiction:
         if cx.id not in self.contradictions:
@@ -353,7 +361,8 @@ class EvidenceGraph:
             "claims": [to_dict(c) for c in self.claims.values()],
             "contradictions": [to_dict(c) for c in self.contradictions.values()],
             "calculations": [to_dict(c) for c in self.calculations.values()],
-            "edges": [e.__dict__ for e in self.edges],
+            "edges": [{k: v for k, v in e.__dict__.items() if k != "verifier_derived" or v}
+                      for e in self.edges],
         }
 
     @classmethod

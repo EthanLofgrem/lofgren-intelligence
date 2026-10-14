@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 import secrets
+import re
 from typing import Any
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -21,7 +22,8 @@ from starlette.routing import Route
 from .. import __version__
 from .auth import ActivationRefused, AuthError, OAuthService
 from .mcp_sdk import build_mcp
-from . import console, site
+from . import console, site, trial
+from .runtime_probe import runtime_probe
 from .journey import checkout_return_html, consent_intro_html, landing_html
 from .ratelimit import client_ip, rate_limited
 from .service import AccountDeletionPending, PublicService, PublicServiceError
@@ -54,7 +56,17 @@ def _error(status: int, code: str, description: str | None = None) -> JSONRespon
     body: dict[str, Any] = {"error": code}
     if description:
         body["error_description"] = description
-    return JSONResponse(body, status_code=status)
+    return JSONResponse(body, status_code=status,
+                        headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+def _authorization_unavailable() -> JSONResponse:
+    return JSONResponse(
+        {"error": "temporarily_unavailable",
+         "error_description": "the authorization service is temporarily unavailable; retry later"},
+        status_code=503,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Retry-After": "30"},
+    )
 
 
 async def healthz(request: Request) -> Response:
@@ -96,7 +108,7 @@ async def oauth_resource_root(request: Request) -> Response:
     base = public_base()
     return JSONResponse({
         "resource": base + "/mcp",
-        "authorization_servers": [base],
+        "authorization_servers": [base + "/"],
         "scopes_supported": ["mcp"],
         "bearer_methods_supported": ["header"],
     })
@@ -105,10 +117,12 @@ async def oauth_resource_root(request: Request) -> Response:
 async def oauth_server_metadata(request: Request) -> Response:
     base = public_base()
     return JSONResponse({
-        "issuer": base,
+        "issuer": base + "/",
         "authorization_endpoint": base + "/oauth/authorize",
         "token_endpoint": base + "/oauth/token",
         "registration_endpoint": base + "/oauth/register",
+        "revocation_endpoint": base + "/oauth/revoke",
+        "revocation_endpoint_auth_methods_supported": ["none"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
@@ -121,7 +135,9 @@ async def oauth_register(request: Request) -> Response:
     try:
         body = await _json_body(request, 100_000)
         return JSONResponse(OAuthService(SupabaseStore()).register_client(body), status_code=201)
-    except (ValueError, AuthError, StoreError) as exc:
+    except StoreError:
+        return _authorization_unavailable()
+    except (ValueError, AuthError) as exc:
         return _error(400, "invalid_client_metadata", str(exc))
 
 
@@ -145,14 +161,17 @@ async def oauth_complete(request: Request) -> Response:
         if body.get("state") is not None:
             query["state"] = str(body["state"])
         separator = "&" if urllib.parse.urlsplit(redirect).query else "?"
-        return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)})
+        return JSONResponse({"redirect_url": redirect + separator + urllib.parse.urlencode(query)},
+                            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except ActivationRefused as exc:
-        headers = {"Cache-Control": "no-store"}
+        headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
         if exc.retry_after:
             headers["Retry-After"] = str(exc.retry_after)
         return JSONResponse({"error": exc.error, "error_description": str(exc)}, status_code=exc.status,
                             headers=headers)
-    except (ValueError, KeyError, AuthError, StoreError) as exc:
+    except StoreError:
+        return _authorization_unavailable()
+    except (ValueError, KeyError, AuthError) as exc:
         return _error(400, "invalid_request", str(exc))
 
 
@@ -160,8 +179,13 @@ async def oauth_token(request: Request) -> Response:
     raw = await request.body()
     if len(raw) > 100_000:
         return _error(413, "invalid_request", "request body too large")
-    form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
-    get = lambda key, default="": (form.get(key) or [default])[-1]
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed token request")
+    if any(len(values) != 1 for values in form.values()):
+        return _error(400, "invalid_request", "duplicate token parameters")
+    get = lambda key, default="": (form.get(key) or [default])[0]
     try:
         oauth = OAuthService(SupabaseStore())
         grant = get("grant_type")
@@ -177,8 +201,59 @@ async def oauth_token(request: Request) -> Response:
         else:
             return _error(400, "unsupported_grant_type")
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
-    except (AuthError, StoreError) as exc:
+    except StoreError:
+        return _authorization_unavailable()
+    except AuthError as exc:
         return _error(400, "invalid_grant", str(exc))
+
+
+async def oauth_revoke(request: Request) -> Response:
+    """RFC 7009 public-client revocation; unknown tokens still return success."""
+    raw = await request.body()
+    if len(raw) > 100_000:
+        return _error(413, "invalid_request", "request body too large")
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+        if any(len(values) != 1 for values in form.values()):
+            raise ValueError("duplicate revocation parameters")
+        token = (form.get("token") or [""])[0]
+        client = (form.get("client_id") or [""])[0]
+        if not token or not client:
+            return _error(400, "invalid_request", "token and client_id are required")
+        OAuthService(SupabaseStore()).revoke(token=token, client_id=client)
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed revocation request")
+    except AuthError:
+        return _error(400, "invalid_client")
+    except StoreError:
+        return _error(503, "temporarily_unavailable")
+
+
+async def oauth_disconnect(request: Request) -> Response:
+    """Disconnect only the caller's named client using a verified Supabase session."""
+    try:
+        body = await _json_body(request, 100_000)
+        client = body.get("client_id")
+        if not isinstance(client, str) or not client or len(client) > 200:
+            return _error(400, "invalid_request", "client_id is required")
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer ") or not auth.split(" ", 1)[1].strip():
+            return _error(401, "unauthorized")
+        session = auth.split(" ", 1)[1].strip()
+        store = SupabaseStore()
+        try:
+            user = store.verify_supabase_user(session)
+        except StoreError:
+            return _error(401, "unauthorized")
+        store.disconnect_oauth_client(str(user["id"]), client)
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except AuthError:
+        return _error(401, "unauthorized")
+    except (ValueError, KeyError):
+        return _error(400, "invalid_request")
+    except StoreError:
+        return _error(503, "temporarily_unavailable")
 
 
 async def oauth_authorize(request: Request) -> Response:
@@ -196,8 +271,8 @@ async def oauth_authorize(request: Request) -> Response:
         return _error(400, "invalid_request", "authorization code + PKCE S256 required")
     try:
         client = SupabaseStore().get_oauth_client(params["client_id"])
-    except StoreError as exc:
-        return _error(503, "temporarily_unavailable", str(exc))
+    except StoreError:
+        return _authorization_unavailable()
     if not client or params["redirect_uri"] not in (client.get("redirect_uris") or []):
         return _error(400, "invalid_client")
     if params["resource"] != public_base() + "/mcp":
@@ -289,7 +364,10 @@ async def account_export(request: Request) -> Response:
         store = SupabaseStore()
         user = store.verify_supabase_user(_supabase_session_token(request))
         data = PublicService(store).export_account_data(str(user["id"]))
-        return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=lofgren-intelligence-data.json"})
+        return JSONResponse(data, headers={
+            "Content-Disposition": "attachment; filename=lofgren-intelligence-data.json",
+            "Cache-Control": "no-store", "Pragma": "no-cache",
+        })
     except (StoreError, PublicServiceError) as exc:
         return _error(401, "unauthorized", str(exc))
 
@@ -303,7 +381,7 @@ async def account_delete(request: Request) -> Response:
             str(user["id"]),
             str(body.get("confirmation") or ""),
         )
-        return JSONResponse(result)
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except AccountDeletionPending as exc:
         return _error(409, "account_deletion_pending", str(exc))
     except (StoreError, PublicServiceError, StripeError, ValueError) as exc:
@@ -772,7 +850,7 @@ class RequestTelemetry:
             if message["type"] == "http.response.start":
                 status = int(message["status"])
                 headers = list(message.get("headers", []))
-                if scope.get("path", "").rstrip("/") == "/mcp":
+                if scope.get("path", "").rstrip("/") in ("/mcp", "/mcp-trial"):
                     headers = [(key, value) for key, value in headers if key.lower() != b"cache-control"]
                     headers.append((b"cache-control", b"no-store"))
                 headers.append((b"x-request-id", request_id.encode("ascii")))
@@ -813,12 +891,38 @@ class SecurityHeaders:
         await self.app(scope, receive, wrapped)
 
 
+async def mcp_service_description(request: Request) -> Response:
+    body: dict[str, Any] = {"service": "Lofgren Intelligence", "interface": "MCP",
+                            "resource": public_base() + "/mcp", "authentication": "OAuth 2.1 with PKCE S256"}
+    if trial.trial_enabled():
+        body["trial"] = {"endpoint": public_base() + trial.TRIAL_PATH, "authentication": "none",
+                         "tools": list(trial.TRIAL_TOOLS), "persists": False}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
 def build_app():
+    surface = os.environ.get("LI_DEPLOYMENT_SURFACE", "full")
+    if surface not in {"full", "mcp"}:
+        raise RuntimeError("LI_DEPLOYMENT_SURFACE must be full or mcp")
+    # Unknown LI_TRIAL_ENABLED values fail startup; the trial is mounted only on the dedicated MCP surface.
+    trial_on = trial.trial_enabled() and surface == "mcp"
     base = public_base()
     parsed = urllib.parse.urlsplit(base)
     hostname = (parsed.hostname or "").lower()
     host_entries = [hostname, hostname + ":*"]
     origin_entries = [base]
+    # Vercel supplies the exact deployment hostname. Permit only that hostname
+    # in Preview, without changing the canonical OAuth issuer/resource URLs.
+    # Never infer an allowed host from client-controlled request headers.
+    if os.environ.get("VERCEL_ENV") == "preview" and os.environ.get("VERCEL_URL"):
+        preview_host = os.environ["VERCEL_URL"]
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app", preview_host):
+            raise RuntimeError("VERCEL_URL must be an exact Vercel deployment hostname")
+        if preview_host not in host_entries:
+            host_entries.append(preview_host)
+        preview_origin = "https://" + preview_host
+        if preview_origin not in origin_entries:
+            origin_entries.append(preview_origin)
     origin_entries.extend(
         x.strip() for x in os.environ.get("LI_ALLOWED_ORIGINS", "").split(",") if x.strip()
     )
@@ -826,6 +930,7 @@ def build_app():
     routes = [
         Route("/", landing, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/internal/runtime-probe", runtime_probe, methods=["POST"]),
         Route("/readyz", readyz, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", oauth_resource_root, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth_server_metadata, methods=["GET"]),
@@ -834,6 +939,8 @@ def build_app():
         Route("/oauth/authorize", rate_limited("oauth_authorize", oauth_authorize), methods=["GET"]),
         Route("/oauth/authorize/complete", rate_limited("oauth_complete", oauth_complete), methods=["POST"]),
         Route("/oauth/token", rate_limited("oauth_token", oauth_token), methods=["POST"]),
+        Route("/oauth/revoke", rate_limited("oauth_token", oauth_revoke), methods=["POST"]),
+        Route("/oauth/disconnect", rate_limited("oauth_complete", oauth_disconnect), methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
         Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
@@ -860,14 +967,28 @@ def build_app():
         Route(path, _site_page(render, needs_base), methods=["GET"]) for path, render, needs_base in SITE_ROUTES
     )
 
+    if surface == "mcp":
+        # Explicit allowlist: new customer/admin routes remain excluded by default.
+        allowed = {
+            "/healthz", "/readyz", "/internal/runtime-probe", "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
+            "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
+            "/oauth/revoke", "/oauth/disconnect",
+            "/actions/{action_id:str}", "/actions/{action_id:str}/details", "/actions/{action_id:str}/approve",
+            "/cases/{case_id:str}", "/cases/{case_id:str}/charter", "/cases/{case_id:str}/approve",
+            "/static/vendor/{name:str}",
+        }
+        routes = [Route("/", mcp_service_description, methods=["GET"])] + [
+            route for route in routes if route.path in allowed
+        ]
+
     mcp = build_mcp(base)
     # Register the routes through MCPServer.custom_route, the public API in every supported mcp 2.x release.
     # streamable_http_app(custom_starlette_routes=...) existed only in some releases (2.3.0 rejects it), and
     # routes registered this way are served without MCP bearer auth, exactly as before.
     for route in routes:
         mcp.custom_route(route.path, methods=sorted(route.methods - {"HEAD"}), name=route.name)(route.endpoint)
-    app = mcp.streamable_http_app(
-        streamable_http_path="/mcp",
+    http_settings: dict[str, Any] = dict(
         json_response=True,
         stateless_http=True,
         max_request_body_size=MAX_MCP_BODY_BYTES,
@@ -878,6 +999,10 @@ def build_app():
         ),
         host=hostname,
     )
+    app = mcp.streamable_http_app(streamable_http_path="/mcp", **http_settings)
+    if trial_on:
+        # A separate anonymous MCP server with its own allowlist; /mcp and its bearer auth are unchanged.
+        app = trial.mount_trial(app, base, **http_settings)
     app = CORSMiddleware(
         app,
         allow_origins=origin_entries,

@@ -274,6 +274,21 @@ class CheckoutAllowlistTests(unittest.TestCase):
         self.assertEqual(sent["line_items[0][price]"], TEST_PRICE_ID)
         self.assertEqual(sent["metadata[li_plan_id]"], "researcher")
         self.assertEqual(sent["metadata[li_catalog_version]"], CATALOG_VERSION)
+        self.assertRegex(sent["integration_identifier"], r"^[A-Za-z]{8}$")
+        self.assertNotIn("payment_method_types", sent)
+        self.assertNotIn("automatic_tax", sent)
+
+    def test_all_stripe_api_calls_pin_the_reviewed_contract_version(self):
+        requests = []
+        with _env(STRIPE_SECRET_KEY="rk_test_dummy"), \
+                patch.object(li_stripe, "_stripe_call", side_effect=lambda req: requests.append(req) or {}):
+            li_stripe.stripe_post("/v1/checkout/sessions", {"mode": "subscription"})
+            li_stripe.stripe_get("/v1/subscriptions/sub_test")
+            li_stripe.stripe_delete("/v1/subscriptions/sub_test")
+        self.assertEqual(len(requests), 3)
+        for request in requests:
+            with self.subTest(method=request.get_method()):
+                self.assertEqual(request.get_header("Stripe-version"), li_stripe.STRIPE_API_VERSION)
 
     def test_mode_must_match_the_secret_key(self):
         with _env(**STRIPE_TEST_ENV, STRIPE_SECRET_KEY="sk_live_dummy"), \

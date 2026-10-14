@@ -16,10 +16,10 @@ class PreflightTests(unittest.TestCase):
         if url.endswith('/readyz'):
             return 200, {}, {'ready': True, 'release_sha': SHA}
         if url.endswith('/oauth-protected-resource') or url.endswith('/oauth-protected-resource/mcp'):
-            return 200, {}, {'resource': BASE + '/mcp', 'authorization_servers': [BASE],
+            return 200, {}, {'resource': BASE + '/mcp', 'authorization_servers': [BASE + '/'],
                              'scopes_supported': ['mcp'], 'bearer_methods_supported': ['header']}
         if url.endswith('/oauth-authorization-server'):
-            return 200, {}, {'issuer': BASE, 'authorization_endpoint': BASE + '/oauth/authorize',
+            return 200, {}, {'issuer': BASE + '/', 'authorization_endpoint': BASE + '/oauth/authorize',
                              'token_endpoint': BASE + '/oauth/token', 'registration_endpoint': BASE + '/oauth/register',
                              'code_challenge_methods_supported': ['S256'],
                              'grant_types_supported': ['authorization_code', 'refresh_token']}
@@ -68,6 +68,29 @@ class PreflightTests(unittest.TestCase):
         checks = {x['check']: x['passed'] for x in m.check(BASE, SHA, request)['checks']}
         self.assertFalse(checks['advertised_resource_metadata'])
         self.assertFalse(checks['mcp_response_not_cached'])
+
+    def test_actual_asgi_metadata_and_challenge_pass_preflight(self):
+        import os
+        from unittest.mock import patch
+        from starlette.testclient import TestClient
+        from lofgren_intelligence.hosted import web_app
+        with patch.dict(os.environ, {'LI_PUBLIC_BASE_URL': BASE, 'LI_DEPLOYMENT_SURFACE': 'mcp'}):
+            with TestClient(web_app.build_app(), base_url=BASE) as client:
+                def request(url, method='GET', body=None):
+                    if url.endswith('/readyz'):
+                        return 200, {}, {'ready': True, 'release_sha': SHA}
+                    response = client.request(method, url, content=body,
+                        headers={'Accept': 'application/json, text/event-stream', 'Content-Type': 'application/json'})
+                    return response.status_code, dict(response.headers), response.json()
+                self.assertTrue(m.check(BASE, SHA, request)['passed'])
+
+    def test_inconsistent_issuer_identity_fails(self):
+        def request(url, method='GET', body=None):
+            status, headers, data = self.request(url, method, body)
+            if url.endswith('/oauth-authorization-server'):
+                data = {**data, 'issuer': BASE}
+            return status, headers, data
+        self.assertFalse(m.check(BASE, SHA, request)['passed'])
 
     def test_wrong_sha_fails(self):
         self.assertFalse(m.check(BASE, 'b' * 40, self.request)['passed'])

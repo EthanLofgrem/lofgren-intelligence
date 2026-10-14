@@ -3,7 +3,10 @@
 This implementation extends the protected candidate based on
 `e4df8fb2a0a99f9e4a2aa2fa578ad036016763e1`. It is not a public release,
 registry publication, ChatGPT app approval or proof of real-client compatibility.
-Existing deployment protection still prevents ordinary external MCP discovery.
+Reachability and protection are deployment facts, not source guarantees. The integration
+Preview has been reachable for health and OAuth discovery; that does not prove an
+authorized ordinary-client session. Inspect the exact deployment and retain its
+source SHA before applying the acceptance sequence below.
 
 ## Selection contract
 
@@ -150,7 +153,8 @@ trigger an OAuth loop for a stale charter. Never weaken approval to fix a test.
 3. Exact-SHA matrix, clean installed wheel, boundary, dedicated V2–V6 gates,
    operational certification and PostgreSQL proof in CI.
 4. On approved staging, run `scripts/li_mcp_preflight.py` with canonical base and
-   full expected SHA. Protected staging currently blocks ordinary discovery.
+   full expected SHA. Do not assume a health response proves ordinary-client authorization.
+   Preview host acceptance and canonical OAuth issuer/resource are separate checks.
 5. With an actual authorized test account/client: discovery → registration →
    S256 consent → callback → exchange → initialize → tools/list → assessment.
    Compare owned case/job/reservation state before/after; assessment creates none.

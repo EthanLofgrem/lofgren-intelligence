@@ -86,6 +86,7 @@ TOOL_LEVELS: dict[str, str] = {
 # enables them. They are listed (the registry serves them) with the gate named.
 GATED: dict[str, str] = {
     "create_checkout": "LI_BILLING_ENABLED and the P95 economic certification gate",
+    "execute_action": "LI_EXTERNAL_EXECUTION_ENABLED == true (disabled by default) and explicit browser approval; existing receipts remain readable",
 }
 
 # Tools that reserve usage before running (units decided per call).
@@ -114,6 +115,7 @@ def registered_tools(base_url: str = "https://capabilities.invalid") -> list[str
 
 def manifest(tool_names: list[str] | None = None) -> dict[str, Any]:
     from .service import ADHOC_UNIT_COSTS
+    from .trial import trial_manifest
 
     names = sorted(tool_names if tool_names is not None else registered_tools())
     unclassified = sorted(set(names) - set(TOOL_LEVELS))
@@ -156,6 +158,8 @@ def manifest(tool_names: list[str] | None = None) -> dict[str, Any]:
         "levels": levels,
         "tools": tools,
         "not_proven": list(NOT_PROVEN),
+        # The anonymous /mcp-trial endpoint is a separate server; its tools are trial-only and never on /mcp.
+        "trial": trial_manifest(),
     }
 
 
