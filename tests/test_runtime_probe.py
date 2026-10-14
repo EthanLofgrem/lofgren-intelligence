@@ -27,6 +27,26 @@ class RuntimeProbeTests(unittest.TestCase):
             self.assertEqual(self.request(env, {'Authorization':'Bearer '+'x'*32,'Content-Length':'1'}).status_code, 400)
             spawn.assert_not_called()
 
+    def test_non_ascii_authorization_is_refused_not_a_server_fault(self):
+        import asyncio
+        app = Starlette(routes=[Route('/probe', probe.runtime_probe, methods=['POST'])])
+        async def call(value):
+            sent = []
+            scope = {'type': 'http', 'method': 'POST', 'path': '/probe', 'raw_path': b'/probe',
+                     'query_string': b'', 'headers': [(b'authorization', value)], 'http_version': '1.1',
+                     'scheme': 'https', 'server': ('t', 443), 'client': ('1.2.3.4', 1), 'root_path': ''}
+            async def receive():
+                return {'type': 'http.request', 'body': b'', 'more_body': False}
+            async def send(message):
+                sent.append(message)
+            await app(scope, receive, send)
+            return sent[0]['status']
+        env = {'VERCEL_ENV': 'preview', 'LI_RUNTIME_PROBE_TOKEN': 'x'*32}
+        with patch.dict(os.environ, env), patch.object(probe, 'run_json_child') as spawn:
+            for value in (b'Bearer \xe9' + b'x'*31, b'\xff\xfe', b'Bearer ' + b'x'*31 + b'\x80'):
+                self.assertEqual(asyncio.run(call(value)), 401, value)
+            spawn.assert_not_called()
+
     @unittest.skipUnless(os.name=='posix', 'POSIX process isolation')
     def test_real_launch_network_block_secret_stripping_timeout_kill_and_reap(self):
         env={'VERCEL_ENV':'preview','LI_RUNTIME_PROBE_TOKEN':'x'*32,
