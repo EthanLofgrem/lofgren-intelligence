@@ -510,7 +510,13 @@ class MigrationContractTests(unittest.TestCase):
     def test_one_forward_migration_after_the_applied_oauth_schema(self):
         migrations = ROOT / "supabase" / "migrations"
         names = sorted(p.name for p in migrations.glob("*.sql"))
-        self.assertEqual(names[-1], self.NAME)
+        self.assertIn(self.NAME, names)
+        # Later, unrelated migrations may follow, but none may redefine the OAuth token schema.
+        for later in names[names.index(self.NAME) + 1:]:
+            text = (migrations / later).read_text(encoding="utf-8").lower()
+            for name in ("li_issue_oauth_tokens", "li_disconnect_oauth_client", "li_oauth_refresh_replay",
+                         "li_access_tokens", "li_refresh_tokens", "li_oauth_consumed_refresh"):
+                self.assertNotIn(name, text, f"{later} touches the OAuth token schema")
         for applied in self.APPLIED:
             self.assertIn(applied, names)
             self.assertLess(applied, self.NAME)
