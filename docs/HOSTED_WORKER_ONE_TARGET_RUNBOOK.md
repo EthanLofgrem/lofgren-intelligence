@@ -21,7 +21,7 @@ Vercel is not an interchangeable host for this exact CLI: deployed functions ord
 
 ## Before execution
 
-Verify all applicable source CI and PostgreSQL proof at the accepted SHA; verify applied targeted-claim migration and service-role-only grants. Pin actions and the bootstrap dependency installer to separately reviewed versions/checksums before turning the template into a workflow; the preparation placeholders intentionally refuse runnable publication.
+Verify all applicable source CI and PostgreSQL proof at the accepted SHA; verify applied targeted-claim migration and service-role-only grants. Pin actions and the bootstrap dependency installer to separately reviewed versions/checksums before turning the template into a workflow; the disabled preparation template requires configured source SHA and independently verified installer checksum.
 
 Freeze unrelated worker activity for the short proof window. Privately retain canonical read-only preflight records for the selected job, approval, charter and reservation. Record a deterministic digest of **all other** `li_research_jobs` rows, excluding only the exact selected job. The read-only comparison query, with UUID supplied privately, is:
 
@@ -47,3 +47,9 @@ Retain only sanitized proof: accepted source and workflow SHA, host/run ID, elap
 ## Failure handling
 
 No-job, missing secret, identity mismatch, store error, timeout, corrupt receipt or unsettled/mismatched result is a failed acceptance. A killed attempt is pending bounded recovery; do not retry the runner automatically or call global reconciliation. Inspect only the selected lease/reservation and prepare a separately reviewed targeted recovery if required. Preserve UNKNOWN for unavailable account or host access.
+
+## Prepared executable template update (2026-10-13)
+
+The template remains outside `.github/workflows` and is not activated. It now resolves all action references to immutable commits, retrieved from the publishers' GitHub tag API: checkout v4.2.2 `11bd71901bbe5b1630ceea73d27597364c9af683`, setup-python v5.6.0 `a26af69be951a213d495a4c3e4e4022e16d87065`, setup-uv v6.0.1 `6b9c6063abd6010835644d4c2e1bef4cf5cd0fca`. This confirms provenance, not an exhaustive third-party code certification. uv is pinned to 0.6.17 and caching disabled; frozen dependency install runs before staging secrets enter step scope. The first step requires a 64-character hexadecimal `LI_STAGING_UV_ARCHIVE_SHA256`; setup-uv receives it as its checksum input. It must be independently verified for the uv 0.6.17 Linux x86_64 archive before activation.
+
+Repository variable `LI_STAGING_WORKER_PROOF_ENABLED` is absent/false by default and must be exactly `true` for the job to start. The protected environment variable `LI_STAGING_WORKER_ACCEPTED_SHA` must contain the full independently reviewed dispatch commit; the first step rejects another SHA before checkout, installer or privileged step. Job dispatch does not accept an arbitrary target or environment name. The only secret-consuming step receives only the restricted environment's two required secrets. Missing protections, credentials, approved target, archive checksum or provider billing evidence remain blockers. No dispatch was performed.

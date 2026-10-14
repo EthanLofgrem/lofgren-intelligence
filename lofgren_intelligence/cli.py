@@ -379,10 +379,33 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_token_machine(args: argparse.Namespace) -> int:
+    """Read a bounded UTF-8 prompt from stdin; never print it or write it to disk."""
+    from .token_machine import MAX_PROMPT_BYTES, analyze_prompt
+
+    try:
+        raw = sys.stdin.buffer.read(MAX_PROMPT_BYTES + 1)
+        if len(raw) > MAX_PROMPT_BYTES:
+            raise ValueError("prompt exceeds its UTF-8 byte limit")
+        result = analyze_prompt(raw.decode("utf-8"), context_window=args.context_window,
+                                reserved_output=args.reserved_output, existing_context=args.existing_context)
+    except (ValueError, UnicodeError):
+        print("token-machine: invalid prompt or context budget", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lofgren", description="Lofgren Intelligence — evidence to outcome.")
     parser.add_argument("--version", action="version", version=f"lofgren-intelligence {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("token-machine", help="offline advisory prompt analysis; reads bounded UTF-8 stdin")
+    p.add_argument("--context-window", type=int, default=8192)
+    p.add_argument("--reserved-output", type=int, default=1024)
+    p.add_argument("--existing-context", type=int, default=0)
+    p.set_defaults(fn=cmd_token_machine)
 
     p = sub.add_parser("investigate", help="run the V1 loop and write a verified report")
     _add_sources(p)
