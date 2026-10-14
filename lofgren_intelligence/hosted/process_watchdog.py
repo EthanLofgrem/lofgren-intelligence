@@ -11,6 +11,7 @@ import time
 from typing import Any, Awaitable
 
 CHILD_MODULES = frozenset({"lofgren_intelligence.hosted.trial_child"})
+PROBE_MODULE = "lofgren_intelligence.hosted.runtime_probe_child"
 # Exact allowlist: no paid-provider, search, billing, browser or proxy secrets.
 CHILD_ENV_KEYS = frozenset({
     "PATH", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -41,12 +42,13 @@ class ChildRefused(RuntimeError):
 
 
 async def run_json_child(module: str, payload: dict[str, Any], *, deadline: float,
-                         disconnected: Awaitable[Any] | None = None) -> dict[str, Any]:
+                         disconnected: Awaitable[Any] | None = None,
+                         lifecycle: dict[str, Any] | None = None) -> dict[str, Any]:
     def refuse(message: str) -> None:
         if inspect.iscoroutine(disconnected):
             disconnected.close()
         raise ChildRefused(message)
-    if module not in CHILD_MODULES or os.name != "posix":
+    if (module not in CHILD_MODULES and module != PROBE_MODULE) or os.name != "posix":
         refuse("isolation is unavailable")
     try:
         data = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
@@ -66,8 +68,11 @@ async def run_json_child(module: str, payload: dict[str, Any], *, deadline: floa
             sys.executable, "-m", module, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
-            env=child_environment(),
+            env=({"PYTHONPATH": os.pathsep.join(str(p) for p in sys.path if p)}
+                 if module == PROBE_MODULE else child_environment()),
         )
+        if lifecycle is not None:
+            lifecycle["launched"] = True
         async def exchange() -> dict[str, Any]:
             assert child is not None and child.stdin is not None and child.stdout is not None
             child.stdin.write(data)
@@ -79,6 +84,10 @@ async def run_json_child(module: str, payload: dict[str, Any], *, deadline: floa
                 chunk = await child.stdout.read(16_384)
                 if not chunk:
                     break
+                if lifecycle is not None:
+                    lifecycle["output_seen"] = True
+                    if module == PROBE_MODULE:
+                        lifecycle["startup_output"] = (lifecycle.get("startup_output", b"") + chunk)[:256]
                 count += len(chunk)
                 if count > MAX_OUTPUT_BYTES:
                     raise ChildRefused("child output bound exceeded")
@@ -128,6 +137,14 @@ async def run_json_child(module: str, payload: dict[str, Any], *, deadline: floa
                     while await child.stdout.read(16_384):
                         pass  # discard without allocating an accumulated buffer
                 await child.wait()
+                if lifecycle is not None:
+                    lifecycle.update(reaped=True, returncode=child.returncode)
+                    try:
+                        os.kill(child.pid, 0)
+                    except ProcessLookupError:
+                        lifecycle["pid_absent"] = True
+                    else:
+                        lifecycle["pid_absent"] = False
         cleanup_task = asyncio.create_task(cleanup())
         cancelled = False
         while not cleanup_task.done():

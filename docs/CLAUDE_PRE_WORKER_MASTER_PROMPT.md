@@ -1,3 +1,5 @@
+> Historical checkpoint identities below are retained for provenance. For the current candidate, verify PR #45 head SHA and exact-source CI; do not reuse an older checkpoint as current.
+
 # Claude Code master prompt — complete LI acceptance at zero cost
 
 ## Mission and authority
@@ -18,46 +20,39 @@ data merely to fill the loop.
 
 ## Current state — verify identities before work
 
-Repository: https://github.com/EthanLofgrem/lofgren-intelligence
-Integration branch: build/li-release-hardening-oct11.
-Public source checkpoint: `b3204f`, including source-watch, conformance and verifier work.
-Fetch current refs, inspect AGENTS.md and working-tree changes, and review all
-commits after that checkpoint. Coordinate with Codex; use isolated worktrees
-and preserve other agents' changes.
+Current verified candidate is remote `0074472d896fab72af029fa6c2cf449ca0c2ae77`
+on `build/li-integrated-oct13`, equivalent local
+`410f16c1f6aab707bf9136d9c69e913d1c6402a4`. See
+[the dated six-step evidence](RELEASE_CONFORMANCE_CURRENT.md) and
+[remaining acceptance register](REMAINING_ACCEPTANCE_REGISTER.md). Earlier
+unapplied-migration and skipped-gate observations are historical: staging now
+has 15 migrations and all 13 candidate CI jobs passed. The stable alias remains
+on `b3204f00ba84d8133743fa1e9398a89225190dad`; no public promotion occurred.
 
-Stable authenticated MCP endpoint:
-https://lofgren-intelligence-mcp.vercel.app/mcp
+Public use must require no LI login, signup, account creation or payment.
+GitHub identity/repository access is optional and separate from public research
+and AI-client connection. Never share owner credentials. No ordinary product
+client session, Vercel subprocess termination proof or hosted worker run is
+verified. The isolated Preview keeps anonymous use disabled and isolation
+unverified. Do not set verification flags from local tests.
 
-Deployed application checkpoint: `b3204f`.
-- All three Python matrix jobs and all five dedicated push gates passed.
-- Real PostgreSQL proof and operational CI passed.
-- Clean installed-wheel checks passed.
-- All eight ordinary hosted preflight checks passed on the stable alias.
-- The private backend key is configured; it is no longer a missing-key blocker.
+Fetch current refs, inspect AGENTS.md and working-tree changes, coordinate with
+Codex, and use isolated worktrees. Exact source changes need fresh applicable
+checks. The Vercel dashboard configuration succeeded; API 403 and Google 502
+root causes remain unknown. Use supported authorized flows rather than bypass
+provider consent or authorization review.
 
-Latest verifier-source checkpoint: 1,126 tests passed, 25 offline checks passed with zero network
-attempts, and V1–V6 source certifications passed. These are distinct reported
-runs; do not add them into a unique total. New source-watch work has six tests.
-All b3204f matrix, dedicated lifecycle, PostgreSQL and operational checks passed.
+## Priority 1 — prove hosted isolation, then client acceptance
 
-Atomic OAuth disconnect is PR #40 at b9097d, on build/oauth-atomic-disconnect.
-Its combined matrix, PostgreSQL and operational CI passed; dedicated release jobs
-are not enabled on that separate branch. Its migration is NOT applied: two
-Supabase apply_migration attempts returned Invalid or expired requestState.
-Follow-up migration history and RPC inventory confirmed no change. Repair the
-connector request state before applying; do not deploy its API first.
+First prepare a bounded non-network Preview probe for subprocess launch, timeout,
+kill and reap. It must consume no provider credentials and must not enable public
+research. Only after hosted proof review controlled Preview activation and test
+anonymous initialize, tools/list and one safe use in an independently authorized
+MCP client. Preserve UNKNOWN for missing client/account evidence.
 
-ChatGPT client acceptance is NOT proven. The secure sign-in choice returned
-Google, but automatic approval review blocked navigation to that provider.
-Do not bypass that review or retry the same blocked route. Use an available
-supported secure sign-in alternative or report the exact required owner action.
-Five independent subagents and an alternate-model source reviewer contributed.
-The alternate model found the numeric verifier defect; none of these reviews
-counts as external Claude/ChatGPT product connection proof.
+### Separate protected authorization acceptance
 
-## Priority 1 — finish authentication and a real client connection
-
-Review the pending disconnect work for atomic revocation, races, failure
+Review the integrated disconnect work for atomic revocation, races, failure
 behavior, tenant ownership and grants. Test revoke-versus-refresh, stale grants,
 replay, partial failure and reconnect behavior. Do not treat the UI's success
 message as evidence that tokens were revoked.
@@ -72,6 +67,33 @@ request assessment and an authorized non-worker operation. Record the client
 and protocol versions, connection steps, response evidence and limits. A Python
 harness, health response or proper anonymous 401 does not establish ChatGPT
 installation. No Vercel administrative bypass credential belongs in a client.
+
+## Additional requirement — optional GitHub-to-LI connection
+
+Keep public research usable without LI login, signup or payment. Optional GitHub
+onboarding should let a visitor understand capabilities, find a verified entry
+point, authenticate with their own GitHub account, understand requested access,
+select the required accounts/repositories, complete any separate AI-client
+connection, run a safe first use, and view/change/revoke the connection. Never
+request shared passwords or owner credentials.
+
+Inspect implementation and authoritative platform documentation before choosing
+a GitHub App, OAuth App, linked LI identity or supported MCP authorization flow.
+Compare setup steps, repository granularity, organization support, revocation,
+hosting, quotas, zero-new-cost operation and intended clients. Identity, resource
+permissions and AI-client capability authorization are distinct. Enforce least
+privilege and tenant isolation server-side; explain write access before consent,
+protect tokens, handle callbacks/account linking safely, and provide recovery
+and disconnect. Prepare exact owner app settings before requesting necessary
+owner interaction; continue independent work.
+
+Implement only supported mechanisms with permission-boundary tests. Do not claim
+a GitHub callback or connection exists until verified. If advertised, a separate
+authorized test user must complete onboarding and safe use, with repository
+boundaries, denial/expiry/replay/revocation and organization restrictions tested.
+Record actual steps/time. Label unavailable entry points as in development.
+Report what another user can do, permissions granted, separate client connection,
+blockers and exact owner action.
 
 ## Priority 2 — trial safety and truthful source updates
 
@@ -101,8 +123,8 @@ historical receipts and findings; reassessment produces a linked new version.
 Inspect the existing Render worker configuration and offline verifier. Preserve
 pinned checkout, locked dependencies, exact build/start commands and honest
 SIGTERM behavior. No extra database or Redis without demonstrated need.
-Connected Render tooling provides an alternative to the failed Google browser
-path; do not confuse the failed old Docker web service with a running worker.
+A service-specific hosting connector does not replace GitHub identity or
+AI-client authorization. Do not confuse a Docker web service with a running worker.
 
 Continue isolated local testing of approved charter, budget reservation, job
 claim/checkpoint, competing workers, lease reclaim, cancellation, lost response
@@ -153,9 +175,10 @@ Deliver:
 - PASS, FAIL, BLOCKED and NOT RUN requirements.
 - The smallest actionable next proof or owner action.
 
-Start with current refs and the pending atomic disconnect fix. Then prioritize
-real hosted authentication and an ordinary client connection. Do every
+Start with current refs and the bounded non-network Preview process probe.
+Then review controlled anonymous Preview activation, independent client use,
+one approved synthetic worker target, and hosted revocation/isolation. Do every
 independent zero-cost task while preserving honest operational blockers.
 
 ## Additional independently discovered defect
-Numeric corroboration previously propagated transitively and crashed on independent observations 100/114/129. The new verifier increment marks derived edges and preserves pairwise relations through reload/reverification. Its 1,126-test full suite and 94 focused tests passed. Require exact-head CI after integration. Historical graphs lacking provenance markers must be rebuilt from original evidence rather than silently assumed to have correct direct support.
+Numeric corroboration previously propagated transitively and crashed on independent observations 100/114/129. The new verifier increment marks derived edges and preserves pairwise relations through reload/reverification. Those earlier 1,126-test and 94-focused results are historical and overlap newer suites. Require applicable exact-source CI after changes. Historical graphs lacking provenance markers must be rebuilt from original evidence rather than silently assumed to have correct direct support.

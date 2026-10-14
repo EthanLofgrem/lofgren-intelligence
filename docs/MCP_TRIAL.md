@@ -177,12 +177,21 @@ as personal data for at most one day.
 Request telemetry is the existing content-free structured log line (method,
 path, status, duration, request id). It contains no IP or body.
 
-## How ChatGPT connects
+## Conditional client setup after hosted verification
 
-1. Deploy the dedicated MCP surface with `LI_TRIAL_ENABLED=true` and a configured store.
-2. In ChatGPT (developer mode, add a connector or app), enter `https://<mcp-origin>/mcp-trial` with no authentication.
-3. ChatGPT initializes, lists the three `noauth` tools and can call them anonymously.
-4. For Cases, durable research, history and the full tool set, connect `https://<mcp-origin>/mcp` with OAuth as described in `docs/PUBLIC_MCP.md`.
+The trial is disabled at the current checkpoint. Do not enable it solely from
+local tests or describe a connection as available before its hosted gates pass.
+After exact-deployment process isolation and controlled Preview activation are
+verified, configure a supported client's remote Streamable HTTP connection to
+`https://<verified-mcp-origin>/mcp-trial` using no LI authentication. Follow that
+client's current authoritative setup documentation; product accounts and plans
+may impose separate requirements. Observe initialize, the three-tool list and
+one safe call rather than assume success.
+
+Private Cases, durable jobs and account history belong to the separate
+OAuth-protected `/mcp` surface. A GitHub identity does not automatically grant
+repository access or install an AI-client connection. See
+[client evidence](CLIENT_COMPATIBILITY.md).
 
 ## Not verified
 

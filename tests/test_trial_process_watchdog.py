@@ -24,7 +24,7 @@ class WatchdogTests(unittest.IsolatedAsyncioTestCase):
             return child
         with patch.object(asyncio, "create_subprocess_exec", create):
             try:
-                return await watchdog.run_json_child(next(iter(watchdog.CHILD_MODULES)), {},
+                return await watchdog.run_json_child("lofgren_intelligence.hosted.trial_child", {},
                     deadline=time.monotonic()+deadline, disconnected=disconnected)
             finally:
                 self.assertEqual(len(children), 1)
@@ -80,7 +80,7 @@ class WatchdogTests(unittest.IsolatedAsyncioTestCase):
         from tests.test_mcp_trial import TRIAL_ENV, INIT, HEADERS
         with patch.dict(os.environ, {**TRIAL_ENV, "SUPABASE_SERVICE_ROLE_KEY": "",
                                     "LI_TRIAL_ISOLATION_MODE": "required"}):
-            result = await watchdog.run_json_child(next(iter(watchdog.CHILD_MODULES)), {
+            result = await watchdog.run_json_child("lofgren_intelligence.hosted.trial_child", {
                 "body": json.dumps(INIT), "headers": {k.lower():v for k,v in HEADERS.items()},
                 "method": "POST", "ip": "isolated-test"}, deadline=time.monotonic()+5)
         self.assertEqual(result["status"], 503)
@@ -95,7 +95,7 @@ class WatchdogTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_request_refuses_before_process_or_admission(self):
         with patch.object(asyncio, "create_subprocess_exec") as create:
             with self.assertRaises(watchdog.ChildRefused):
-                await watchdog.run_json_child(next(iter(watchdog.CHILD_MODULES)), {}, deadline=time.monotonic()-1)
+                await watchdog.run_json_child("lofgren_intelligence.hosted.trial_child", {}, deadline=time.monotonic()-1)
             create.assert_not_called()
 
 
