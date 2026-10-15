@@ -49,6 +49,9 @@ def safe_environment(env: dict[str, str]) -> dict[str, str]:
     return out
 
 
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
 def supervise_once(command: list[str], data: bytes, env: dict[str, str],
                    timeout: float = 90, grace: float = 5) -> int:
     """Hard wall-time limit. Never stream child logs into public CI output."""
@@ -56,8 +59,13 @@ def supervise_once(command: list[str], data: bytes, env: dict[str, str],
                             stderr=subprocess.DEVNULL, env=env, start_new_session=True)
     def stop_group(sig):
         try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
+            if os.name == "posix":
+                os.killpg(proc.pid, sig)
+            elif proc.poll() is None:
+                # No process groups or SIGKILL outside POSIX: stop the child itself
+                # (TerminateProcess). The supported runner is Linux CI.
+                proc.kill()
+        except (ProcessLookupError, OSError):
             pass
     try:
         proc.communicate(data, timeout=timeout)
@@ -67,12 +75,12 @@ def supervise_once(command: list[str], data: bytes, env: dict[str, str],
         try:
             proc.communicate(timeout=grace)
         except subprocess.TimeoutExpired:
-            stop_group(signal.SIGKILL)
+            stop_group(_SIGKILL)
             proc.communicate()
         return 124
     finally:
         # Also stop descendants if their parent exited during termination.
-        stop_group(signal.SIGKILL)
+        stop_group(_SIGKILL)
         if proc.poll() is None:
             proc.communicate()
 

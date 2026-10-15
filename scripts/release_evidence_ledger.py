@@ -40,6 +40,11 @@ def main() -> int:
         help="optional deterministic UTC time such as 2026-10-11T23:00:00Z",
     )
     args = parser.parse_args()
+    if not 0 < args.max_age_seconds <= DEFAULT_MAX_AGE_SECONDS:
+        parser.error(
+            f"--max-age-seconds must be between 1 and {DEFAULT_MAX_AGE_SECONDS}; "
+            "the freshness window can be tightened, never widened"
+        )
 
     evidence_path = Path(args.evidence).resolve()
     policy_path = Path(args.trust_policy).resolve()
@@ -55,7 +60,10 @@ def main() -> int:
     if args.evaluated_at:
         if not args.evaluated_at.endswith("Z"):
             parser.error("--evaluated-at must be UTC and end in Z")
-        evaluated_at = datetime.fromisoformat(args.evaluated_at[:-1] + "+00:00")
+        try:
+            evaluated_at = datetime.fromisoformat(args.evaluated_at[:-1] + "+00:00")
+        except ValueError:
+            parser.error("--evaluated-at is not a valid ISO-8601 UTC timestamp")
     else:
         evaluated_at = datetime.now(timezone.utc)
 
@@ -75,9 +83,13 @@ def main() -> int:
         f"EvidenceLedger = {ledger['proven']}/{ledger['total']} "
         f"PublicMCPReady = {'TRUE' if ledger['PublicMCPReady'] else 'FALSE'}"
     )
+    if args.evaluated_at:
+        # A caller-chosen clock can make stale evidence look fresh.  Replays
+        # are useful for audit rendering but are never a release decision.
+        print("--evaluated-at replay is non-authoritative; exiting nonzero")
+        return 1
     return 0 if ledger["PublicMCPReady"] else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

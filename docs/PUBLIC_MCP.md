@@ -49,13 +49,32 @@ questions instead, and the work happens through an Intelligence Case.
 Every objective is classified deterministically (explicit keyword and
 structure rules in `lofgren_intelligence/intent/clarification.py`, no model
 call). The result is returned as `domain`, `consequence` and
-`classification` (`broad_scope`, `domains_matched`, `signals`):
+`classification` (`broad_scope`, `underspecified`, `domains`, `mixed_domain`,
+`domains_matched`, `signals`), plus a top-level `domains` list:
 
 - **Domain** (priority order): `medical`, `legal`, `financial`, `safety`,
   `engineering_design`, `general`. A design objective whose only special
   match is safety keeps the engineering-design bank. An objective that matches
-  no domain takes the `general` path; one bank is used per case, so no other
-  domain's prompts appear.
+  no domain takes the `general` path, so no other domain's prompts appear.
+- **Mixed domains**: when two or more of medical, legal, financial and safety
+  match, `domain` is still the priority winner, but `domains` lists every
+  matched domain (signal `mixed_domain:medical+legal+financial`). The case then
+  carries every domain's `safety_notice` text (one combined notice) and every
+  domain's `exclusions` (no duplicates), and asks one merged bank of at most 7
+  questions: `purpose` and `scope` first, then each domain's decision-relevant
+  keys round-robin in priority order (medical `population`, `focus`,
+  `evidence_types`; legal `jurisdiction`, `parties`, `time`; financial
+  `launch_budget`, `revenue_definition`, `risk_and_hours`; safety
+  `jurisdiction`, `standards`, `affected_population`), skipping keys already
+  asked. The Case Charter records `domains`.
+- **Underspecified**: an objective that names no subject -- no word outside a
+  fixed list of function words, pronouns and generic verbs/evaluatives ("Is it
+  worth it?", "Should I do this?"), or a short objective (8 tokens or fewer)
+  that leans on "it", "this", "that", "they"... with at most one subject word
+  ("Is it legal?") -- is flagged `underspecified` (signals
+  `underspecified:no_subject_noun`, `underspecified:deictic_without_referent`).
+  With no domain it gets the `subject`, `purpose`, `scope` questions; with a
+  domain, `subject` leads that domain's bank (still at most 7).
 - **Consequence** is `high` for medical, legal and safety objectives, for any
   amount of money (a financial objective with a money target), and for public
   impact (public, communities, residents...); otherwise `standard`.
@@ -63,8 +82,10 @@ call). The result is returned as `domain`, `consequence` and
   and/or, an enumeration of several open dimensions, ranking words
   ("strongest", "best") or prioritisation ("which ... deserve priority").
 - **Rule**: clarification is required for any high-consequence objective, any
-  broad objective, and (as before) any short design objective. A simple
-  factual question ("What is the capital of France?") skips it.
+  broad objective, any underspecified objective, and (as before) any short
+  design objective. A simple, well-formed factual question that names its
+  subject ("What is the capital of France?", "When was the transistor
+  invented?") skips it.
 
 | Domain | Question keys (highest information first) |
 | --- | --- |
@@ -74,6 +95,8 @@ call). The result is returned as `domain`, `consequence` and
 | safety / infrastructure | `jurisdiction`, `standards`, `affected_population`, `purpose` |
 | engineering_design | `location`, `users`, `problem`, `success`, `cost`, `constraints`, `source_or_environment` (unchanged) |
 | general | `purpose`, `scope`, `time_cutoff`, `sources`, `depth_budget` |
+| underspecified (no domain) | `subject` (what "it"/"this" refers to), `purpose` (incl. what "worth it" means), `scope` |
+| mixed (2+ of medical/legal/financial/safety) | `purpose`, `scope`, then the domains' decision-relevant keys round-robin, max 7 |
 
 Each question carries why it matters and examples. Only unanswered questions
 are asked; an answer (including `unknown`) is kept and never asked again. No
@@ -185,8 +208,73 @@ Discovery endpoints:
 - `/oauth/register`
 - `/oauth/authorize`
 - `/oauth/token`
+- `/oauth/revoke` (RFC 7009; advertised as `revocation_endpoint`)
 
 Remote MCP endpoint: `/mcp`.
+
+### Token lifetimes, rotation and revocation
+
+Access tokens live one hour and refresh tokens 90 days; both are opaque and
+only their SHA-256 hashes are stored. The unit of revocation is a user's
+**connection of one client** (`li_disconnect_oauth_client`, migration
+`20261012060000_oauth_disconnect.sql`): every access token of that user and
+client is revoked, and every refresh token and pending authorization code is
+deleted. Issuance (`li_issue_oauth_tokens`) and disconnect share one
+user/client advisory lock, so a consumed grant whose connection was revoked
+meanwhile cannot mint tokens. The forward migration
+`20261013190000_li_oauth_refresh_replay.sql` adds rotation and replay handling
+on top of that schema (no second token-family scheme):
+
+- Refresh tokens rotate (OAuth 2.1 section 4.3.1): `li_consume_refresh_token`
+  consumes the presented refresh token (one winner under concurrency), then
+  `li_issue_oauth_tokens` issues the new pair and, in the same transaction,
+  **revokes the access token issued with the consumed refresh token**. The
+  client has just shown it holds the newer credential; leaving the old access
+  token valid for its remaining hour would only widen the window for a leaked
+  copy. Each access token records the hash of its sibling refresh token for
+  this purpose.
+- **Replay detection.** A consumed refresh token leaves a tombstone (hash,
+  user, client, original expiry). Presenting it again, or presenting it while
+  a concurrent request that consumed it has not issued yet, is replay
+  (`li_oauth_refresh_replay`): the user's connection of that client is
+  revoked, including tokens just issued to the legitimate holder, and the
+  client must authorize again. The check is repeated under the user/client
+  lock, so a concurrent issuance either fails or has its tokens revoked. A
+  refresh token presented by a client other than the one it was issued to is
+  refused and revokes the owner's connection the same way. Disconnect deletes
+  the tombstones, so a credential from before a disconnect cannot revoke a
+  later, fresh consent.
+- **Revocation** (`POST /oauth/revoke`, RFC 7009,
+  `application/x-www-form-urlencoded`): `token` and `client_id` are required
+  (clients are public, so the client identifies itself without a secret);
+  `token_type_hint` is optional and both kinds are always searched. A
+  registered client always gets `200` with an empty body: for a token revoked
+  now, one already revoked or expired, an unknown token, or a token issued to
+  another client (which is not revoked). A missing or unknown `client_id` is
+  `401 invalid_client`; a missing `token` is `400 invalid_request`. A
+  currently valid access **or** refresh token revokes the user's whole
+  connection of that client (stricter than the RFC 7009 minimum), and an
+  invalid historical credential never disconnects a fresh consent
+  (`20261012202113_oauth_revocation_replay.sql`). A revoked access token gets
+  `401` on `/mcp`. The endpoint is `no-store` (with `Pragma: no-cache`),
+  limited per IP like `/oauth/token` (bucket `oauth_revoke`, 60/min), and
+  served on both the full and the dedicated MCP surface. A signed-in user can
+  also disconnect a client without its token (`POST /oauth/disconnect`, see
+  `docs/OAUTH_DISCONNECT.md`).
+- At `/oauth/token`, an unknown or missing `client_id` is `401 invalid_client`
+  (RFC 6749 section 5.2) for both grant types; problems with the code, the
+  verifier, the redirect URI or the refresh token of a known client stay
+  `400 invalid_grant`. Store faults are `503`, never a client error.
+- Access tokens issued before `20261013190000` carry no sibling refresh hash.
+  Refreshing their refresh token cannot identify them, so they are not
+  revoked early and expire within their hour.
+
+Implemented and tested: the behaviour above is covered by unit tests and by
+the real-PostgreSQL proof (`OAuthAndBillingTest`, `OAuthRefreshReplayTest` in
+`tests/pg/test_migrations_pg.py`). Not verified: `20261013190000` has not been
+applied to staging or exercised by a hosted client. Apply it before deploying
+this code: token issuance writes the new `refresh_token_hash` column, and the
+token endpoint calls `li_oauth_refresh_replay`.
 
 ## Founding Free rule
 
@@ -274,6 +362,9 @@ an undecided allowance: an undecided plan fails closed.
 - `SUPABASE_SERVICE_ROLE_KEY` (server only)
 - `SUPABASE_PUBLISHABLE_KEY`
 - `LI_PUBLIC_BASE_URL`
+- `LI_RATE_LIMIT_HMAC_KEY` (server only, at least 32 random characters: the
+  rate-limiter key HMAC secret; without it sign-up and activation fail closed
+  and `/readyz` reports `rate_limit_key`)
 - optional `BRAVE_API_KEY`
 - optional model provider variables
 - actual-cost rates:
@@ -284,6 +375,26 @@ an undecided allowance: an undecided plan fails closed.
 
 If material cost components are not configured, runs explicitly report
 `cost_fully_priced=false`. That condition must block economic certification.
+
+## Typed refusals
+
+An anticipated refusal reaches the MCP client as a tool error whose text is `<CODE>: <reason>`, a stable code
+followed by one sanitized line (at most 300 characters, no traceback, no stored data). The server logs it as one
+informational line without a traceback. Codes raised below the service layer:
+
+| Code | Raised when |
+| --- | --- |
+| `UNSAFE_URL` | a URL is not a permitted public HTTP(S) address (localhost, private or reserved IPs, credentials) |
+| `INPUT_INVALID` | an input is outside its limit: objective/claim over 8000 characters, more than 20 inline documents or 250000 characters, more than 12 URLs, `max_records` outside 1-20, a bad `europepmc`/`trials` query |
+| `MANIFEST_INVALID` | an inline `sources_manifest` fails `lofgren.sources-manifest/1` validation |
+| `EXECUTION_REFUSED` | a V4 action target or execution precondition is refused (for example `https://127.0.0.1/hook`) |
+| `IMPROVEMENT_REFUSED` | a V6 improvement proposal is refused |
+
+Service refusals keep their own codes (`REQUEST_REFUSED`, `QUOTA_EXCEEDED`, `PAYMENT_REQUIRED`,
+`DISCOVERY_STATE_INVALID`, ...). Every other exception is unexpected: the client sees only
+`Error executing tool <name>` and the server logs the traceback. Every refusal fails closed.
+
+`max_records` is 1-20 on the hosted service (default 20). The local CLI and stdio server allow 1-100.
 
 ## Security boundaries
 
@@ -346,7 +457,7 @@ unreachable`, never with table, column or constraint names.
 Rate limits: `/mcp` is limited per user in the database
 (`li_take_rate_limit`). The endpoints reachable before a user is known —
 `/oauth/register` (10/min), `/oauth/authorize` (60/min),
-`/oauth/authorize/complete` (20/min), `/oauth/token` (60/min),
+`/oauth/authorize/complete` (20/min), `/oauth/token` and `/oauth/revoke` (60/min each),
 `/account/export` and `/account/delete` (20/min together),
 `/actions/{id}/details` and `/actions/{id}/approve` (60/min together),
 `/cases/{id}/charter` and `/cases/{id}/approve` (60/min together) — are
@@ -357,9 +468,23 @@ these limits are **global**: every request takes a slot through the atomic
 SQL function `li_take_keyed_rate_limit` (migration
 `20261005191819_keyed_rate_limits.sql`, table `li_rate_limit_events`, RLS
 enabled, no anon/authenticated grants), so they hold across serverless
-instances and cold starts. Keys are sent as SHA-256 digests of
-`<bucket>:<ip>`; raw IPs are not stored, and rows are pruned once outside
-their window. Without a configured store (local development) or with
+instances and cold starts. Keys are sent as HMAC-SHA256 digests of
+`<bucket>:<ip>` (or `<bucket>:<email domain>`) keyed by the server secret
+`LI_RATE_LIMIT_HMAC_KEY` (at least 32 characters, set only in the host's
+secret store); raw IPs are not stored, a stored digest cannot be reversed by
+hashing every IPv4 address without the secret, and rows are pruned once
+outside their window. (Until migration `20261013190000` these were unsalted
+SHA-256 digests; that migration deletes them.)
+
+**Missing `LI_RATE_LIMIT_HMAC_KEY` (fail closed).** When the store backend is
+in use and the key is missing or shorter than 32 characters, no digest is
+sent to the database. Client registration, consent completion and Founding
+Free activation (the fail-closed buckets) refuse with `503` and
+`Retry-After`; the other limited endpoints fall back to the per-instance
+limiter (limited, never unlimited). Each such request logs an error, and
+`/readyz` answers `503` with the generic component `rate_limit_key` in
+`missing` (never the value), so a deployment without the key is visibly not
+ready. Without a configured store (local development) or with
 `LI_RATE_LIMIT_BACKEND=memory`, the limiter falls back to process memory,
 which is **per instance**. If the store errors, sign-up and activation
 endpoints (`/oauth/register`, `/oauth/authorize/complete`) **fail closed**

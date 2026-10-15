@@ -20,7 +20,10 @@ async def runtime_probe(request):
     secret = os.environ.get("LI_RUNTIME_PROBE_TOKEN", "")
     if os.environ.get("VERCEL_ENV") != "preview" or len(secret) < 32:
         return reply({"error": "not_found"}, 404)
-    if not secrets.compare_digest(request.headers.get("authorization", ""), "Bearer " + secret):
+    # Compare bytes: a str compare_digest raises TypeError on non-ASCII header text,
+    # which would turn an unauthenticated request into a server fault instead of 401.
+    presented = request.headers.get("authorization", "").encode("latin-1", "replace")
+    if not secrets.compare_digest(presented, ("Bearer " + secret).encode("utf-8")):
         return reply({"error": "unauthorized"}, 401)
     # No client input, commands, URLs or network requests. Ignore no data silently.
     if request.headers.get("content-length", "0") != "0" or request.headers.get("transfer-encoding"):

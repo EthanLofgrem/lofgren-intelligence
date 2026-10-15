@@ -13,7 +13,27 @@ from unittest.mock import patch
 from lofgren_intelligence.hosted import process_watchdog as watchdog
 
 
-@unittest.skipUnless(os.name == "posix", "isolated mode fails closed outside POSIX")
+def posix_or_fail_closed(cls):
+    """Run each proof on POSIX. Elsewhere isolation is unavailable by design, so each test
+    instead proves that it fails closed: ChildRefused before any process is created."""
+    async def fail_closed(self):
+        spawned = []
+
+        async def create(*args, **kwargs):
+            spawned.append(args)
+            raise AssertionError("no child may be created outside POSIX")
+        with patch.object(asyncio, "create_subprocess_exec", create):
+            with self.assertRaisesRegex(watchdog.ChildRefused, "isolation is unavailable"):
+                await watchdog.run_json_child("lofgren_intelligence.hosted.trial_child", {},
+                                              deadline=time.monotonic() + 5)
+        self.assertEqual(spawned, [])
+    if os.name != "posix":
+        for name in [n for n in vars(cls) if n.startswith("test_")]:
+            setattr(cls, name, fail_closed)
+    return cls
+
+
+@posix_or_fail_closed
 class WatchdogTests(unittest.IsolatedAsyncioTestCase):
     async def launch(self, script, *, deadline=0.25, disconnected=None):
         original = asyncio.create_subprocess_exec
@@ -141,7 +161,8 @@ class TrialIsolationEndpointTests(unittest.TestCase):
                                     "LI_TRIAL_ISOLATION_VERIFIED": "true", "LI_TRIAL_ISOLATION_CHILD": ""}), \
              patch.object(trial, "take_request_allowance") as admission, \
              patch.object(watchdog, "run_json_child", supervised), \
-             TestClient(web_app.build_app(), base_url=TRIAL_ENV["LI_PUBLIC_BASE_URL"]) as client:
+             TestClient(web_app.build_app(), base_url=TRIAL_ENV["LI_PUBLIC_BASE_URL"],
+                        client=("198.51.100.7", 50000)) as client:
             result = client.post("/mcp-trial", json=INIT, headers={**HEADERS, "Authorization": "Bearer private",
                                                                  "Cookie": "private=1",
                                                                  "Origin": TRIAL_ENV["LI_PUBLIC_BASE_URL"],
@@ -156,7 +177,8 @@ class TrialIsolationEndpointTests(unittest.TestCase):
         self.assertEqual(args[1]["headers"]["origin"], TRIAL_ENV["LI_PUBLIC_BASE_URL"])
         self.assertNotIn("x-forwarded-for", args[1]["headers"])
         self.assertNotIn("x-real-ip", args[1]["headers"])
-        self.assertEqual(args[1]["ip"], "testclient")
+        # Off Vercel the socket peer is the only client address; forged forwarding headers are ignored.
+        self.assertEqual(args[1]["ip"], "198.51.100.7")
         self.assertLessEqual(kwargs["deadline"]-time.monotonic(), 50)
         # This mock never started a child and does not consume the disconnect coroutine.
         kwargs["disconnected"].close()

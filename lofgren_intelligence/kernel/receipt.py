@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..evidence.types import to_dict
 from ..models.provider import EXTRACTION_TEMPLATE_VERSION
-from ..verification.engine import JACCARD_THRESHOLD, OVERLAP_THRESHOLD, VALUE_TOLERANCE, WEIGHTS
+from ..verification.engine import JACCARD_THRESHOLD, OVERLAP_THRESHOLD, VALUE_RULE, VALUE_TOLERANCE, WEIGHTS
 
 if TYPE_CHECKING:
     from .pipeline import RunResult
@@ -45,6 +45,8 @@ VERIFIER_SETTINGS = {
     "overlap_threshold": OVERLAP_THRESHOLD,
     "jaccard_threshold": JACCARD_THRESHOLD,
     "value_tolerance": VALUE_TOLERANCE,
+    "value_rule": VALUE_RULE,  # values agree at the precision stated; VALUE_TOLERANCE only for approximate values
+    "relation": "measure-stance-v1",  # same quantity kind and basis required; opposite-statement frames
     "policies": "v1.1",
     "skeptic": "v1.1",
 }

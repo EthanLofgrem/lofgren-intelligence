@@ -28,11 +28,23 @@ class OAuthDisconnectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["pragma"], "no-cache")
 
     async def test_duplicate_malformed_missing_revocation_inputs_do_not_touch_storage(self):
-        for body in (b"token=a&token=b&client_id=c", b"\xff", b"client_id=c", b"token=a"):
+        # A missing client_id is a client identification failure (RFC 6749 5.2: 401 invalid_client);
+        # the other malformed requests are 400 invalid_request. None reaches the store.
+        for body, status, error in ((b"token=a&token=b&client_id=c", 400, "invalid_request"),
+                                    (b"\xff", 400, "invalid_request"), (b"client_id=c", 400, "invalid_request"),
+                                    (b"token=a", 401, "invalid_client")):
             with self.subTest(body=body), patch.object(web_app, "SupabaseStore") as store:
                 response = await self.request(web_app.oauth_revoke, body)
-                self.assertEqual(response.status_code, 400)
+                self.assertEqual((response.status_code, json.loads(response.body)["error"]), (status, error))
                 store.assert_not_called()
+
+    async def test_unknown_client_is_401_invalid_client(self):
+        store = Mock()
+        store.get_oauth_client.return_value = None
+        with patch.object(web_app, "SupabaseStore", return_value=store):
+            response = await self.request(web_app.oauth_revoke, b"token=private-token&client_id=unknown")
+        self.assertEqual((response.status_code, json.loads(response.body)["error"]), (401, "invalid_client"))
+        store.revoke_oauth_token.assert_not_called()
 
     async def test_disconnect_requires_session_and_ignores_forged_user_id(self):
         store = Mock()

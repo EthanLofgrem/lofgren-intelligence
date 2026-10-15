@@ -20,6 +20,9 @@ CHILD_ENV_KEYS = frozenset({
     "LI_TRIAL_IP_REQUESTS_PER_MINUTE", "LI_TRIAL_GLOBAL_REQUESTS_PER_MINUTE",
     "LI_TRIAL_IP_CALLS_PER_HOUR", "LI_TRIAL_SPEND_CEILING_USD",
     "LI_TRIAL_SPEND_WINDOW_SECONDS", "LI_TRIAL_SOURCES_MANIFEST",
+    # Keyed per-IP digests and the global concurrency limit are evaluated inside the child. The child never
+    # receives VERCEL or LI_TRIAL_TRUSTED_PROXY: its only client address is the socket peer the parent set.
+    "LI_TRIAL_IP_HMAC_KEY", "LI_TRIAL_MAX_CONCURRENT",
     "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_PUBLISHABLE_KEY",
 })
 

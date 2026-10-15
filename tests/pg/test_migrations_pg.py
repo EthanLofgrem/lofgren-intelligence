@@ -63,8 +63,10 @@ LI_TABLES = {
     "li_activation_counter", "li_accounts", "li_entitlements", "li_oauth_clients", "li_oauth_codes",
     "li_access_tokens", "li_refresh_tokens", "li_runs", "li_usage_events", "li_rate_events",
     "li_billing_events", "li_discoveries", "li_artifacts", "li_action_proposals", "li_outcomes",
-    "li_github_link_states", "li_github_connections", "li_improvements", "li_usage_reservations", "li_rate_limit_events", "li_cases", "li_case_charters",
-    "li_case_approvals", "li_case_events", "li_research_jobs",
+    "li_github_link_states", "li_github_connections",
+    "li_improvements", "li_usage_reservations", "li_rate_limit_events", "li_cases", "li_case_charters",
+    "li_case_approvals", "li_case_events", "li_research_jobs", "li_trial_slots",
+    "li_oauth_consumed_refresh",
 }
 INTERNAL_FUNCTIONS = {"li_research_job_account", "li_research_job_abandon_settlement"}
 
@@ -481,6 +483,10 @@ class PrivilegeTest(PgCase):
         expected = store_rpc_names()
         self.assertIn("li_save_research_job_result", expected)
         self.assertIn("li_claim_targeted_research_job", expected)
+        self.assertIn("li_acquire_trial_slot", expected)
+        self.assertIn("li_release_trial_slot", expected)
+        self.assertIn("li_oauth_refresh_replay", expected)
+        self.assertEqual(len(expected), 37, sorted(expected))
         functions = self.li_functions()
         seen = set()
         for oid, name, secdef, config, argtypes in functions:
@@ -1293,6 +1299,80 @@ class RateLimitTest(PgCase):
                                   (user,))[0], 5)
 
 
+@pg_test
+class TrialSlotTest(PgCase):
+    """Global /mcp-trial concurrency slots (li_acquire_trial_slot / li_release_trial_slot)."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin.execute("delete from public.li_trial_slots")
+        self.admin.commit()
+
+    def test_concurrent_acquisitions_never_exceed_the_bound_across_connections(self):
+        stores = [self.new_store() for _ in range(4)]
+        ids = [[str(uuid.uuid4()) for _ in range(3)] for _ in stores]
+
+        def burst(i):
+            return [stores[i].acquire_trial_slot(sid, 3, 60) for sid in ids[i]]
+
+        out = run_concurrently([lambda i=i: burst(i) for i in range(len(stores))])
+        flat = [w for row in out for w in row]
+        self.assertEqual(flat.count(0), 3, flat)
+        self.assertTrue(all(1 <= w <= 60 for w in flat if w), flat)
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 3)
+
+    def test_release_frees_a_slot_once(self):
+        a, b, c = (str(uuid.uuid4()) for _ in range(3))
+        self.assertEqual(self.store.acquire_trial_slot(a, 2, 60), 0)
+        self.assertEqual(self.store.acquire_trial_slot(b, 2, 60), 0)
+        self.assertGreater(self.store.acquire_trial_slot(c, 2, 60), 0)
+        self.assertTrue(self.store.release_trial_slot(a))
+        self.assertFalse(self.store.release_trial_slot(a))
+        self.assertEqual(self.store.acquire_trial_slot(c, 2, 60), 0)
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 2)
+
+    def test_expired_lease_is_reclaimed(self):
+        a, b = str(uuid.uuid4()), str(uuid.uuid4())
+        self.assertEqual(self.store.acquire_trial_slot(a, 1, 1), 0)
+        self.assertGreater(self.store.acquire_trial_slot(b, 1, 60), 0)
+        expires = self.one("select expires_at from public.li_trial_slots where slot_id = %s", (a,))[0]
+        self.wait_db_past(expires)
+        self.assertEqual(self.store.acquire_trial_slot(b, 1, 60), 0)
+        self.assertFalse(self.store.release_trial_slot(a))
+
+    def test_invalid_arguments_and_reused_ids_are_refused(self):
+        sid = str(uuid.uuid4())
+        for args in ((sid, 0, 60), (sid, 101, 60), (sid, 2, 0), (sid, 2, 601)):
+            with self.subTest(args=args):
+                self.assertGreater(self.store.acquire_trial_slot(*args), 0)
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 0)
+        self.assertEqual(self.store.acquire_trial_slot(sid, 5, 60), 0)
+        self.assertEqual(self.store.acquire_trial_slot(sid, 5, 60), 60)  # same id: refused, not doubled
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 1)
+
+    def test_trial_spend_ceiling_admits_exactly_its_calls_across_connections(self):
+        key = sha("trial_spend:operator")  # trial.trial_key_hash for the global bucket (no client data)
+        self.admin.execute("delete from public.li_rate_limit_events where bucket = 'trial_spend'")
+        self.admin.commit()
+        a, b = self.new_store(), self.new_store()
+        out = run_concurrently([lambda: [a.take_keyed_rate_limit("trial_spend", key, 5, 86400) for _ in range(5)],
+                                lambda: [b.take_keyed_rate_limit("trial_spend", key, 5, 86400) for _ in range(5)]])
+        self.assertEqual((out[0] + out[1]).count(0), 5)
+
+    def test_api_roles_cannot_touch_the_slots(self):
+        for role in ("anon", "authenticated"):
+            conn = role_connect(self.dbname, role)
+            self.addCleanup(conn.close)
+            with self.subTest(role=role):
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute("select public.li_acquire_trial_slot(%s::uuid, 2, 60)", (str(uuid.uuid4()),))
+                conn.rollback()
+                with self.assertRaises(pg_errors.InsufficientPrivilege):
+                    conn.execute("select count(*) from public.li_trial_slots")
+                conn.rollback()
+        self.assertEqual(self.one("select count(*) from public.li_trial_slots")[0], 0)
+
+
 # ---------------------------------------------------------------------------
 # tenant boundaries
 # ---------------------------------------------------------------------------
@@ -1597,6 +1677,199 @@ def wait_until_lock_waiting(admin, pid: int, limit: float = 15.0) -> None:
             return
         time.sleep(0.05)
     raise AssertionError(f"backend {pid} never waited on a lock")
+
+
+@pg_test
+class OAuthRefreshReplayTest(PgCase):
+    """li_issue_oauth_tokens / li_oauth_refresh_replay / li_disconnect_oauth_client (migration 20261013190000).
+
+    On Codex's applied OAuth schema (no second token-family scheme): a refresh revokes the
+    access token issued with the consumed refresh token and leaves a tombstone; presenting a
+    consumed refresh token again (or concurrently) revokes the user's connection of that
+    client; disconnect clears the tombstones so an old credential cannot touch a fresh consent.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.user = self.new_user()
+        self.client_id = self.new_client()
+
+    def new_client(self) -> str:
+        client = f"licl_{uuid.uuid4().hex[:12]}"
+        self.svc.execute("insert into public.li_oauth_clients(client_id, client_name, redirect_uris, grant_types, "
+                         "response_types, token_endpoint_auth_method) values (%s, 'c', '[]', '[]', '[]', 'none')",
+                         (client,))
+        return client
+
+    def pair(self, client=None, user=None):
+        tag = uuid.uuid4().hex
+        access = {"token_hash": sha("a:" + tag), "user_id": user or self.user, "client_id": client or self.client_id,
+                  "scope": "mcp", "resource": "https://li.test/mcp",
+                  "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
+        refresh = {**access, "token_hash": sha("r:" + tag),
+                   "expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()}
+        return access, refresh
+
+    def authorize(self, client=None, user=None, store=None):
+        """An authorization-code exchange through the real RPCs: consume, then issue."""
+        store = store or self.store
+        client, user = client or self.client_id, user or self.user
+        code = sha("code:" + uuid.uuid4().hex)
+        self.svc.execute("insert into public.li_oauth_codes(code_hash, user_id, client_id, redirect_uri, "
+                         "code_challenge, scope, resource, expires_at) values (%s, %s, %s, 'https://x.test/cb', 'c', "
+                         "'mcp', 'https://li.test/mcp', now() + interval '5 minutes')", (code, user, client))
+        self.assertIsNotNone(store.consume_oauth_code(code))
+        access, refresh = self.pair(client, user)
+        self.assertTrue(store.issue_oauth_tokens("authorization_code", code, access, refresh))
+        return access["token_hash"], refresh["token_hash"]
+
+    def rotate(self, refresh_hash, client=None, store=None):
+        """OAuthService.refresh in SQL terms: consume, then issue or check replay."""
+        store = store or self.store
+        client = client or self.client_id
+        row = store.consume_refresh_token(refresh_hash)
+        if not row:
+            return ("replayed" if store.oauth_refresh_replay(refresh_hash, client) else "invalid"), None, None
+        if row["client_id"] != client:
+            store.oauth_refresh_replay(refresh_hash, row["client_id"])
+            return "invalid", None, None
+        access, refresh = self.pair(client, str(row["user_id"]))
+        ok = store.issue_oauth_tokens("refresh_token", refresh_hash, access, refresh)
+        return ("rotated" if ok else "refused"), access["token_hash"], refresh["token_hash"]
+
+    def revoked(self, access_hash):
+        return self.one("select revoked_at is not null from public.li_access_tokens where token_hash = %s",
+                        (access_hash,))[0]
+
+    def live(self, client=None, user=None):
+        args = (user or self.user, client or self.client_id)
+        return (self.one("select count(*) from public.li_access_tokens where user_id = %s and client_id = %s "
+                         "and revoked_at is null", args)[0],
+                self.one("select count(*) from public.li_refresh_tokens where user_id = %s and client_id = %s "
+                         "and used_at is null", args)[0])
+
+    def tombstones(self, client=None):
+        return self.one("select count(*) from public.li_oauth_consumed_refresh where user_id = %s and client_id = %s",
+                        (self.user, client or self.client_id))[0]
+
+    def test_refresh_revokes_the_superseded_access_token_and_keeps_a_tombstone(self):
+        a1, r1 = self.authorize()
+        self.assertEqual(self.one("select refresh_token_hash from public.li_access_tokens where token_hash = %s",
+                                  (a1,))[0], r1)
+        status, a2, r2 = self.rotate(r1)
+        self.assertEqual(status, "rotated")
+        self.assertTrue(self.revoked(a1), "the access token issued with the consumed refresh token is superseded")
+        self.assertFalse(self.revoked(a2))
+        self.assertEqual(self.live(), (1, 1))
+        self.assertEqual(self.one("select count(*) from public.li_refresh_tokens where token_hash = %s", (r1,))[0], 0)
+        self.assertEqual(self.tombstones(), 1)
+        self.assertIn("li_issue_oauth_tokens", self.store.calls)
+
+    def test_replay_of_a_consumed_refresh_token_revokes_the_client_connection(self):
+        a1, r1 = self.authorize()
+        _, a2, r2 = self.rotate(r1)
+        other = self.new_client()
+        oa, orr = self.authorize(client=other)
+        status, _, _ = self.rotate(r1)
+        self.assertEqual(status, "replayed")
+        self.assertIn("li_oauth_refresh_replay", self.store.calls)
+        self.assertEqual(self.live(), (0, 0))
+        self.assertTrue(self.revoked(a2))
+        self.assertEqual(self.rotate(r2)[0], "invalid")
+        self.assertEqual(self.tombstones(), 0, "disconnect clears the tombstones")
+        # Another client of the same user is untouched.
+        self.assertEqual(self.live(client=other), (1, 1))
+        # A fresh consent works, and the old token can no longer touch it.
+        fa, fr = self.authorize()
+        self.assertFalse(self.store.oauth_refresh_replay(r1, self.client_id))
+        self.assertEqual(self.live(), (1, 1))
+        self.assertFalse(self.revoked(fa))
+
+    def test_concurrent_presentations_of_one_refresh_token_leave_nothing_live(self):
+        _, r1 = self.authorize()
+        a, b = self.new_store(), self.new_store()
+        got = run_concurrently([lambda: self.rotate(r1, store=a)[0], lambda: self.rotate(r1, store=b)[0]])
+        self.assertIn("replayed", got, got)
+        self.assertEqual(sum(1 for g in got if g in ("rotated", "refused")), 1, got)
+        # Whether the winner issued before or after the replay took the lock, nothing escapes.
+        self.assertEqual(self.live(), (0, 0))
+
+    def test_replay_waiting_on_an_in_flight_issue_revokes_what_it_issued(self):
+        _, r1 = self.authorize()
+        self.assertIsNotNone(self.store.consume_refresh_token(r1))   # the winner consumed ...
+        blocker, replayer = self.new_store(), self.new_store()
+        pid = replayer.conn.execute("select pg_backend_pid()").fetchone()[0]
+        answers, errors = [], []
+
+        def replay():
+            try:
+                answers.append(replayer.oauth_refresh_replay(r1, self.client_id))
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+        thread = threading.Thread(target=replay)
+        access, refresh = self.pair()
+        with blocker.conn.transaction():
+            blocker.conn.execute("select pg_advisory_xact_lock(hashtextextended('li_oauth:' || %s::text || ':' || %s, 0))",
+                                 (self.user, self.client_id))
+            thread.start()
+            wait_until_lock_waiting(self.admin, pid)
+            # ... and issues while the replay waits on the user/client lock.
+            self.assertTrue(blocker.issue_oauth_tokens("refresh_token", r1, access, refresh))
+        thread.join(15)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual((answers, errors), ([True], []))
+        self.assertTrue(self.revoked(access["token_hash"]))
+        self.assertEqual(self.live(), (0, 0))
+
+    def test_another_client_presenting_the_token_revokes_the_owner_connection(self):
+        a1, r1 = self.authorize()
+        other = self.new_client()
+        self.assertEqual(self.rotate(r1, client=other)[0], "invalid")
+        self.assertEqual(self.live(), (0, 0))
+        self.assertTrue(self.revoked(a1))
+
+    def test_unknown_unconsumed_expired_and_malformed_answer_false_and_change_nothing(self):
+        a1, r1 = self.authorize()
+        other = self.new_client()
+        for digest, client in ((sha("unknown"), self.client_id), (r1, self.client_id), (r1, other),
+                               ("nothex", self.client_id), (r1, "")):
+            with self.subTest(client=client, digest=digest[:8]):
+                self.assertFalse(self.store.oauth_refresh_replay(digest, client))
+        self.assertEqual(self.live(), (1, 1))
+        _, a2, r2 = self.rotate(r1)
+        self.svc.execute("update public.li_oauth_consumed_refresh set expires_at = now() - interval '1 second' "
+                         "where token_hash = %s", (r1,))
+        self.assertFalse(self.store.oauth_refresh_replay(r1, self.client_id))
+        self.assertEqual(self.live(), (1, 1))
+
+    def test_legacy_access_token_without_a_sibling_hash_is_not_revoked_early(self):
+        a1, r1 = self.authorize()
+        self.svc.execute("update public.li_access_tokens set refresh_token_hash = null where token_hash = %s", (a1,))
+        self.assertEqual(self.rotate(r1)[0], "rotated")
+        self.assertFalse(self.revoked(a1))
+
+    def test_api_roles_cannot_replay_or_read_tombstones(self):
+        _, r1 = self.authorize()
+        self.rotate(r1)
+        for role in ("anon", "authenticated"):
+            conn = role_connect(self.dbname, role)
+            self.addCleanup(conn.close)
+            with self.subTest(role=role), self.assertRaises(pg_errors.InsufficientPrivilege):
+                conn.execute("select public.li_oauth_refresh_replay(%s, %s)", (r1, self.client_id))
+            with self.subTest(role=role, table=True), self.assertRaises(pg_errors.InsufficientPrivilege):
+                conn.execute("select * from public.li_oauth_consumed_refresh")
+        self.assertEqual(self.tombstones(), 1)
+
+    def test_forward_migration_is_idempotent(self):
+        sql = next(MIGRATIONS.glob("*_li_oauth_refresh_replay.sql")).read_text()
+        for _ in range(2):
+            with self.admin.transaction():
+                self.admin.execute(sql)
+        for role, allowed in (("anon", False), ("authenticated", False), ("service_role", True)):
+            for fn in ("li_oauth_refresh_replay(text,text)", "li_issue_oauth_tokens(text,text,jsonb,jsonb)",
+                       "li_disconnect_oauth_client(uuid,text)"):
+                self.assertEqual(self.one("select has_function_privilege(%s, %s, 'EXECUTE')",
+                                          (role, "public." + fn))[0], allowed)
 
 
 @pg_test

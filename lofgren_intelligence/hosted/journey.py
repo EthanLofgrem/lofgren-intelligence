@@ -21,15 +21,24 @@ def landing_html(base: str, nonce: str = "") -> str:
     return home_page(base, nonce or new_nonce())
 
 
+# Styles of consent_intro_html. The consent page's CSP allows only its nonce'd
+# <style> block (style-src 'nonce-...'), so inline style="" attributes would be
+# blocked: every style lives here and the page embeds it in that block.
+CONSENT_CSS = (
+    ".consent-eyebrow{font-size:13px;color:#8fb5ee;margin-bottom:10px}"
+    ".consent-fine{font-size:14px;color:#aeb8c7}"
+)
+
+
 def consent_intro_html(client_name: str, scope: str = "mcp", redirect_uri: str | None = None) -> str:
     client = html.escape(client_name or "Unknown MCP client")
     safe_scope = html.escape(scope or "mcp")
     out = (
-        '<div style="font-size:13px;color:#8fb5ee;margin-bottom:10px">OAuth authorization</div>'
+        '<div class="consent-eyebrow">OAuth authorization</div>'
         '<h1>Connect Lofgren Intelligence</h1>'
         f'<p><strong>{client}</strong> is requesting permission to use Lofgren Intelligence '
         f'through the <code>{safe_scope}</code> scope.</p>'
-        '<p style="font-size:14px;color:#aeb8c7">This grants the client access to your authorized '
+        '<p class="consent-fine">This grants the client access to your authorized '
         'LI MCP tools and LI run state. It does not reveal your password or a server service-role key.</p>'
     )
     if redirect_uri is not None:

@@ -2,7 +2,9 @@ name: postgres-proof
 
 # Applies supabase/migrations to a REAL PostgreSQL 16 server (an ephemeral
 # service container) on top of scripts/pg/bootstrap_supabase_stub.sql and runs
-# tests/pg/test_migrations_pg.py against it. Any failure, error or skipped test
+# tests/pg/test_migrations_pg.py and tests/pg/test_recovery_pg.py (the real PublicService
+# and Worker recovery proof, plus the V4 external-execution refusal through the
+# real store) against it. Any failure, error or skipped test
 # fails the job: a skip here would mean nothing was proven.
 #
 # Scope: SQL/RPC behaviour, locking, concurrency and grants on real Postgres.
@@ -75,7 +77,7 @@ jobs:
       - name: Run the real-PostgreSQL proof
         run: |
           set -o pipefail
-          python -m unittest -v tests.pg.test_migrations_pg 2>&1 | tee pg-proof.log
+          python -m unittest -v tests.pg.test_migrations_pg tests.pg.test_recovery_pg 2>&1 | tee pg-proof.log
       - name: Refuse skipped tests
         run: |
           if grep -nE "skipped|expected failure|unexpected success" pg-proof.log; then

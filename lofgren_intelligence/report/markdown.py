@@ -7,6 +7,7 @@ unknowns, calculations and the ledger. The report adds no facts.
 from __future__ import annotations
 
 from ..evidence.types import ClaimStatus, Scope, to_dict
+from ..kernel.answers import efficacy_question, registered_trials
 from ..kernel.pipeline import RunResult
 from ..kernel.receipt import evidence_dates, evidence_labels
 
@@ -82,6 +83,19 @@ def render_markdown(r: RunResult, include_receipt: bool = True) -> str:
                 w(f"- Conflicts: {', '.join(f'`{x}`' for x in f.contradiction_ids)}")
             if f.next_best_evidence:
                 w(f"- Next best evidence: {f.next_best_evidence}")
+            w("")
+
+        trials = registered_trials(r) if efficacy_question(r) else []
+        if trials:
+            w("## Registered trials (not efficacy evidence)\n")
+            w("_A registration says a trial exists (status, phase, design, enrollment); it is not evidence that the "
+              "intervention works, so none of these is counted as support for the question._\n")
+            for t in trials:
+                w(f"- **{t['nct_id']}** — {t['title']}")
+                for flag in t["flags"]:
+                    w(f"  - ⚠ {flag}")
+                for cid in t["claims"]:
+                    w(f"  - {g.claims[cid].statement}")
             w("")
 
         w("## Contradiction graph\n")

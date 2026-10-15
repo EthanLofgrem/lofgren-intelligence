@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import os
+from contextvars import ContextVar
 import anyio
 from typing import Any, Callable
 
@@ -23,7 +24,7 @@ from mcp.types import ToolAnnotations
 
 from .auth import AuthError, token_hash, validated_access_record
 from .service import PublicService, PublicServiceError
-from .store import SupabaseStore
+from .store import StoreUnavailable, SupabaseStore
 from .routing import AssessmentResult, DesiredOutput, RequestSummary, assess_request
 
 
@@ -41,15 +42,28 @@ INSTRUCTIONS = (
 )
 
 
+# The SDK resolves any Authorization: Bearer header in middleware on EVERY route,
+# before routing. A store fault there must not crash unrelated routes: the
+# verifier records it here and reports "no identity"; the web app answers 503
+# only where the identity was required (an /mcp request refused as 401).
+STORE_FAULT: ContextVar[list[BaseException] | None] = ContextVar("li_store_fault", default=None)
+
+
 class OpaqueTokenVerifier(TokenVerifier):
     def __init__(self, resource_url: str) -> None:
         self.resource_url = resource_url
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        store = SupabaseStore()
-        # PostgREST is synchronous. Keep the ASGI event loop responsive while
-        # the SDK's bounded thread pool performs this identity lookup.
-        row = await anyio.to_thread.run_sync(store.get_access_token, token_hash(token))
+        try:
+            store = SupabaseStore()
+            # PostgREST is synchronous. Keep the ASGI event loop responsive while
+            # the SDK's bounded thread pool performs this identity lookup.
+            row = await anyio.to_thread.run_sync(store.get_access_token, token_hash(token))
+        except StoreUnavailable as exc:
+            faults = STORE_FAULT.get()
+            if faults is not None:
+                faults.append(exc)
+            return None  # Unverified: protected routes still refuse.
         try:
             user_id, client_id, resource, scopes, expiry = validated_access_record(row)
         except AuthError:
@@ -93,6 +107,7 @@ def _source_args(
     imagery: bool = False,
     max_spend_usd: float = 5.0,
 ) -> dict[str, Any]:
+    _check_public_source_inputs(europepmc, trials, max_records)
     out: dict[str, Any] = {"max_spend_usd": max_spend_usd}
     if texts is not None:
         out["texts"] = texts
@@ -114,21 +129,80 @@ def _source_args(
     return out
 
 
+# --- Typed refusals --------------------------------------------------------
+# Imported here, next to their only use, to keep this module's header stable.
+from ..adapters.manifest import ManifestError  # noqa: E402
+from ..adapters.net import UnsafeURL  # noqa: E402
+from ..adapters.public_api import check_bound, check_query  # noqa: E402
+from ..execution.core import ExecutionError  # noqa: E402
+from ..improvement.core import ImprovementError  # noqa: E402
+from .security import PublicInputError  # noqa: E402
+
+# The hosted service reads at most this many records per europepmc/trials
+# query; the local CLI and stdio server allow 1-100.
+HOSTED_MAX_RECORDS = 20
+
+# Expected refusals raised below the service layer, most specific first, and
+# the stable code each reaches the client with. Anything not listed (and not a
+# PublicServiceError) is unexpected and stays the SDK's generic error.
+REFUSAL_CODES: tuple[tuple[type[BaseException], str], ...] = (
+    (UnsafeURL, "UNSAFE_URL"),
+    (ManifestError, "MANIFEST_INVALID"),
+    (PublicInputError, "INPUT_INVALID"),
+    (ExecutionError, "EXECUTION_REFUSED"),
+    (ImprovementError, "IMPROVEMENT_REFUSED"),
+)
+MAX_REFUSAL_MESSAGE_CHARS = 300
+
+
+def _check_public_source_inputs(europepmc: str | None, trials: str | None, max_records: int | None) -> None:
+    """Turn the shared validators' bare ValueError into a typed INPUT_INVALID refusal."""
+    try:
+        for what, query in (("europepmc", europepmc), ("trials", trials)):
+            if query is not None:
+                check_query(query, what)
+        if max_records is not None:
+            check_bound(max_records, "max_records", HOSTED_MAX_RECORDS)
+    except ValueError as exc:
+        raise PublicInputError(str(exc)) from None
+
+
+def refusal_code(exc: BaseException) -> str | None:
+    """The stable code of an anticipated refusal, or None for an unexpected failure."""
+    if isinstance(exc, PublicServiceError):
+        return exc.code
+    return next((code for kind, code in REFUSAL_CODES if isinstance(exc, kind)), None)
+
+
+def _safe_message(exc: BaseException) -> str:
+    """The refusal's own text on one bounded printable line, never a traceback or object dump."""
+    text = " ".join("".join(ch if ch.isprintable() else " " for ch in str(exc)).split())
+    if len(text) > MAX_REFUSAL_MESSAGE_CHARS:
+        text = text[: MAX_REFUSAL_MESSAGE_CHARS - 3].rstrip() + "..."
+    return text or "request refused"
+
+
 def _public_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Report a PublicServiceError to the client as an anticipated tool error.
+    """Report an anticipated refusal to the client as a typed tool error.
 
     The SDK treats any other exception as a crash: the client sees only
     "Error executing tool <name>" and the server logs a traceback. A
-    PublicServiceError is a deliberate, user-facing refusal, so it is re-raised
-    as ToolError carrying its stable code and message and nothing else.
+    PublicServiceError, or one of REFUSAL_CODES (unsafe URL, invalid input or
+    manifest, refused execution or improvement), is a deliberate, fail-closed
+    refusal: it is re-raised as ToolError carrying a stable code and a
+    sanitized one-line message, which the SDK logs as one line without a
+    traceback. Unexpected exceptions pass through and stay generic.
     """
 
     @functools.wraps(fn)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
-        except PublicServiceError as exc:
-            raise ToolError(f"{exc.code}: {exc}") from None
+        except Exception as exc:
+            code = refusal_code(exc)
+            if code is None:
+                raise
+            raise ToolError(f"{code}: {_safe_message(exc)}") from None
 
     return wrapped
 
@@ -200,6 +274,7 @@ def build_mcp(base_url: str) -> MCPServer:
         is never an MCP call, and investigate runs only with that approval.
         """
         user_id, service = _caller()
+        _check_public_source_inputs(europepmc, trials, max_records)
         args: dict[str, Any] = {"answers": answers or {}}
         if objective is not None:
             args["objective"] = objective

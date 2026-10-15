@@ -7,6 +7,7 @@ server or narrowly-scoped SECURITY DEFINER RPCs.
 
 from __future__ import annotations
 
+import json
 import os
 import urllib.error
 import urllib.parse
@@ -20,14 +21,39 @@ class StoreError(RuntimeError):
     pass
 
 
+class StoreUnavailable(StoreError):
+    """A server-side store fault: unreachable, failed or answered incorrectly.
+
+    Never the caller's fault. Public endpoints answer 503 with a generic
+    description; the message is for server-side logs only.
+    """
+
+
+class StoreNotConfigured(StoreUnavailable):
+    """The deployment is missing store configuration (a server misconfiguration)."""
+
+
+class StoreAuthError(StoreUnavailable):
+    """The store rejected the service credentials (HTTP 401/403): a wrong or revoked key.
+
+    Retrying cannot fix it. The message never contains the key or the URL. Public
+    endpoints still answer it as an unavailable dependency (it subclasses StoreUnavailable).
+    """
+
+
+_AUTH_STATUSES = (401, 403)
+
+
 def _db(url: str, method: str, **kw: Any) -> Any:
     """Call Supabase without leaking PostgREST/schema details to public callers."""
     try:
         return json_request(url, method, **kw).body
     except HTTPError as exc:
-        raise StoreError(f"database request failed (HTTP {exc.status})") from None
+        if exc.status in _AUTH_STATUSES:
+            raise StoreAuthError(f"database rejected the service credentials (HTTP {exc.status})") from None
+        raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
     except (urllib.error.URLError, OSError, ValueError):
-        raise StoreError("database is unreachable") from None
+        raise StoreUnavailable("database is unreachable") from None
 
 
 def utcnow() -> str:
@@ -40,14 +66,18 @@ class SupabaseStore:
         url: str | None = None,
         service_key: str | None = None,
         publishable_key: str | None = None,
+        *,
+        timeout: float = 30.0,
     ) -> None:
         self.url = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
+        # Per-request timeout of every PostgREST call (the trial passes a shorter one to bound its wall time).
+        self.timeout = float(timeout)
         self.service_key = service_key or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
         self.publishable_key = publishable_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
         if not self.url:
-            raise StoreError("SUPABASE_URL is required")
+            raise StoreNotConfigured("SUPABASE_URL is required")
         if not self.service_key:
-            raise StoreError("SUPABASE_SERVICE_ROLE_KEY is required")
+            raise StoreNotConfigured("SUPABASE_SERVICE_ROLE_KEY is required")
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -71,7 +101,7 @@ class SupabaseStore:
         headers = dict(self._headers)
         if prefer:
             headers["prefer"] = prefer
-        return _db(url, method, headers=headers, body=body)
+        return _db(url, method, headers=headers, body=body, timeout=self.timeout)
 
     def rpc(self, name: str, body: dict[str, Any]) -> Any:
         return _db(
@@ -79,7 +109,37 @@ class SupabaseStore:
             "POST",
             headers=self._headers,
             body=body,
+            timeout=self.timeout,
         )
+
+    def check_connection(self) -> None:
+        """Cheap authenticated read of the job queue: the worker's startup self-check.
+
+        Raises StoreAuthError for rejected credentials, StoreNotConfigured when the URL is
+        not a usable Supabase REST endpoint or the job queue table is missing, and
+        StoreUnavailable for a transient fault (network, timeout, 408/429/5xx). Messages
+        never contain the key or the URL.
+        """
+        url = with_query(f"{self.url}/rest/v1/li_research_jobs", {"select": "id", "limit": "1"})
+        try:
+            body = json_request(url, "GET", headers=self._headers, timeout=min(self.timeout, 10.0)).body
+        except HTTPError as exc:
+            if exc.status in _AUTH_STATUSES:
+                raise StoreAuthError(f"database rejected the service credentials (HTTP {exc.status})") from None
+            if exc.status in (408, 429) or exc.status >= 500:
+                raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
+            if exc.status == 404:
+                raise StoreNotConfigured("the job queue table was not found (HTTP 404): check SUPABASE_URL "
+                                         "and that the migrations are applied") from None
+            raise StoreNotConfigured(f"database refused the self-check (HTTP {exc.status})") from None
+        except json.JSONDecodeError:
+            raise StoreNotConfigured("SUPABASE_URL did not answer like a Supabase REST endpoint") from None
+        except ValueError:
+            raise StoreNotConfigured("SUPABASE_URL is not a usable endpoint") from None
+        except (urllib.error.URLError, OSError):
+            raise StoreUnavailable("database is unreachable") from None
+        if not isinstance(body, list):
+            raise StoreNotConfigured("SUPABASE_URL did not answer like a Supabase REST endpoint")
 
     def verify_supabase_user(self, access_token: str) -> dict[str, Any]:
         key = self.publishable_key or self.service_key
@@ -90,7 +150,11 @@ class SupabaseStore:
                 headers={"apikey": key, "authorization": f"Bearer {access_token}"},
             )
         except HTTPError as exc:
+            if exc.status >= 500:
+                raise StoreUnavailable(f"identity provider failed (HTTP {exc.status})") from None
             raise StoreError("invalid Supabase user session") from exc
+        except (urllib.error.URLError, OSError, ValueError):
+            raise StoreUnavailable("identity provider is unreachable") from None
         if not isinstance(response.body, dict) or not response.body.get("id"):
             raise StoreError("invalid Supabase user session")
         return response.body
@@ -99,10 +163,10 @@ class SupabaseStore:
         rows = self.rpc("li_activate_account", {"p_user_id": user_id, "p_email": email})
         if isinstance(rows, list):
             if not rows:
-                raise StoreError("activation returned no account")
+                raise StoreUnavailable("activation returned no account")
             return rows[0]
         if not isinstance(rows, dict):
-            raise StoreError("activation returned invalid account")
+            raise StoreUnavailable("activation returned invalid account")
         return rows
 
     def get_account(self, user_id: str) -> dict[str, Any] | None:
@@ -148,6 +212,12 @@ class SupabaseStore:
 
     def revoke_oauth_token(self, digest: str, client_id: str) -> None:
         self.rpc("li_revoke_oauth_token", {"p_token_hash": digest, "p_client_id": client_id})
+
+    def oauth_refresh_replay(self, digest: str, client_id: str) -> bool:
+        """li_oauth_refresh_replay: True when `digest` is a refresh token of `client_id` that was
+        already consumed (or is being consumed by a concurrent request); the user's connection of
+        that client is then revoked (li_disconnect_oauth_client). Unknown tokens answer False."""
+        return self.rpc("li_oauth_refresh_replay", {"p_token_hash": digest, "p_client_id": client_id}) is True
 
     def put_access_token(self, row: dict[str, Any]) -> None:
         self._table("li_access_tokens", "POST", body=row, prefer="return=minimal")
@@ -298,7 +368,7 @@ class SupabaseStore:
         if isinstance(result, dict) and len(result) == 1:
             result = next(iter(result.values()))
         if result not in ("settled", "already_settled", "not_unsettled", "missing"):
-            raise StoreError("usage settlement returned an invalid answer")
+            raise StoreUnavailable("usage settlement returned an invalid answer")
         return str(result)
 
     def list_unsettled_usage(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -317,7 +387,7 @@ class SupabaseStore:
         if isinstance(result, dict) and len(result) == 1:
             result = next(iter(result.values()))
         if isinstance(result, bool) or not isinstance(result, (int, float)):
-            raise StoreError("case store returned an invalid answer")
+            raise StoreUnavailable("case store returned an invalid answer")
         return int(result)
 
     def create_case(
@@ -422,7 +492,7 @@ class SupabaseStore:
         if result is None:
             return None
         if not isinstance(result, dict) or not result.get("id"):
-            raise StoreError("job store returned an invalid answer")
+            raise StoreUnavailable("job store returned an invalid answer")
         return result
 
     def enqueue_research_job(
@@ -517,7 +587,7 @@ class SupabaseStore:
         if result is None:
             return []
         if not isinstance(result, list) or not all(isinstance(x, str) for x in result):
-            raise StoreError("job store returned an invalid answer")
+            raise StoreUnavailable("job store returned an invalid answer")
         return list(result)
 
     def get_research_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
@@ -577,8 +647,37 @@ class SupabaseStore:
         if isinstance(result, dict) and len(result) == 1:
             result = next(iter(result.values()))
         if isinstance(result, bool) or not isinstance(result, (int, float)) or result < 0:
-            raise StoreError("rate limiter returned an invalid answer")
+            raise StoreUnavailable("rate limiter returned an invalid answer")
         return int(result)
+
+    def acquire_trial_slot(self, slot_id: str, max_concurrent: int, lease_seconds: int) -> int:
+        """Take one global trial concurrency slot (li_acquire_trial_slot): 0 = taken, else seconds to wait.
+
+        Anything but a non-negative integer answer is a StoreError, so the trial fails closed.
+        """
+        result = self.rpc("li_acquire_trial_slot", {
+            "p_slot_id": slot_id,
+            "p_max_concurrent": int(max_concurrent),
+            "p_lease_seconds": int(lease_seconds),
+        })
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if isinstance(result, bool) or not isinstance(result, int) or result < 0:
+            raise StoreError("trial slot store returned an invalid answer")
+        return result
+
+    def release_trial_slot(self, slot_id: str) -> bool:
+        """Release one trial concurrency slot (li_release_trial_slot). True when this call removed it."""
+        result = self.rpc("li_release_trial_slot", {"p_slot_id": slot_id})
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict) and len(result) == 1:
+            result = next(iter(result.values()))
+        if not isinstance(result, bool):
+            raise StoreError("trial slot store returned an invalid answer")
+        return result
 
     def list_runs(self, user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         return self._select_all(
@@ -632,9 +731,9 @@ class SupabaseStore:
         except HTTPError as exc:
             if exc.status == 404:
                 return False
-            raise StoreError(f"database request failed (HTTP {exc.status})") from None
+            raise StoreUnavailable(f"database request failed (HTTP {exc.status})") from None
         except (urllib.error.URLError, OSError, ValueError):
-            raise StoreError("database is unreachable") from None
+            raise StoreUnavailable("database is unreachable") from None
         return True
 
     def save_discovery(self, row: dict[str, Any]) -> None:
