@@ -981,6 +981,26 @@ class CITriggerTests(unittest.TestCase):
                                        + "".join(f"|| github.ref_name == '{b}' " for b in RC_GATE_BRANCHES).rstrip()
                                        + ") }}")
 
+    def test_release_gate_receipt_runs_only_on_candidate_pushes(self):
+        text = self._workflow("tests.yml")
+        cond = self._job_condition(text, "release-gate-receipt")
+        self.assertIn("always() && github.event_name == 'push'", cond)
+        self.assertNotIn("pull_request", cond)
+        for branch in (
+            "build/rc-candidate-3",
+            "build/li-release-hardening-oct11",
+            "build/li-integrated-oct13",
+            "build/li-unified-oct13",
+        ):
+            self.assertIn(f"github.ref_name == '{branch}'", cond)
+        self.assertEqual(cond.count("github.ref_name =="), 4)
+        start = text.index("\n  release-gate-receipt:\n")
+        block = text[start:]
+        for job in ("test", "v2-ready-for-v3", "v3-ready-for-v4", "v4-ready-for-v5",
+                    "v5-ready-for-v6", "v6-complete"):
+            self.assertIn(f"      - {job}\n", block)
+        self.assertIn('--expected-ref-name "$GITHUB_REF_NAME"', block)
+
 
 if __name__ == "__main__":
     unittest.main()
