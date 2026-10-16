@@ -1,0 +1,76 @@
+name: hosted-readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character candidate SHA deployed to both Preview origins
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-readiness-${{ inputs.expected_sha }}
+  cancel-in-progress: false
+
+jobs:
+  exact-sha-preflight:
+    name: Exact-SHA hosted readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify dispatched source identity
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check protected web and MCP Previews
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WEB_BASE_URL: ${{ vars.LI_WEB_PREVIEW_BASE_URL }}
+          MCP_BASE_URL: ${{ vars.LI_MCP_PREVIEW_BASE_URL }}
+          WEB_BYPASS_TOKEN: ${{ secrets.LI_WEB_VERCEL_AUTOMATION_BYPASS_SECRET }}
+          MCP_BYPASS_TOKEN: ${{ secrets.LI_MCP_VERCEL_AUTOMATION_BYPASS_SECRET }}
+        shell: bash
+        run: |
+          set -u
+          test -n "$WEB_BASE_URL"
+          test -n "$MCP_BASE_URL"
+          web_status=0
+          mcp_status=0
+          LI_PREFLIGHT_BYPASS_ORIGIN="$WEB_BASE_URL" \
+          LI_VERCEL_AUTOMATION_BYPASS_SECRET="$WEB_BYPASS_TOKEN" \
+            python scripts/li_mcp_preflight.py \
+              --base-url "$WEB_BASE_URL" \
+              --expected-sha "$EXPECTED_SHA" \
+              --output hosted-readiness-web.json || web_status=$?
+          LI_PREFLIGHT_BYPASS_ORIGIN="$MCP_BASE_URL" \
+          LI_VERCEL_AUTOMATION_BYPASS_SECRET="$MCP_BYPASS_TOKEN" \
+            python scripts/li_mcp_preflight.py \
+              --base-url "$MCP_BASE_URL" \
+              --expected-sha "$EXPECTED_SHA" \
+              --output hosted-readiness-mcp.json || mcp_status=$?
+          test "$web_status" -eq 0
+          test "$mcp_status" -eq 0
+      - name: Retain exact-SHA hosted readiness receipts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-readiness-${{ inputs.expected_sha }}
+          path: hosted-readiness-*.json
+          if-no-files-found: error
+          retention-days: 30
