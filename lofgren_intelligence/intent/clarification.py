@@ -109,6 +109,46 @@ _PERSONAL_RE = re.compile(r"\b(?:i|i'm|i've|me|my|mine|we|our)\b", re.IGNORECASE
 # Named commerce platforms, used to make the channel question specific without leaking examples.
 _PLATFORMS = ("shopify", "amazon", "etsy", "ebay", "woocommerce", "tiktok shop", "walmart marketplace")
 
+# ---- Underspecification ------------------------------------------------------------------
+# Deictic pronouns stand in for a subject that the objective never names.
+_DEICTIC_WORDS = frozenset({"it", "its", "it's", "this", "that", "these", "those", "they", "them"})
+# Words that never name a subject on their own: function words, pronouns, auxiliaries, and the
+# generic verbs, evaluatives and quantity words that carry no referent ("worth", "good", "do").
+# An objective with no token outside this set has no subject noun at all.
+_NON_SUBJECT_WORDS = frozenset({
+    # articles, determiners, prepositions, conjunctions, adverbs
+    "a", "an", "the", "of", "to", "in", "on", "at", "for", "with", "by", "from", "about", "as", "into",
+    "onto", "over", "under", "than", "then", "and", "or", "but", "if", "so", "not", "no", "yes", "any",
+    "some", "all", "each", "every", "either", "neither", "both", "such", "own", "same", "other",
+    "another", "up", "down", "out", "off", "again", "also", "just", "only", "even", "still", "yet",
+    "very", "too", "really", "actually", "anyway", "else", "now", "here", "there", "ever", "never",
+    # pronouns and possessives
+    "i", "i'm", "i've", "i'd", "i'll", "me", "my", "mine", "myself", "we", "we're", "us", "our", "ours",
+    "you", "you're", "your", "yours", "he", "him", "his", "she", "her", "hers", "it", "its", "it's",
+    "they", "they're", "them", "their", "theirs", "this", "that", "these", "those", "one", "ones",
+    "someone", "something", "anything", "everything", "nothing", "thing", "things", "stuff",
+    # question words and auxiliaries
+    "what", "what's", "which", "who", "whom", "whose", "why", "how", "when", "where", "whether",
+    "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did", "doing", "done",
+    "have", "has", "had", "having", "can", "could", "should", "would", "will", "shall", "may",
+    "might", "must", "ought", "isn't", "aren't", "don't", "doesn't", "didn't", "can't", "won't",
+    "shouldn't", "wouldn't", "couldn't",
+    # generic verbs and requests
+    "get", "got", "go", "going", "make", "made", "take", "use", "try", "work", "works", "help",
+    "need", "want", "think", "know", "tell", "explain", "show", "find", "look", "see", "say", "mean",
+    "means", "consider", "decide", "choose", "pick", "keep", "stop", "start", "worry", "matter",
+    "matters", "happen", "happens", "fix", "buy", "buying", "sell", "pay", "afford", "research",
+    "analyze", "analyse", "evaluate", "assess", "check", "compare", "review", "please",
+    # generic evaluatives and quantities
+    "worth", "worthwhile", "good", "bad", "better", "best", "worse", "worst", "right", "wrong", "ok",
+    "okay", "fine", "true", "false", "real", "safe", "risky", "smart", "wise", "idea", "option",
+    "options", "choice", "way", "much", "many", "more", "most", "less", "least", "enough", "lot",
+    "cost", "costs", "price", "time", "today", "soon", "later", "possible", "likely", "legit",
+    "normal", "reasonable", "sense", "point", "deal", "big", "small", "new", "old",
+})
+# A very short deictic objective (at most this many tokens) needs a named subject to stand alone.
+_SHORT_DEICTIC_TOKENS = 8
+
 
 @dataclass(frozen=True)
 class ObjectiveProfile:
@@ -120,12 +160,21 @@ class ObjectiveProfile:
     design_intent: bool
     domains_matched: tuple[str, ...] = ()
     signals: tuple[str, ...] = ()
+    # Every domain whose questions, notice and exclusions apply (primary domain first).
+    domains: tuple[str, ...] = ()
+    underspecified: bool = False
+
+    def applied_domains(self) -> tuple[str, ...]:
+        return self.domains or (self.domain,)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "domain": self.domain,
+            "domains": list(self.applied_domains()),
+            "mixed_domain": len(self.applied_domains()) > 1,
             "consequence": self.consequence,
             "broad_scope": self.broad,
+            "underspecified": self.underspecified,
             "design_intent": self.design_intent,
             "domains_matched": list(self.domains_matched),
             "signals": list(self.signals),
@@ -144,13 +193,35 @@ def _hits(tokens: set[str], joined: str, words: frozenset[str], phrases: tuple[s
     return bool(tokens & words) or any(f" {p} " in joined for p in phrases)
 
 
+def underspecification_signals(objective: str) -> tuple[str, ...]:
+    """Deterministic underspecification rule (no model call).
+
+    An objective is underspecified when it names no subject: no token outside
+    ``_NON_SUBJECT_WORDS`` ("Is it worth it?", "Should I do this?"), or a very short
+    objective that leans on a deictic pronoun ("it", "this", "that"...) with at most one
+    subject word ("Is it legal?"). A short objective that names its subject
+    ("Desalination", "When was the transistor invented?") is not underspecified.
+    """
+    token_list = _tokens(objective)
+    subject_words = [t for t in token_list if t not in _NON_SUBJECT_WORDS]
+    out: list[str] = []
+    if not subject_words:
+        out.append("no_subject_noun")
+    if (set(token_list) & _DEICTIC_WORDS and len(subject_words) <= 1
+            and len(token_list) <= _SHORT_DEICTIC_TOKENS):
+        out.append("deictic_without_referent")
+    return tuple(out)
+
+
 def classify_objective(objective: str) -> ObjectiveProfile:
     """Classify an objective by domain, consequence and breadth (deterministic rules only).
 
     Domain priority is medical > legal > financial > safety > engineering design > general.
     A design objective whose only specialised match is safety keeps the engineering-design
     bank (it already asks location, users, constraints and source conditions) at high
-    consequence.
+    consequence. When two or more specialised domains match, all of them apply
+    (``domains``): the primary ``domain`` still follows the priority order, and the case
+    carries every matched domain's notice, exclusions and decision-relevant questions.
     """
     text = objective.strip()
     token_list = _tokens(text)
@@ -222,6 +293,15 @@ def classify_objective(objective: str) -> ObjectiveProfile:
     if domain in (DOMAIN_MEDICAL, DOMAIN_LEGAL) and _PERSONAL_RE.search(text):
         signals.append("individual_advice_request")
 
+    # Mixed domains: two or more specialised matches all apply, primary first.
+    domains: tuple[str, ...] = (domain,)
+    if len(matched) >= 2:
+        domains = (domain, *[d for d in matched if d != domain])
+        signals.append("mixed_domain:" + "+".join(domains))
+
+    under = underspecification_signals(text)
+    signals.extend(f"underspecified:{u}" for u in under)
+
     return ObjectiveProfile(
         domain=domain,
         consequence=CONSEQUENCE_HIGH if high else CONSEQUENCE_STANDARD,
@@ -229,6 +309,8 @@ def classify_objective(objective: str) -> ObjectiveProfile:
         design_intent=design_intent,
         domains_matched=tuple(matched),
         signals=tuple(signals),
+        domains=domains,
+        underspecified=bool(under),
     )
 
 
@@ -255,6 +337,7 @@ class ClarificationResult:
     critical_unknowns: list[str] = field(default_factory=list)
     case_charter: dict[str, Any] | None = None
     domain: str = DOMAIN_GENERAL
+    domains: list[str] = field(default_factory=list)
     consequence: str = CONSEQUENCE_STANDARD
     classification: dict[str, Any] = field(default_factory=dict)
     safety_notice: str | None = None
@@ -535,6 +618,64 @@ GENERAL_QUESTIONS: tuple[ClarificationQuestion, ...] = (
     ),
 )
 
+# Asked first whenever the objective names no subject (underspecified).
+SUBJECT_QUESTION = ClarificationQuestion(
+    "subject",
+    "What exactly is the question about? Name the specific thing, option, product, plan or situation "
+    "that 'it', 'this' or 'that' refers to.",
+    "Without a named subject LI cannot pick sources or evidence; every finding would rest on a guess "
+    "about what is meant.",
+    examples=("a named product or service", "a specific plan or decision", "a place, organisation or topic"),
+    default="No subject assumed; research cannot be planned until the subject is named.",
+)
+
+UNDERSPECIFIED_QUESTIONS: tuple[ClarificationQuestion, ...] = (
+    SUBJECT_QUESTION,
+    ClarificationQuestion(
+        "purpose",
+        "What is this for: what decision or output should the answer feed, and what would make it "
+        "'worth it' or a good answer for you?",
+        "The purpose and success criteria decide which evidence matters and what the answer is judged against.",
+        examples=("a buy/no-buy decision", "a comparison of two options", "general understanding"),
+        default="General understanding; no decision or success criterion is assumed.",
+    ),
+    ClarificationQuestion(
+        "scope",
+        "What is in scope and what is out: which aspects, alternatives, place and time period?",
+        "A bounded scope keeps the research from guessing at the question's limits.",
+        examples=("cost only", "compare against one named alternative", "a specific country", "the next year"),
+        default="Only the named subject, with no alternatives, place or time period assumed.",
+    ),
+)
+
+# Mixed-domain cases: purpose and scope first, then each domain's decision-relevant keys.
+MIXED_PURPOSE_QUESTION = ClarificationQuestion(
+    "purpose",
+    "What is this research for, and what decision or output will it feed? (LI provides research only, "
+    "not {advice} advice.)",
+    "Purpose sets the depth and framing across every domain involved; decisions with {advice} effect "
+    "need qualified professionals.",
+    examples=("general understanding", "preparing questions for professionals", "comparing options",
+              "a project or product decision"),
+    default="General understanding to prepare questions for qualified professionals; no decision is made.",
+)
+MIXED_SCOPE_QUESTION = ClarificationQuestion(
+    "scope",
+    "This objective spans {areas}. Which of these matters most, and what is out of scope?",
+    "Several high-consequence domains compete for depth; ranking them prevents shallow coverage of all of them.",
+    examples=("one domain first", "all equally", "exclude a named area"),
+    default="Cover each domain at equal, overview depth and flag where more depth is needed.",
+)
+# Highest-information questions per domain for a mixed case, most decision-relevant first.
+MIXED_DOMAIN_KEYS: dict[str, tuple[str, ...]] = {
+    "medical": ("population", "focus", "evidence_types"),
+    "legal": ("jurisdiction", "parties", "time"),
+    "financial": ("launch_budget", "revenue_definition", "risk_and_hours"),
+    "safety": ("jurisdiction", "standards", "affected_population"),
+}
+_ADVICE_WORDS = {"medical": "medical", "legal": "legal", "financial": "financial", "safety": "safety-certification"}
+MAX_QUESTIONS = 7
+
 QUESTION_BANKS: dict[str, tuple[ClarificationQuestion, ...]] = {
     DOMAIN_MEDICAL: MEDICAL_QUESTIONS,
     DOMAIN_FINANCIAL: FINANCIAL_QUESTIONS,
@@ -614,8 +755,65 @@ def question_bank(domain: str) -> tuple[ClarificationQuestion, ...]:
     return QUESTION_BANKS.get(domain, GENERAL_QUESTIONS)
 
 
-def exclusions_for(domain: str, signals: tuple[str, ...] = ()) -> list[str]:
-    out = list(DOMAIN_EXCLUSIONS.get(domain, ()))
+def _join(items: list[str], conjunction: str = "and") -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" {conjunction} " + items[-1]
+
+
+def mixed_question_bank(domains: tuple[str, ...]) -> tuple[ClarificationQuestion, ...]:
+    """One bounded bank for a mixed-domain objective (deterministic).
+
+    Purpose and scope come first; then each domain's decision-relevant questions are taken
+    round-robin in domain-priority order, skipping keys already asked, up to 7 questions.
+    """
+    specialised = [d for d in domains if d in MIXED_DOMAIN_KEYS]
+    advice = _join([_ADVICE_WORDS[d] for d in specialised], "or")
+    areas = _join(specialised)
+    purpose = replace(MIXED_PURPOSE_QUESTION, prompt=MIXED_PURPOSE_QUESTION.prompt.format(advice=advice),
+                      why=MIXED_PURPOSE_QUESTION.why.format(advice=advice))
+    scope = replace(MIXED_SCOPE_QUESTION, prompt=MIXED_SCOPE_QUESTION.prompt.format(areas=areas))
+    out: list[ClarificationQuestion] = [purpose, scope]
+    seen = {"purpose", "scope"}
+    queues = {d: [q for k in MIXED_DOMAIN_KEYS[d] for q in QUESTION_BANKS[d] if q.key == k] for d in specialised}
+    while len(out) < MAX_QUESTIONS and any(queues.values()):
+        for d in specialised:
+            while queues[d] and queues[d][0].key in seen:
+                queues[d].pop(0)
+            if queues[d] and len(out) < MAX_QUESTIONS:
+                q = queues[d].pop(0)
+                out.append(q)
+                seen.add(q.key)
+    return tuple(out)
+
+
+def bank_for(profile: ObjectiveProfile) -> tuple[ClarificationQuestion, ...]:
+    """The question bank for a classified objective.
+
+    Mixed specialised domains get the merged bank. An underspecified objective asks for its
+    subject first: with no domain it gets the subject/purpose/scope bank; with a domain, the
+    subject question leads that domain's bank (still at most 7 questions).
+    """
+    domains = profile.applied_domains()
+    bank = mixed_question_bank(domains) if len(domains) > 1 else question_bank(profile.domain)
+    if profile.underspecified:
+        if profile.domain == DOMAIN_GENERAL and len(domains) == 1:
+            return UNDERSPECIFIED_QUESTIONS
+        bank = (SUBJECT_QUESTION, *[q for q in bank if q.key != SUBJECT_QUESTION.key])[:MAX_QUESTIONS]
+    return bank
+
+
+def safety_notice_for(domains: tuple[str, ...]) -> str | None:
+    """Every applicable domain notice, in domain order, with the scope sentence once."""
+    bodies = [SAFETY_NOTICES[d][: -len(NOTICE_SCOPE)] for d in domains if d in SAFETY_NOTICES]
+    if not bodies:
+        return None
+    return " ".join(bodies) + NOTICE_SCOPE
+
+
+def exclusions_for(domain: str | tuple[str, ...], signals: tuple[str, ...] = ()) -> list[str]:
+    domains = (domain,) if isinstance(domain, str) else tuple(domain)
+    out: list[str] = []
+    for d in domains:
+        out.extend(line for line in DOMAIN_EXCLUSIONS.get(d, ()) if line not in out)
     if "operational_execution_requested" in signals:
         out.append("The objective names operational actions; this case researches them and executes none of them.")
     if "individual_advice_request" in signals:
@@ -638,13 +836,13 @@ def _specialise(bank: tuple[ClarificationQuestion, ...], objective: str) -> tupl
 
 
 def requires_clarification(objective: str) -> bool:
-    """Clarify any high-consequence or broad objective, and any short design objective.
+    """Clarify any high-consequence, broad or underspecified objective, and any short design objective.
 
-    Simple factual questions (standard consequence, one narrow question, no design intent)
-    skip clarification.
+    Simple, well-formed factual questions (standard consequence, one narrow question with a
+    named subject, no design intent) skip clarification.
     """
     profile = classify_objective(objective)
-    if profile.consequence == CONSEQUENCE_HIGH or profile.broad:
+    if profile.consequence == CONSEQUENCE_HIGH or profile.broad or profile.underspecified:
         return True
     # The original engineering-design rule, unchanged.
     return profile.design_intent and len(_words(objective)) < 40
@@ -709,11 +907,13 @@ def clarify_objective(
         raise ValueError("objective is empty")
 
     profile = classify_objective(text)
-    bank = _specialise(question_bank(profile.domain), text)
-    safety_notice = SAFETY_NOTICES.get(profile.domain)
-    exclusions = exclusions_for(profile.domain, profile.signals)
+    domains = profile.applied_domains()
+    bank = _specialise(bank_for(profile), text)
+    safety_notice = safety_notice_for(domains)
+    exclusions = exclusions_for(domains, profile.signals)
     common: dict[str, Any] = {
         "domain": profile.domain,
+        "domains": list(domains),
         "consequence": profile.consequence,
         "classification": profile.to_dict(),
         "safety_notice": safety_notice,
@@ -726,6 +926,7 @@ def clarify_objective(
             "objective": text,
             "status": "ready_for_scope_approval",
             "domain": profile.domain,
+            "domains": list(domains),
             "consequence": profile.consequence,
             "safety_notice": safety_notice,
             "authorizes": "research_only",
@@ -744,7 +945,7 @@ def clarify_objective(
     if missing:
         round_no = 1 if not normalized else 2
         # Ask no more than 3-7 questions; preserve deterministic high-information order.
-        qs = missing[: max(3, min(max_first_round, 7))]
+        qs = missing[: max(3, min(max_first_round, MAX_QUESTIONS))]
         critical_unknowns = [
             key for key, item in normalized.items() if item.get("state") == "unknown"
         ]
@@ -768,6 +969,7 @@ def clarify_objective(
         "objective": text,
         "status": "ready_for_scope_approval",
         "domain": profile.domain,
+        "domains": list(domains),
         "consequence": profile.consequence,
         "safety_notice": safety_notice,
         "authorizes": "research_only",
@@ -802,6 +1004,7 @@ def to_dict(result: ClarificationResult) -> dict[str, Any]:
         "objective": result.objective,
         "round": result.round,
         "domain": result.domain,
+        "domains": list(result.domains or [result.domain]),
         "consequence": result.consequence,
         "classification": result.classification,
         "safety_notice": result.safety_notice,

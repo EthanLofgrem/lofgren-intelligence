@@ -420,6 +420,8 @@ STORE_ENV = {
     "SUPABASE_URL": "https://project.supabase.example",
     "SUPABASE_SERVICE_ROLE_KEY": "service-role-test",
     "SUPABASE_PUBLISHABLE_KEY": "publishable-test-key",
+    # A dummy test value, not a secret.
+    "LI_RATE_LIMIT_HMAC_KEY": "test-only-rate-limit-hmac-key-not-a-secret",
 }
 
 
@@ -483,7 +485,10 @@ class GlobalRateLimitTests(unittest.TestCase):
         self.assertEqual(bucket, "oauth_register")
         self.assertRegex(key_hash, r"^[0-9a-f]{64}$")
         self.assertNotIn("203.0.113.77", key_hash)
-        self.assertEqual(key_hash, self.ratelimit.rate_key("oauth_register", "203.0.113.77"))
+        with patch.dict(os.environ, STORE_ENV):
+            self.assertEqual(key_hash, self.ratelimit.keyed_rate_key("oauth_register", "203.0.113.77"))
+        # Keyed: not the unsalted, dictionary-reversible SHA-256 of the IP.
+        self.assertNotEqual(key_hash, self.ratelimit.rate_key("oauth_register", "203.0.113.77"))
 
     def test_sign_up_and_activation_endpoints_fail_closed_when_the_store_errors(self):
         from lofgren_intelligence.hosted.store import StoreError
@@ -653,7 +658,8 @@ class FoundingFreeActivationTests(unittest.TestCase):
         from lofgren_intelligence.hosted import ratelimit
         ratelimit.LIMITER.reset()
         self.addCleanup(ratelimit.LIMITER.reset)
-        env = patch.dict(os.environ, {"LI_PUBLIC_BASE_URL": "https://li.example"})
+        env = patch.dict(os.environ, {"LI_PUBLIC_BASE_URL": "https://li.example",
+                                      "LI_RATE_LIMIT_HMAC_KEY": STORE_ENV["LI_RATE_LIMIT_HMAC_KEY"]})
         env.start()
         self.addCleanup(env.stop)
         for name in ("LI_REQUIRE_CONFIRMED_EMAIL", "LI_IP_RATE_LIMIT_ACTIVATION_IP",
@@ -910,7 +916,9 @@ class CapabilityManifestTests(unittest.TestCase):
 # candidate itself, in workflow order. Each runs the exact-SHA V2-V6 gate jobs on push.
 RC_GATE_BRANCHES = ("build/release-candidate", "build/rc-durable-jobs", "build/rc-supabase-pin",
                     "build/rc-plan-catalog", "build/rc-integrated", "build/rc-clarification-domains",
-                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11")
+                    "build/rc-candidate-3", "build/mcp-hosting-hardening", "build/li-release-hardening-oct11",
+                    "build/li-account-response-cache", "build/oauth-atomic-disconnect",
+                    "build/li-integrated-oct13", "build/rc-candidate-4", "build/li-unified-oct13")
 
 
 class CITriggerTests(unittest.TestCase):

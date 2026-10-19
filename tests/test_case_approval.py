@@ -595,6 +595,24 @@ class ApprovalPageTests(CaseTestBase):
         self.assertNotIn("service-role", text)
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
+    def test_workspace_signout_clears_private_dom_and_invalidates_inflight_requests(self):
+        from lofgren_intelligence.hosted import web_app
+        response = self._call(web_app.workspace_page, "unused")
+        text = response.body.decode()
+        self.assertIn('id="signout" disabled', text)
+        self.assertIn("await sb.auth.signOut()", text)
+        self.assertIn("authEpoch++", text)
+        self.assertIn("epoch!==authEpoch||!session", text)
+        self.assertIn("function clearWorkspace()", text)
+        for private_target in (
+            "list.replaceChildren()", "#savedjobs", "#answers", "'email'",
+            "'objective'", "'jobid'", "'followup'", "removeAttribute('href')",
+        ):
+            with self.subTest(private_target=private_target):
+                self.assertIn(private_target, text)
+        self.assertIn("Private workspace content was cleared from this page.", text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_workspace_result_is_pending_until_saved_and_keeps_failed_job_state(self):
         from lofgren_intelligence.hosted import web_app
         case = self.open_ready_case()

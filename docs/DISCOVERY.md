@@ -54,6 +54,11 @@ Discovery never invents a solution from prose. Candidates come from a structured
 | `decision_rule` | `{maximize, min_technical_feasibility, min_economic_feasibility, min_robustness}` |
 | `simulation` | `{seed, iterations}` |
 
+Stated assumptions are never hidden in the receipt alone: the discovery report has an explicit
+**Assumptions (stated, not verified)** section, the JSON summary (`discovery_summary`, the `discover` tool result)
+has an `assumptions` list (id, statement, name, value, unit, why_assumed, sensitivity), and a produced V3 artifact's
+README lists them too.
+
 ## Outcomes
 
 `candidate_selected` (with a V3 handoff), `insufficient_evidence`, `contradicted`, `infeasible`,

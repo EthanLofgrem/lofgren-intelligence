@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +34,7 @@ class FakeStore:
         self.oauth_codes = {}
         self.access_tokens = {}
         self.refresh_tokens = {}
+        self.consumed_refresh = {}
         self.runs = {}
         self.discoveries = {}
         self.artifacts = {}
@@ -81,9 +83,61 @@ class FakeStore:
         self.oauth_codes[row["code_hash"]] = dict(row)
 
     def consume_oauth_code(self, digest):
-        row = self.oauth_codes.pop(digest, None)
+        row = self.oauth_codes.get(digest)
         # li_consume_oauth_code: a used code is refused.
-        return row if row and not row.get("used_at") else None
+        if not row or row.get("used_at"):
+            return None
+        row["used_at"] = "consumed"
+        return dict(row)
+
+    def issue_oauth_tokens(self, grant_kind, digest, access, refresh):
+        # li_issue_oauth_tokens (migration 20261013190000): the consumed parent must still exist;
+        # the new access token records its sibling refresh hash; a refresh grant revokes the access
+        # token issued with the consumed refresh token and leaves a tombstone for replay detection.
+        grants = self.oauth_codes if grant_kind == "authorization_code" else self.refresh_tokens
+        row = grants.get(digest)
+        if not row or not row.get("used_at"):
+            return False
+        self.put_access_token({**access, "refresh_token_hash": refresh["token_hash"]})
+        self.put_refresh_token(refresh)
+        if grant_kind == "refresh_token":
+            for other in self.access_tokens.values():
+                if (other.get("refresh_token_hash") == digest and other["user_id"] == row["user_id"]
+                        and other["client_id"] == row["client_id"] and not other.get("revoked_at")):
+                    other["revoked_at"] = "rotated"
+            self.consumed_refresh[digest] = {k: row[k] for k in ("user_id", "client_id", "expires_at")}
+        del grants[digest]
+        return True
+
+    def oauth_refresh_replay(self, digest, client_id):
+        # li_oauth_refresh_replay: a consumed (tombstoned or in-flight) refresh token of this client.
+        tomb = self.consumed_refresh.get(digest)
+        live = self.refresh_tokens.get(digest)
+        if tomb and tomb["client_id"] == client_id and \
+                datetime.fromisoformat(tomb["expires_at"]) > datetime.now(timezone.utc):
+            user = tomb["user_id"]
+        elif live and live["client_id"] == client_id and live.get("used_at"):
+            user = live["user_id"]
+        else:
+            return False
+        self.disconnect_oauth_client(user, client_id)
+        return True
+
+    def disconnect_oauth_client(self, user_id, client_id):
+        for row in self.access_tokens.values():
+            if row["user_id"] == user_id and row["client_id"] == client_id:
+                row["revoked_at"] = row.get("revoked_at") or "revoked"
+        for grants in (self.oauth_codes, self.refresh_tokens, self.consumed_refresh):
+            for digest, row in list(grants.items()):
+                if row["user_id"] == user_id and row["client_id"] == client_id:
+                    del grants[digest]
+
+    def revoke_oauth_token(self, digest, client_id):
+        row = self.access_tokens.get(digest) or self.refresh_tokens.get(digest)
+        if (row and row["client_id"] == client_id and not row.get("revoked_at")
+                and not row.get("used_at")
+                and datetime.fromisoformat(row["expires_at"]) > datetime.now(timezone.utc)):
+            self.disconnect_oauth_client(row["user_id"], client_id)
 
     def put_access_token(self, row):
         self._fk(row.get("user_id"))
@@ -100,8 +154,11 @@ class FakeStore:
 
     def consume_refresh_token(self, digest):
         # li_consume_refresh_token: a used refresh token is refused.
-        row = self.refresh_tokens.pop(digest, None)
-        return row if row and not row.get("used_at") else None
+        row = self.refresh_tokens.get(digest)
+        if not row or row.get("used_at"):
+            return None
+        row["used_at"] = "consumed"
+        return dict(row)
 
     def save_run(self, row):
         self._fk(row["user_id"])

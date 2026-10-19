@@ -24,19 +24,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PG_TESTS = ROOT / "tests" / "pg" / "test_migrations_pg.py"
+# The real PublicService/Worker recovery proof is held to the same contract.
+PG_RECOVERY_TESTS = ROOT / "tests" / "pg" / "test_recovery_pg.py"
+PG_SOURCES = (PG_TESTS, PG_RECOVERY_TESTS)
 WORKFLOW = ROOT / ".github" / "workflows" / "postgres-proof.yml"
 
 # Reads of table state on the admin connection (directly or through the PgCase helpers built on it).
 STATE_READS = ("self.one(", "self.admin.execute(", "admin.execute(", "conn.execute(\"select count",
                "self.job(", "self.reservation(", "self.usage_events(", "self.user_rows(", "li_acl_holes(",
                "self.entitlement(", "self.li_functions(", "has_table_privilege", "has_sequence_privilege",
-               "with admin_connect(")
+               "with admin_connect(",
+               # RecoveryPgTest helpers, each a self.one(...) read on the admin connection.
+               "self.job_row(", "self.counts(", "self.event(",
+               # OAuthRefreshReplayTest helpers, each a self.one(...) read on the admin connection.
+               "self.revoked(", "self.live(", "self.tombstones(")
 # Tests that prove a session property rather than table state.
 NO_TABLE_STATE = {"test_auth_uid_stub_reads_the_session_claim"}
 
 
 def _tests():
-    tree = ast.parse(PG_TESTS.read_text(encoding="utf-8"))
+    for source in PG_SOURCES:
+        yield from _tests_in(source)
+
+
+def _tests_in(source):
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
         for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")):
             yield cls.name, fn
@@ -102,7 +114,8 @@ class PostgresProofContractTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertRegex(text, r'push:\n    branches:\n      - "build/\*\*"\n      - "release/\*\*"')
         self.assertIn('LI_PG_REQUIRED: "1"', text)
-        self.assertIn("python -m unittest -v tests.pg.test_migrations_pg 2>&1 | tee pg-proof.log", text)
+        self.assertIn("python -m unittest -v tests.pg.test_migrations_pg tests.pg.test_recovery_pg 2>&1 "
+                      "| tee pg-proof.log", text)
         self.assertIn('grep -nE "skipped|expected failure|unexpected success" pg-proof.log', text)
         capture = text[text.index("- name: Capture the PostgreSQL server log"):]
         self.assertRegex(capture, r"^- name: Capture the PostgreSQL server log\n        if: always\(\)\n"
@@ -112,17 +125,24 @@ class PostgresProofContractTests(unittest.TestCase):
         self.assertIn("uses: actions/upload-artifact@v4", upload)
         self.assertRegex(upload, r"path: \|\n\s+pg-proof\.log\n\s+pg-server\.log")
         self.assertIn("if-no-files-found: error", upload)
-        # The pg module itself fails, never skips, when CI requires it.
-        source = PG_TESTS.read_text(encoding="utf-8")
-        self.assertIn('raise RuntimeError("LI_PG_REQUIRED=1 but LI_PG_DSN is not set")', source)
-        classes = re.findall(r"^class (\w+)\((?:PgCase|unittest\.TestCase)\):$", source, re.M)
-        self.assertEqual(len(re.findall(r"^@pg_test\nclass ", source, re.M)),
-                         len([c for c in classes if c != "PgCase"]))  # PgCase is the base: no tests
+        # The pg modules fail, never skip, when CI requires it: the recovery proof imports the
+        # migration module, so the same LI_PG_REQUIRED guard runs before any of its tests.
+        self.assertIn('raise RuntimeError("LI_PG_REQUIRED=1 but LI_PG_DSN is not set")',
+                      PG_TESTS.read_text(encoding="utf-8"))
+        self.assertIn("from tests.pg.test_migrations_pg import", PG_RECOVERY_TESTS.read_text(encoding="utf-8"))
+        for path in PG_SOURCES:
+            source = path.read_text(encoding="utf-8")
+            classes = re.findall(r"^class (\w+)\((?:PgCase|unittest\.TestCase)\):$", source, re.M)
+            with self.subTest(module=path.name):
+                self.assertTrue(classes)
+                self.assertEqual(len(re.findall(r"^@pg_test\nclass ", source, re.M)),
+                                 len([c for c in classes if c != "PgCase"]))  # PgCase is the base: no tests
 
 
     def test_opt_in_suites_stay_out_of_the_default_suite_but_load_by_name(self):
         loader = unittest.TestLoader()
         for package, module, minimum in (("pg", "tests.pg.test_migrations_pg", 48),
+                                         ("pg", "tests.pg.test_recovery_pg", 10),
                                          ("live", "tests.live.test_public_sources_live", 2)):
             with self.subTest(suite=module):
                 self.assertFalse((ROOT / "tests" / package / "__init__.py").exists(),

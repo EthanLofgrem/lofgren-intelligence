@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 import secrets
+import re
 from typing import Any
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -19,15 +20,16 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 from .. import __version__
-from .auth import ActivationRefused, AuthError, OAuthService
-from .mcp_sdk import build_mcp
+from .auth import ActivationRefused, AuthError, OAuthService, UnknownClient
+from .mcp_sdk import STORE_FAULT, build_mcp
 from . import console, site, trial
-from .journey import checkout_return_html, consent_intro_html, landing_html
-from .ratelimit import client_ip, rate_limited
+from .runtime_probe import runtime_probe
+from .journey import CONSENT_CSS, checkout_return_html, consent_intro_html, landing_html
+from .ratelimit import UNAVAILABLE_RETRY_AFTER_S, client_ip, rate_limit_key_configured, rate_limited
 from .service import AccountDeletionPending, PublicService, PublicServiceError
 from .security import MAX_MCP_BODY_BYTES
-from .store import StoreError, SupabaseStore
-from .stripe import StripeError, apply_webhook, verify_webhook
+from .store import StoreError, StoreNotConfigured, StoreUnavailable, SupabaseStore
+from .stripe import StripeError, StripeNotConfigured, StripeUnavailable, apply_webhook, verify_webhook
 
 
 _LOG = logging.getLogger("lofgren_intelligence.public")
@@ -58,16 +60,53 @@ def _error(status: int, code: str, description: str | None = None) -> JSONRespon
                         headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
+def _authorization_unavailable() -> JSONResponse:
+    return JSONResponse(
+        {"error": "temporarily_unavailable",
+         "error_description": "the authorization service is temporarily unavailable; retry later"},
+        status_code=503,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache", "Retry-After": "30"},
+    )
+
+
+# Server-side faults: missing deployment configuration or an unreachable/failing
+# dependency. They are never the caller's fault, so they never become a 4xx, and
+# their messages (which can name configuration variables) stay in server logs.
+SERVER_FAULTS = (StoreUnavailable, StripeNotConfigured, StripeUnavailable)
+UNAVAILABLE_DESCRIPTION = "the service is temporarily unavailable; retry later"
+
+
+def _unavailable(where: str, detail: str, *, misconfigured: bool) -> JSONResponse:
+    """503 per RFC 6749 4.1.2.1: server_error for misconfiguration, temporarily_unavailable for outages."""
+    _LOG.error("public dependency fault at %s (%s): %s", where,
+               "misconfigured" if misconfigured else "unavailable", detail)
+    return JSONResponse(
+        {"error": "server_error" if misconfigured else "temporarily_unavailable",
+         "error_description": UNAVAILABLE_DESCRIPTION},
+        status_code=503,
+        headers={"Retry-After": str(UNAVAILABLE_RETRY_AFTER_S), "Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+def _server_fault(where: str, exc: BaseException) -> JSONResponse:
+    misconfigured = isinstance(exc, (StoreNotConfigured, StripeNotConfigured))
+    return _unavailable(where, f"{type(exc).__name__}: {exc}", misconfigured=misconfigured)
+
+
 async def healthz(request: Request) -> Response:
     return JSONResponse({"service": "lofgren-intelligence", "version": __version__, "status": "ok"})
 
 
 async def readyz(request: Request) -> Response:
-    missing = [
-        name
-        for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_PUBLISHABLE_KEY", "LI_PUBLIC_BASE_URL")
-        if not os.environ.get(name)
-    ]
+    # Public readiness names generic components only; the exact missing
+    # configuration variables go to the server log.
+    components = (
+        ("database", ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")),
+        ("authorization_provider", ("SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY")),
+        ("public_base_url", ("LI_PUBLIC_BASE_URL",)),
+    )
+    missing_vars = sorted({name for _, names in components for name in names if not os.environ.get(name)})
+    missing = [component for component, names in components if any(not os.environ.get(n) for n in names)]
     release_sha = (
         os.environ.get("LI_RELEASE_SHA")
         or os.environ.get("VERCEL_GIT_COMMIT_SHA")
@@ -75,7 +114,14 @@ async def readyz(request: Request) -> Response:
     )
     if not release_sha:
         missing.append("release_sha")
+        missing_vars.append("LI_RELEASE_SHA")
+    # Without the limiter HMAC secret, registration, consent completion and Founding
+    # Free activation refuse (fail closed, hosted/ratelimit.py); say so here first.
+    if not rate_limit_key_configured():
+        missing.append("rate_limit_key")
+        missing_vars.append("LI_RATE_LIMIT_HMAC_KEY (missing or shorter than 32 characters)")
     if missing:
+        _LOG.error("readiness: missing configuration %s", ", ".join(missing_vars))
         return JSONResponse({"ready": False, "missing": missing}, status_code=503)
     try:
         store = SupabaseStore()
@@ -89,7 +135,8 @@ async def readyz(request: Request) -> Response:
         store.get_improvement(zero, "__readiness__")
         store.cost_samples(1)
     except Exception as exc:
-        return JSONResponse({"ready": False, "database": str(exc), "release_sha": release_sha}, status_code=503)
+        _LOG.error("readiness: database probe failed: %s: %s", type(exc).__name__, exc)
+        return JSONResponse({"ready": False, "database": "unavailable", "release_sha": release_sha}, status_code=503)
     return JSONResponse({"ready": True, "release_sha": release_sha, "versions": ["V1","V2","V3","V4","V5","V6"]})
 
 
@@ -110,6 +157,8 @@ async def oauth_server_metadata(request: Request) -> Response:
         "authorization_endpoint": base + "/oauth/authorize",
         "token_endpoint": base + "/oauth/token",
         "registration_endpoint": base + "/oauth/register",
+        "revocation_endpoint": base + "/oauth/revoke",
+        "revocation_endpoint_auth_methods_supported": ["none"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
@@ -121,14 +170,24 @@ async def oauth_server_metadata(request: Request) -> Response:
 async def oauth_register(request: Request) -> Response:
     try:
         body = await _json_body(request, 100_000)
+    except ValueError:  # Never echo parser internals to the caller.
+        return _error(400, "invalid_client_metadata", "client metadata must be a bounded JSON object")
+    try:
         return JSONResponse(OAuthService(SupabaseStore()).register_client(body), status_code=201)
-    except (ValueError, AuthError, StoreError) as exc:
+    except SERVER_FAULTS as exc:
+        return _server_fault("oauth_register", exc)
+    except StoreError:
+        return _authorization_unavailable()
+    except (ValueError, AuthError) as exc:
         return _error(400, "invalid_client_metadata", str(exc))
 
 
 async def oauth_complete(request: Request) -> Response:
     try:
         body = await _json_body(request, 100_000)
+    except ValueError:  # Never echo parser internals to the caller.
+        return _error(400, "invalid_request", "a bounded JSON object is required")
+    try:
         auth = request.headers.get("authorization", "")
         if not auth.lower().startswith("bearer "):
             raise AuthError("Supabase user session is required")
@@ -154,7 +213,11 @@ async def oauth_complete(request: Request) -> Response:
             headers["Retry-After"] = str(exc.retry_after)
         return JSONResponse({"error": exc.error, "error_description": str(exc)}, status_code=exc.status,
                             headers=headers)
-    except (ValueError, KeyError, AuthError, StoreError) as exc:
+    except SERVER_FAULTS as exc:
+        return _server_fault("oauth_complete", exc)
+    except StoreError:
+        return _authorization_unavailable()
+    except (ValueError, KeyError, AuthError) as exc:
         return _error(400, "invalid_request", str(exc))
 
 
@@ -169,9 +232,11 @@ async def oauth_token(request: Request) -> Response:
     if any(len(values) != 1 for values in form.values()):
         return _error(400, "invalid_request", "duplicate token parameters")
     get = lambda key, default="": (form.get(key) or [default])[0]
+    grant = get("grant_type")
+    if grant not in ("authorization_code", "refresh_token"):
+        return _error(400, "unsupported_grant_type")
     try:
         oauth = OAuthService(SupabaseStore())
-        grant = get("grant_type")
         if grant == "authorization_code":
             result = oauth.exchange_code(
                 code=get("code"),
@@ -179,13 +244,85 @@ async def oauth_token(request: Request) -> Response:
                 client_id=get("client_id"),
                 redirect_uri=get("redirect_uri"),
             )
-        elif grant == "refresh_token":
-            result = oauth.refresh(refresh_token=get("refresh_token"), client_id=get("client_id"))
         else:
-            return _error(400, "unsupported_grant_type")
+            result = oauth.refresh(refresh_token=get("refresh_token"), client_id=get("client_id"))
         return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
-    except (AuthError, StoreError) as exc:
+    except SERVER_FAULTS as exc:
+        return _server_fault("oauth_token", exc)
+    except StoreError:
+        return _authorization_unavailable()
+    except UnknownClient:
+        # RFC 6749 5.2: an unknown (or missing) client_id is a client authentication
+        # failure, invalid_client with 401, not a grant problem.
+        return _error(401, "invalid_client", "unknown OAuth client")
+    except AuthError as exc:
         return _error(400, "invalid_grant", str(exc))
+
+
+async def oauth_revoke(request: Request) -> Response:
+    """RFC 7009 token revocation for public clients.
+
+    Form parameters: token (required), client_id (required: clients are public,
+    so the client identifies itself without a secret), token_type_hint
+    (optional, access_token or refresh_token). A registered client always gets
+    200 with an empty body, whether the token was revoked now, was already
+    revoked, is unknown or belongs to another client (RFC 7009 section 2.2).
+    """
+    raw = await request.body()
+    if len(raw) > 100_000:
+        return _error(413, "invalid_request", "request body too large")
+    try:
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=32)
+    except (UnicodeDecodeError, ValueError):
+        return _error(400, "invalid_request", "malformed revocation request")
+    if any(len(values) != 1 for values in form.values()):
+        return _error(400, "invalid_request", "duplicate revocation parameters")
+    get = lambda key: (form.get(key) or [""])[0]
+    client_id = get("client_id")
+    if not client_id:
+        # RFC 6749 5.2: the public client did not identify itself.
+        return _error(401, "invalid_client", "client_id is required")
+    token = get("token")
+    if not token:
+        return _error(400, "invalid_request", "token is required")
+    try:
+        OAuthService(SupabaseStore()).revoke(token=token, client_id=client_id,
+                                             token_type_hint=get("token_type_hint"))
+    except SERVER_FAULTS as exc:
+        return _server_fault("oauth_revoke", exc)
+    except StoreError:
+        return _authorization_unavailable()
+    except UnknownClient:
+        return _error(401, "invalid_client", "unknown OAuth client")
+    except AuthError:
+        return _error(401, "invalid_client")
+    return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+async def oauth_disconnect(request: Request) -> Response:
+    """Disconnect only the caller's named client using a verified Supabase session."""
+    try:
+        body = await _json_body(request, 100_000)
+        client = body.get("client_id")
+        if not isinstance(client, str) or not client or len(client) > 200:
+            return _error(400, "invalid_request", "client_id is required")
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer ") or not auth.split(" ", 1)[1].strip():
+            return _error(401, "unauthorized")
+        session = auth.split(" ", 1)[1].strip()
+        store = SupabaseStore()
+        try:
+            user = store.verify_supabase_user(session)
+        except StoreError:
+            return _error(401, "unauthorized")
+        store.disconnect_oauth_client(str(user["id"]), client)
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except AuthError:
+        return _error(401, "unauthorized")
+    except (ValueError, KeyError):
+        return _error(400, "invalid_request")
+    except StoreError:
+        return _error(503, "temporarily_unavailable")
 
 
 async def oauth_authorize(request: Request) -> Response:
@@ -203,8 +340,10 @@ async def oauth_authorize(request: Request) -> Response:
         return _error(400, "invalid_request", "authorization code + PKCE S256 required")
     try:
         client = SupabaseStore().get_oauth_client(params["client_id"])
-    except StoreError as exc:
-        return _error(503, "temporarily_unavailable", str(exc))
+    except SERVER_FAULTS as exc:
+        return _server_fault("oauth_authorize", exc)
+    except StoreError:
+        return _authorization_unavailable()
     if not client or params["redirect_uri"] not in (client.get("redirect_uris") or []):
         return _error(400, "invalid_client")
     if params["resource"] != public_base() + "/mcp":
@@ -213,7 +352,8 @@ async def oauth_authorize(request: Request) -> Response:
     supabase_url = os.environ.get("SUPABASE_URL", "")
     public_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
     if not supabase_url or not public_key:
-        return _error(503, "temporarily_unavailable", "authorization provider is not configured")
+        return _unavailable("oauth_authorize", "SUPABASE_URL or SUPABASE_PUBLISHABLE_KEY is not configured",
+                            misconfigured=True)
 
     safe_params = json.dumps(params).replace("<", "\\u003c")
     safe_url = json.dumps(supabase_url).replace("<", "\\u003c")
@@ -236,6 +376,7 @@ main{{width:min(92vw,480px);background:#151922;border:1px solid #2a3240;border-r
 h1{{font-size:24px;margin:0 0 6px}}p{{color:#aeb8c7}}input,button{{width:100%;box-sizing:border-box;padding:12px;margin:8px 0;border-radius:9px}}
 input{{background:#0e1218;color:white;border:1px solid #344054}}button{{background:#2563eb;color:white;border:0;font-weight:700;cursor:pointer}}
 small{{color:#8692a6}}#status{{min-height:24px;color:#f0b94d}}
+{CONSENT_CSS}
 </style></head>
 <body><main>{consent_intro}
 <button id="continue" hidden>Approve and continue</button>
@@ -291,12 +432,27 @@ def _supabase_session_token(request: Request) -> str:
     return auth.split(" ", 1)[1].strip()
 
 
+def _session_user(request: Request) -> tuple[SupabaseStore, dict[str, Any]]:
+    """Refuse a request without a session token before the store is touched.
+
+    A missing token is the caller's fault (401) whatever the deployment state;
+    only a request that carries one can surface a server fault.
+    """
+    token = _supabase_session_token(request)
+    store = SupabaseStore()
+    return store, store.verify_supabase_user(token)
+
+
 async def account_export(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         data = PublicService(store).export_account_data(str(user["id"]))
-        return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=lofgren-intelligence-data.json"})
+        return JSONResponse(data, headers={
+            "Content-Disposition": "attachment; filename=lofgren-intelligence-data.json",
+            "Cache-Control": "no-store", "Pragma": "no-cache",
+        })
+    except SERVER_FAULTS as exc:
+        return _server_fault("account_export", exc)
     except (StoreError, PublicServiceError) as exc:
         return _error(401, "unauthorized", str(exc))
 
@@ -304,15 +460,16 @@ async def account_export(request: Request) -> Response:
 async def account_delete(request: Request) -> Response:
     try:
         body = await _json_body(request, 10_000)
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).delete_account(
             str(user["id"]),
             str(body.get("confirmation") or ""),
         )
-        return JSONResponse(result)
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     except AccountDeletionPending as exc:
         return _error(409, "account_deletion_pending", str(exc))
+    except SERVER_FAULTS as exc:
+        return _server_fault("account_delete", exc)
     except (StoreError, PublicServiceError, StripeError, ValueError) as exc:
         return _error(400, "account_deletion_refused", str(exc))
 
@@ -378,20 +535,22 @@ sb.auth.getSession().then(x=>ready(x.data.session));
 
 async def action_details(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).action_status(str(user["id"]), {"action_id": request.path_params["action_id"]})
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except SERVER_FAULTS as exc:
+        return _server_fault("action_details", exc)
     except (StoreError, PublicServiceError) as exc:
         return _error(400, "action_unavailable", str(exc))
 
 
 async def action_approve(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).approve_action(str(user["id"]), request.path_params["action_id"])
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except SERVER_FAULTS as exc:
+        return _server_fault("action_approve", exc)
     except (StoreError, PublicServiceError) as exc:
         return _error(400, "approval_refused", str(exc))
 
@@ -465,6 +624,8 @@ sb.auth.getSession().then(async x=>{{session=x.data.session;if(session){{status.
 # and expires. It is never an MCP call, and it does not approve any V4 action.
 
 def _case_error(exc: Exception) -> JSONResponse:
+    if isinstance(exc, SERVER_FAULTS):
+        return _server_fault("cases", exc)
     if isinstance(exc, PublicServiceError):
         status = 409 if exc.code in {"CASE_VERSION_CONFLICT", "CASE_NOT_READY"} else 404 if exc.code == "CASE_NOT_FOUND" else 400
         return _error(status, exc.code.lower(), str(exc))
@@ -473,8 +634,7 @@ def _case_error(exc: Exception) -> JSONResponse:
 
 async def case_details(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).case_charter_details(
             str(user["id"]), str(request.path_params["case_id"]),
             os.environ.get("LI_PUBLIC_BASE_URL", "").rstrip("/"),
@@ -486,8 +646,7 @@ async def case_details(request: Request) -> Response:
 
 async def workspace_cases(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         service = PublicService(store)
         if request.method == "POST":
             try:
@@ -519,7 +678,8 @@ async def workspace_page(request: Request) -> Response:
 <p>Real persisted cases. <a href="/app">Open the separate illustrative demo</a>.</p>
 <label for="email">Email</label><input id="email" type="email" autocomplete="email">
 <label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
-<button id="signin">Sign in</button><button id="refresh" disabled>Refresh saved cases</button>
+<button id="signin">Sign in</button><button id="signout" disabled>Sign out and clear this workspace</button><button id="refresh" disabled>Refresh saved cases</button>
+<p id="accountstate">No account is signed in.</p>
 <div id="status" role="status" aria-live="polite">Sign in to load your cases.</div><ul id="cases"></ul>
 <h2>Create or clarify a case</h2><p>This saves scope only. It does not start research or authorize external actions.</p>
 <label for="objective">Research objective</label><textarea id="objective" maxlength="3000"></textarea>
@@ -544,13 +704,15 @@ async def workspace_page(request: Request) -> Response:
 <div id="followstatus" role="status" aria-live="polite"></div></section>
 <footer><a href="/trust">Trust</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/support">Support</a></footer>
 </main><script nonce="{nonce}">
-const sb=supabase.createClient({safe_url},{safe_key});let session=null,currentCase=null,inspectedJob=null;
+const sb=supabase.createClient({safe_url},{safe_key});let session=null,currentCase=null,inspectedJob=null,authEpoch=0;
 const status=document.querySelector('#status'),list=document.querySelector('#cases');
-async function request(method,body,path='/workspace/cases'){{const r=await fetch(path,{{method,headers:{{authorization:'Bearer '+session.access_token,'content-type':'application/json'}},body:body?JSON.stringify(body):undefined}});const d=await r.json();if(!r.ok)throw new Error(d.error_description||d.error||'Request failed');return d}}
+async function request(method,body,path='/workspace/cases'){{const token=session&&session.access_token,epoch=authEpoch;if(!token)throw new Error('Sign in to continue.');const r=await fetch(path,{{method,headers:{{authorization:'Bearer '+token,'content-type':'application/json'}},body:body?JSON.stringify(body):undefined}});const d=await r.json();if(epoch!==authEpoch||!session)throw new Error('The signed-in account changed. Sign in to continue.');if(!r.ok)throw new Error(d.error_description||d.error||'Request failed');return d}}
 async function load(){{if(!session)return;status.textContent='Loading saved cases…';const d=await request('GET');list.replaceChildren();for(const c of d.cases){{const li=document.createElement('li'),a=document.createElement('a');a.href='/cases/'+encodeURIComponent(c.id);a.textContent=(c.objective||c.id)+' — '+c.status;li.append(a);const resume=document.createElement('button');resume.textContent='Continue clarification';resume.onclick=async()=>{{try{{show(await request('GET',null,'/cases/'+encodeURIComponent(c.id)+'/charter'))}}catch(e){{status.textContent=e.message}}}};li.append(resume);list.append(li)}}status.textContent=d.cases.length?(d.truncated?'First 100 saved cases shown.':'Saved cases loaded.'):'No saved cases yet.'}}
 async function loadJobs(){{const d=await request('GET',null,'/workspace/jobs');const ul=document.querySelector('#savedjobs');ul.replaceChildren();for(const j of d.jobs){{const li=document.createElement('li'),button=document.createElement('button');button.textContent=(j.case_id?'Case '+j.case_id:'Research')+' — '+j.status+' — '+(j.created_at||'');button.onclick=()=>jobView(j);li.append(button);ul.append(li)}}document.querySelector('#jobliststatus').textContent=d.jobs.length?(d.truncated?'First 100 saved jobs shown.':'Select a saved job, then load its result.'):'No saved jobs yet.'}}
-async function recover(){{const x=await sb.auth.getSession();session=x.data.session;for(const id of ['create','refresh','jobstatus','cancel','inspect'])document.querySelector('#'+id).disabled=!session;if(session){{await load();await loadJobs()}}}}
+function clearWorkspace(){{currentCase=null;clearResult();list.replaceChildren();document.querySelector('#savedjobs').replaceChildren();for(const id of ['questions','job','report','findings','traces','receipt'])document.querySelector('#'+id).textContent='';document.querySelector('#answers').replaceChildren();for(const id of ['email','objective','jobid','followup'])document.querySelector('#'+id).value='';const review=document.querySelector('#review');review.hidden=true;review.removeAttribute('href');for(const id of ['create','refresh','jobstatus','cancel','inspect','start','revise','savefollowup'])document.querySelector('#'+id).disabled=true;document.querySelector('#jobliststatus').textContent='Sign in to recover your saved jobs.';document.querySelector('#resultstatus').textContent='';document.querySelector('#followstatus').textContent='';document.querySelector('#accountstate').textContent='No account is signed in.';document.querySelector('#signout').disabled=true}}
+async function recover(){{const x=await sb.auth.getSession();const next=x.data.session;if((session&&session.access_token)!==(next&&next.access_token))authEpoch++;session=next;for(const id of ['create','refresh','jobstatus','cancel','inspect'])document.querySelector('#'+id).disabled=!session;document.querySelector('#signout').disabled=!session;if(session){{document.querySelector('#accountstate').textContent='Signed in as '+(session.user.email||'your account')+'.';await load();await loadJobs()}}else{{clearWorkspace()}}}}
 document.querySelector('#signin').onclick=async()=>{{try{{const x=await sb.auth.signInWithPassword({{email:document.querySelector('#email').value,password:document.querySelector('#password').value}});if(x.error)throw x.error;await recover()}}catch(e){{status.textContent=e.message}}}};
+document.querySelector('#signout').onclick=async()=>{{authEpoch++;session=null;clearWorkspace();document.querySelector('#password').value='';status.textContent='Signed out. Private workspace content was cleared from this page.';try{{const x=await sb.auth.signOut();if(x.error)throw x.error}}catch(e){{status.textContent='Workspace cleared locally. Sign-out service error: '+e.message}}}};
 document.querySelector('#refresh').onclick=()=>recover().catch(e=>status.textContent=e.message);
 function show(d){{currentCase=d;document.querySelector('#start').disabled=!(d.approval&&d.approval.state==='live');document.querySelector('#objective').value=d.objective;document.querySelector('#questions').textContent=JSON.stringify({{status:d.status,budget:d.budget,critical_unknowns:d.critical_unknowns,safety_notice:d.safety_notice}},null,2);const fields=document.querySelector('#answers');fields.replaceChildren();for(const q of d.questions){{const label=document.createElement('label'),input=document.createElement('textarea'),why=document.createElement('p');input.id='answer-'+q.key;input.dataset.answerKey=q.key;input.maxLength=3000;label.htmlFor=input.id;label.textContent=q.prompt;why.textContent=q.why;fields.append(label,why,input)}}document.querySelector('#revise').disabled=!d.questions.length;const a=document.querySelector('#review');a.href='/cases/'+encodeURIComponent(d.case_id);a.hidden=false}}
 function clearResult(){{inspectedJob=null;document.querySelector('#savefollowup').disabled=true;for(const id of ['report','findings','traces','receipt'])document.querySelector('#'+id).textContent=''}}
@@ -573,8 +735,7 @@ recover().catch(e=>status.textContent=e.message);
 
 async def workspace_start_research(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         # The service loads the approved charter. Request-body replacements
         # cannot alter objective, budget, sources, owner or execution inputs.
         result = PublicService(store).start_research(
@@ -586,8 +747,7 @@ async def workspace_start_research(request: Request) -> Response:
 
 async def workspace_job(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         service = PublicService(store)
         args = {"job_id": str(request.path_params["job_id"])}
         result = (service.cancel_research(str(user["id"]), args) if request.method == "POST"
@@ -599,8 +759,7 @@ async def workspace_job(request: Request) -> Response:
 
 async def workspace_job_result(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).get_job_result(
             str(user["id"]), {"job_id": str(request.path_params["job_id"])})
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -628,8 +787,7 @@ async def workspace_job_follow_up(request: Request) -> Response:
 
 async def workspace_jobs(request: Request) -> Response:
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).list_owned_jobs(str(user["id"]))
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (StoreError, PublicServiceError) as exc:
@@ -642,8 +800,7 @@ async def case_approve(request: Request) -> Response:
     except (ValueError, UnicodeDecodeError):
         return _error(400, "invalid_request", "a JSON body with charter_version and content_hash is required")
     try:
-        store = SupabaseStore()
-        user = store.verify_supabase_user(_supabase_session_token(request))
+        store, user = _session_user(request)
         result = PublicService(store).approve_case_charter(
             str(user["id"]), str(request.path_params["case_id"]),
             body.get("charter_version"), body.get("content_hash"),
@@ -727,6 +884,8 @@ async def stripe_webhook(request: Request) -> Response:
         event = verify_webhook(raw, request.headers.get("stripe-signature", ""))
         result = apply_webhook(SupabaseStore(), event)
         return JSONResponse({"received": True, "result": result})
+    except SERVER_FAULTS as exc:
+        return _server_fault("stripe_webhook", exc)
     except (StripeError, StoreError) as exc:
         return _error(400, "invalid_webhook", str(exc))
 
@@ -785,6 +944,42 @@ SITE_ROUTES = (
 ) + tuple((path, render, False) for path, render in console.PAGES.items())
 
 
+METADATA_CACHE_CONTROL = b"public, max-age=300"
+
+
+def _public_headers(path: str, headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    """Uniform cache policy and a single Vary header on every public response.
+
+    /mcp and every /oauth/* response is no-store (RFC 6749 5.1), and token
+    responses also carry Pragma: no-cache. Both protected-resource metadata
+    documents and the authorization-server metadata share one short policy.
+    """
+    path = path.rstrip("/") or "/"
+    cache: bytes | None = None
+    pragma = False
+    if path in ("/mcp", "/mcp-trial") or path.startswith("/oauth/"):
+        cache = b"no-store"
+        pragma = path in ("/oauth/token", "/oauth/revoke", "/oauth/disconnect")
+    elif path.startswith("/.well-known/"):
+        cache = METADATA_CACHE_CONTROL
+    drop = {b"vary"} | ({b"cache-control"} if cache else set()) | ({b"pragma"} if pragma else set())
+    vary: list[str] = []
+    for key, value in headers:
+        if key.lower() == b"vary":
+            for token in value.decode("latin-1").split(","):
+                token = token.strip()
+                if token and token.lower() not in {v.lower() for v in vary}:
+                    vary.append(token)
+    out = [(key, value) for key, value in headers if key.lower() not in drop]
+    if vary:
+        out.append((b"vary", ", ".join(vary).encode("latin-1")))
+    if cache:
+        out.append((b"cache-control", cache))
+    if pragma:
+        out.append((b"pragma", b"no-cache"))
+    return out
+
+
 class RequestTelemetry:
     """Emit content-free structured request telemetry with a correlation id."""
 
@@ -803,10 +998,7 @@ class RequestTelemetry:
             nonlocal status
             if message["type"] == "http.response.start":
                 status = int(message["status"])
-                headers = list(message.get("headers", []))
-                if scope.get("path", "").rstrip("/") in ("/mcp", "/mcp-trial"):
-                    headers = [(key, value) for key, value in headers if key.lower() != b"cache-control"]
-                    headers.append((b"cache-control", b"no-store"))
+                headers = _public_headers(scope.get("path", ""), list(message.get("headers", [])))
                 headers.append((b"x-request-id", request_id.encode("ascii")))
                 message["headers"] = headers
             await send(message)
@@ -854,6 +1046,71 @@ async def mcp_service_description(request: Request) -> Response:
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
+async def _unhandled_fault(request: Request, exc: Exception) -> Response:
+    if isinstance(exc, SERVER_FAULTS):
+        return _server_fault(request.url.path, exc)
+    return PlainTextResponse("Internal Server Error", status_code=500)
+
+
+# Browser-based MCP clients documented to call remote MCP servers (OAuth
+# discovery, dynamic registration, token exchange and /mcp) from these origins.
+# LI_MCP_CLIENT_ORIGINS replaces this default (an empty value allows none);
+# LI_ALLOWED_ORIGINS adds origins. A wildcard is never accepted.
+DEFAULT_MCP_CLIENT_ORIGINS = ("https://chatgpt.com", "https://chat.openai.com", "https://claude.ai")
+
+
+def _origin_list(value: str) -> list[str]:
+    return [x.strip().rstrip("/") for x in value.split(",") if x.strip() and x.strip() != "*"]
+
+
+def allowed_origins(base: str) -> list[str]:
+    configured = os.environ.get("LI_MCP_CLIENT_ORIGINS")
+    clients = list(DEFAULT_MCP_CLIENT_ORIGINS) if configured is None else _origin_list(configured)
+    origins: list[str] = []
+    for origin in [base, *clients, *_origin_list(os.environ.get("LI_ALLOWED_ORIGINS", ""))]:
+        if origin not in origins:
+            origins.append(origin)
+    return origins
+
+
+class StoreFaultGuard:
+    """Turn a 401 caused by a store fault during bearer verification into a 503.
+
+    The SDK verifies any bearer token in middleware on every route. The verifier
+    records a store fault (see mcp_sdk.STORE_FAULT) and reports no identity, so
+    routes that ignore the bearer are unaffected; a route that then refuses for
+    want of identity (/mcp) answers 503 instead of blaming the caller's token.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or str(scope.get("path", "")).rstrip("/") != "/mcp":
+            # Elsewhere the SDK's verdict on the bearer is unused: each route
+            # authenticates (or not) on its own, and the verifier is fail-safe.
+            await self.app(scope, receive, send)
+            return
+        faults: list[BaseException] = []
+        token = STORE_FAULT.set(faults)
+        replaced = False
+
+        async def wrapped(message: Any) -> None:
+            nonlocal replaced
+            if replaced:
+                return
+            if message["type"] == "http.response.start" and faults and int(message["status"]) == 401:
+                replaced = True
+                await _server_fault(str(scope.get("path", "")), faults[0])(scope, receive, send)
+                return
+            await send(message)
+
+        try:
+            await self.app(scope, receive, wrapped)
+        finally:
+            STORE_FAULT.reset(token)
+
+
 def build_app():
     surface = os.environ.get("LI_DEPLOYMENT_SURFACE", "full")
     if surface not in {"full", "mcp"}:
@@ -864,14 +1121,24 @@ def build_app():
     parsed = urllib.parse.urlsplit(base)
     hostname = (parsed.hostname or "").lower()
     host_entries = [hostname, hostname + ":*"]
-    origin_entries = [base]
-    origin_entries.extend(
-        x.strip() for x in os.environ.get("LI_ALLOWED_ORIGINS", "").split(",") if x.strip()
-    )
+    origin_entries = allowed_origins(base)
+    # Vercel supplies the exact deployment hostname. Permit only that hostname
+    # in Preview, without changing the canonical OAuth issuer/resource URLs.
+    # Never infer an allowed host from client-controlled request headers.
+    if os.environ.get("VERCEL_ENV") == "preview" and os.environ.get("VERCEL_URL"):
+        preview_host = os.environ["VERCEL_URL"]
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app", preview_host):
+            raise RuntimeError("VERCEL_URL must be an exact Vercel deployment hostname")
+        if preview_host not in host_entries:
+            host_entries.append(preview_host)
+        preview_origin = "https://" + preview_host
+        if preview_origin not in origin_entries:
+            origin_entries.append(preview_origin)
 
     routes = [
         Route("/", landing, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/internal/runtime-probe", runtime_probe, methods=["POST"]),
         Route("/readyz", readyz, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", oauth_resource_root, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth_server_metadata, methods=["GET"]),
@@ -880,6 +1147,8 @@ def build_app():
         Route("/oauth/authorize", rate_limited("oauth_authorize", oauth_authorize), methods=["GET"]),
         Route("/oauth/authorize/complete", rate_limited("oauth_complete", oauth_complete), methods=["POST"]),
         Route("/oauth/token", rate_limited("oauth_token", oauth_token), methods=["POST"]),
+        Route("/oauth/revoke", rate_limited("oauth_revoke", oauth_revoke), methods=["POST"]),
+        Route("/oauth/disconnect", rate_limited("oauth_complete", oauth_disconnect), methods=["POST"]),
         Route("/stripe/webhook", stripe_webhook, methods=["POST"]),
         Route("/actions/{action_id:str}", action_page, methods=["GET"]),
         Route("/actions/{action_id:str}/details", rate_limited("actions", action_details), methods=["GET"]),
@@ -910,9 +1179,10 @@ def build_app():
     if surface == "mcp":
         # Explicit allowlist: new customer/admin routes remain excluded by default.
         allowed = {
-            "/healthz", "/readyz", "/.well-known/oauth-protected-resource",
+            "/healthz", "/readyz", "/internal/runtime-probe", "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
             "/oauth/register", "/oauth/authorize", "/oauth/authorize/complete", "/oauth/token",
+            "/oauth/revoke", "/oauth/disconnect",
             "/actions/{action_id:str}", "/actions/{action_id:str}/details", "/actions/{action_id:str}/approve",
             "/cases/{case_id:str}", "/cases/{case_id:str}/charter", "/cases/{case_id:str}/approve",
             "/static/vendor/{name:str}",
@@ -939,9 +1209,13 @@ def build_app():
         host=hostname,
     )
     app = mcp.streamable_http_app(streamable_http_path="/mcp", **http_settings)
+    # The SDK's bearer verifier reaches the store in middleware, outside every
+    # route handler; a server fault there must answer 503, not a bare 500.
+    app.add_exception_handler(Exception, _unhandled_fault)
     if trial_on:
         # A separate anonymous MCP server with its own allowlist; /mcp and its bearer auth are unchanged.
         app = trial.mount_trial(app, base, **http_settings)
+    app = StoreFaultGuard(app)
     app = CORSMiddleware(
         app,
         allow_origins=origin_entries,

@@ -1,28 +1,32 @@
 # Current six-step verification checklist
 
-Checkpoint: 2026-10-11 America/Phoenix. Dated execution evidence, not a signed public-release certificate.
+Checkpoint: 2026-10-13 UTC (2026-10-12 America/Phoenix). Dated execution evidence, not a signed public-release certificate.
 
-Stable MCP application: **b3204f00ba84d8133743fa1e9398a89225190dad**. All three Python versions, all five dedicated push gates, real PostgreSQL proof and operational CI passed. The stable alias was assigned to this exact READY build. All eight ordinary hosted preflight checks passed on that exact stable revision.
+Candidate: remote **0074472d896fab72af029fa6c2cf449ca0c2ae77**, local equivalent **410f16c1f6aab707bf9136d9c69e913d1c6402a4**, tree **a4694aa75d03482c499f9051e1c10c81f82cdb4a**, [draft PR #45](https://github.com/EthanLofgrem/lofgren-intelligence/pull/45). Later commits require fresh applicable checks; these results do not certify a moving branch.
 
-Five agents audited OAuth, trial abuse, workers, public documentation and change review. An alternate-model source review found a numeric verifier crash; its correction preserves direct/derived provenance and passed 1,126 full-suite tests plus 94 focused tests. These overlapping suites are not added together. Earlier offline verification passed 25 checks with zero network attempts. Source refresh has six passing behavioral tests with injected retrievals.
+Frozen-source evidence: 1,163 full-suite tests passed; 78 focused checks and 25 offline contracts passed. Counts overlap. Real PostgreSQL proof passed 68 tests with no skips. All eight test CI jobs, four operations jobs and PostgreSQL proof passed on the remote candidate. Dedicated lifecycle gates executed. A prior test process that ran while source changed is excluded from final evidence.
 
-| Requested step | Accomplishment | Remaining proof |
+The rebuilt Preview `dpl_47e7Vny1vTghKZhAF39wXbjTFsR7` reports this exact candidate at `/readyz`; health and readiness returned 200. Its trial returned 404 with no-store. Branch-specific Preview flags are `LI_TRIAL_ISOLATION_MODE=required`, `LI_TRIAL_ISOLATION_VERIFIED=false`, `LI_TRIAL_ENABLED=false`. Stable MCP remains **b3204f00ba84d8133743fa1e9398a89225190dad**. No public promotion occurred.
+
+| Requested step | Verified scope | Remaining proof |
 | --- | --- | --- |
-| 1. Authentication | OAuth parsing/grants/cache regressions; discovery and negative hosted checks; atomic disconnect candidate | Successful hosted consent, PKCE, refresh, expiry and revocation |
-| 2. Actual MCP client | Ordinary HTTP protocol preflight; secure ChatGPT sign-in attempted | ChatGPT acceptance NOT RUN: Google access rejected by automatic approval review |
-| 3. Trial review | Bounded admission, fail-closed shared accounting, SSRF, forwarding-header and concurrency regressions | Trial remains disabled; hard wall-time, distributed hosting and real install unproven |
-| 4. Worker preparation | Blueprint/schema/offline verification | No running worker; pin prepared configuration to tested API before deployment; paid creation not authorized |
-| 5. Recovery and execution | Local crash/reclaim, cancellation, persistence, settlement and deletion regressions | Hosted completion/restart/reopening/settlement NOT RUN |
-| 6. Release reconciliation | Versioned status, conformance matrix, reviewed update path and Claude handoff | Hosted acceptance, operational evidence and owner-trusted signing still required |
+| 1. Authentication | Atomic disconnect/replay and expiry-after-lock-wait fixes; 15 staging migrations; restricted service-role-only RPC grants | Hosted consent, PKCE, refresh, expiry, revocation and separate-user isolation |
+| 2. Actual MCP client | Local stdio subprocess and SDK/HTTP harness checks | Ordinary independently authorized AI-client initialize, tool listing and safe first use; product sessions UNKNOWN/NOT RUN |
+| 3. Trial review | Published schema bounds, shared accounting, SSRF, fixed child watchdog and credential allowlist tested locally | Exact Vercel launch, timeout, kill/reap proof; controlled Preview activation; distributed and real-client acceptance |
+| 4. Worker preparation | Exact-target claim, frozen inline-source boundary and receipt/accounting verification; PostgreSQL targeted-claim tests | Exactly one approved synthetic hosted target; persisted result and unrelated-job invariance |
+| 5. Recovery and execution | Local cancellation, crash/reclaim, persistence and settlement regressions | Hosted interruption/reopening/recovery and settlement evidence; external execution remains disabled |
+| 6. Release reconciliation | Exact source/tree/CI identity, migration byte matching, truthful no-account public intent | All applicable hosted gates, owner-trusted signing, approved release scope and exact-source promotion |
 
-## Separate OAuth disconnect candidate
+## Resolved historical blockers
 
-[PR #40](https://github.com/EthanLofgrem/lofgren-intelligence/pull/40), b9097d176539ce1d0aca16f74734a17295e914f1, passed combined Python matrix, real PostgreSQL and operational CI. The five dedicated release jobs skip on that separate non-release branch; do not describe them as run. Its new three-RPC migration remains unapplied. Two apply_migration requests returned `Invalid or expired requestState`; subsequent migration history and RPC checks confirmed no change. Keep its API off the stable endpoint until the connector is repaired and the migration is applied/verified.
+Fresh authorized Supabase migration requests succeeded. Disconnect, revocation replay, issuance expiry and targeted worker claim are now installed in staging. Earlier expired request-state failures are historical observations, not a current claim that these migrations are absent.
 
-## Next actions
+Vercel environment API access still returned 403; the authorized dashboard path successfully configured the isolated Preview. This resolves configuration, not API permission. No Google 502 root cause or completed ordinary-client sign-in is established.
 
-Repair Supabase mutation request state, apply the tested migration and verify service-role-only grants, then integrate the disconnect candidate and run release gates. Complete secure sign-in and actual MCP acceptance. Continue source-watch review without automatic law conclusions or code installation. Obtain a genuinely available zero-cost host or retain hosted worker acceptance as BLOCKED; no paid service was created.
+## Release criteria
 
-The paid worker would run LI jobs and save findings/receipts; it does not purchase users or establish public readiness. No live donation destination or committed launch date is verified.
+Public research must require no LI login, signup or payment. Optional GitHub identity, selected repository access and AI-client authorization are distinct concerns. Owner credentials must never become a shared user identity.
 
-See [Claude master prompt](CLAUDE_PRE_WORKER_MASTER_PROMPT.md), [public status](PUBLIC_STATUS.md), [source watch](SOURCE_WATCH.md) and [disconnect deployment order](https://github.com/EthanLofgrem/lofgren-intelligence/blob/build/oauth-atomic-disconnect/docs/OAUTH_DISCONNECT.md).
+If GitHub onboarding is advertised, a separate authorized test user must have completed the full connection flow and successfully used LI, with repository-access boundaries and revocation verified.
+
+Do not advertise an unverified connection destination. Do not infer universal model compatibility from MCP support or an SDK harness. See [client evidence](CLIENT_COMPATIBILITY.md), [issue register](REMAINING_ACCEPTANCE_REGISTER.md), [public status](PUBLIC_STATUS.md) and [Claude master prompt](CLAUDE_PRE_WORKER_MASTER_PROMPT.md).

@@ -27,6 +27,10 @@ class AuthError(RuntimeError):
     pass
 
 
+class UnknownClient(AuthError):
+    """The client_id names no registered, active client (RFC 6749 5.2 invalid_client, HTTP 401)."""
+
+
 class ActivationRefused(AuthError):
     """A new Founding Free/paid-required activation was refused before any slot was taken.
 
@@ -101,6 +105,20 @@ def _valid_redirect(uri: str) -> bool:
     return p.scheme == "http" and host in _LOOPBACK_HOSTS
 
 
+ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
+REFRESH_TOKEN_LIFETIME = timedelta(days=90)
+
+
+def _token_response(access: str, refresh: str, scope: str) -> dict[str, Any]:
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "Bearer",
+        "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
+        "scope": scope or "mcp",
+    }
+
+
 @dataclass(frozen=True)
 class Principal:
     user_id: str
@@ -164,7 +182,7 @@ class OAuthService:
     def _client(self, client_id: str, redirect_uri: str | None = None) -> dict[str, Any]:
         row = self.store.get_oauth_client(client_id)
         if not row:
-            raise AuthError("unknown OAuth client")
+            raise UnknownClient("unknown OAuth client")
         if redirect_uri is not None and redirect_uri not in (row.get("redirect_uris") or []):
             raise AuthError("redirect_uri is not registered for this client")
         return row
@@ -251,38 +269,36 @@ class OAuthService:
                     429, max(1, math.ceil(wait)),
                 )
 
-    def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str) -> dict[str, Any]:
+    def _issue_tokens(self, user_id: str, client_id: str, scope: str, resource: str, *, grant_kind: str, grant_hash: str) -> dict[str, Any]:
+        """Issue an access/refresh pair from a consumed code or refresh token, atomically.
+
+        li_issue_oauth_tokens (migration 20261013190000) re-checks the consumed parent
+        under the user/client lock, records the new access token's sibling refresh hash,
+        and, for a refresh grant, revokes the access token issued with the consumed
+        refresh token and keeps a tombstone of the consumed hash so a later replay is
+        recognised. Only SHA-256 digests reach the store.
+        """
         access = new_opaque("lit_")
         refresh = new_opaque("lir_")
-        access_lifetime = timedelta(hours=1)
-        refresh_lifetime = timedelta(days=90)
-        self.store.put_access_token(
-            {
+        access_row = {
                 "token_hash": token_hash(access),
                 "user_id": user_id,
                 "client_id": client_id,
                 "scope": scope or "mcp",
                 "resource": resource,
-                "expires_at": (now() + access_lifetime).isoformat(),
+                "expires_at": (now() + ACCESS_TOKEN_LIFETIME).isoformat(),
             }
-        )
-        self.store.put_refresh_token(
-            {
+        refresh_row = {
                 "token_hash": token_hash(refresh),
                 "user_id": user_id,
                 "client_id": client_id,
                 "scope": scope or "mcp",
                 "resource": resource,
-                "expires_at": (now() + refresh_lifetime).isoformat(),
+                "expires_at": (now() + REFRESH_TOKEN_LIFETIME).isoformat(),
             }
-        )
-        return {
-            "access_token": access,
-            "refresh_token": refresh,
-            "token_type": "Bearer",
-            "expires_in": int(access_lifetime.total_seconds()),
-            "scope": scope or "mcp",
-        }
+        if not self.store.issue_oauth_tokens(grant_kind, grant_hash, access_row, refresh_row):
+            raise AuthError("OAuth grant was revoked or already issued")
+        return _token_response(access, refresh, scope)
 
     @staticmethod
     def _grant_identity(row: dict[str, Any]) -> tuple[str, str, str]:
@@ -314,17 +330,57 @@ class OAuthService:
         if not hmac.compare_digest(code_challenge_s256(code_verifier), expected):
             raise AuthError("PKCE verification failed")
         user_id, scope, resource = self._grant_identity(row)
-        return self._issue_tokens(user_id, client_id, scope, resource)
+        return self._issue_tokens(user_id, client_id, scope, resource,
+                                  grant_kind="authorization_code", grant_hash=token_hash(code))
 
     def refresh(self, *, refresh_token: str, client_id: str) -> dict[str, Any]:
+        """Rotate a refresh token (OAuth 2.1 section 4.3.1, public clients).
+
+        li_consume_refresh_token consumes the presented token atomically (one winner under
+        concurrency); li_issue_oauth_tokens then issues the new pair and revokes the access
+        token issued with the consumed refresh token: the client has just shown it holds a
+        newer credential, and leaving the old access token valid for up to an hour would only
+        widen the window for a leaked copy. Presenting a refresh token that was already used
+        (or is being used by a concurrent request) is replay: li_oauth_refresh_replay revokes
+        the user's whole connection of that client (the same scope as RFC 7009 revocation and
+        disconnect), including tokens just issued to the legitimate client, and the client
+        must authorize again.
+        """
         self._client(client_id)
-        row = self.store.consume_refresh_token(token_hash(refresh_token))
+        if not refresh_token:
+            raise AuthError("refresh token is invalid, expired or already used")
+        digest = token_hash(refresh_token)
+        row = self.store.consume_refresh_token(digest)
         if not row:
+            if self.store.oauth_refresh_replay(digest, client_id):
+                raise AuthError("refresh token was already used; the authorization has been revoked")
             raise AuthError("refresh token is invalid, expired or already used")
         if row.get("client_id") != client_id:
+            # A public client never legitimately holds another client's refresh token. The
+            # presented token is already consumed; treat it as theft and revoke the owner's
+            # authorization for that client (li_oauth_refresh_replay), then refuse.
+            self.store.oauth_refresh_replay(digest, str(row.get("client_id") or ""))
             raise AuthError("refresh token client mismatch")
         user_id, scope, resource = self._grant_identity(row)
-        return self._issue_tokens(user_id, client_id, scope, resource)
+        return self._issue_tokens(user_id, client_id, scope, resource,
+                                  grant_kind="refresh_token", grant_hash=digest)
+
+    def revoke(self, *, token: str, client_id: str, token_type_hint: str = "") -> None:
+        """RFC 7009 revocation for a public client.
+
+        `client_id` must name a registered client (else UnknownClient -> 401 invalid_client).
+        A currently valid token issued to that client revokes the user's whole connection
+        of that client (li_revoke_oauth_token -> li_disconnect_oauth_client: every access
+        token revoked, every refresh token and pending code deleted). Unknown, expired,
+        already-revoked and other clients' tokens change nothing and are not an error
+        (RFC 7009 section 2.2), so the answer cannot be used to probe which token strings
+        exist. `token_type_hint` is accepted and ignored: one store call searches both
+        token kinds (RFC 7009 section 2.1 lets the server extend the search past the hint).
+        """
+        self._client(client_id)
+        if not token:
+            return
+        self.store.revoke_oauth_token(token_hash(token), client_id)
 
     def authenticate(self, bearer: str) -> Principal:
         if not bearer:
@@ -333,3 +389,4 @@ class OAuthService:
         row = self.store.get_access_token(digest)
         user_id, _client_id, _resource, scopes, _expiry = validated_access_record(row)
         return Principal(user_id, scopes, digest)
+
