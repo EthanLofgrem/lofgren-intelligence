@@ -595,6 +595,24 @@ class ApprovalPageTests(CaseTestBase):
         self.assertNotIn("service-role", text)
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
+    def test_workspace_signout_clears_private_dom_and_invalidates_inflight_requests(self):
+        from lofgren_intelligence.hosted import web_app
+        response = self._call(web_app.workspace_page, "unused")
+        text = response.body.decode()
+        self.assertIn('id="signout" disabled', text)
+        self.assertIn("await sb.auth.signOut()", text)
+        self.assertIn("authEpoch++", text)
+        self.assertIn("epoch!==authEpoch||!session", text)
+        self.assertIn("function clearWorkspace()", text)
+        for private_target in (
+            "list.replaceChildren()", "#savedjobs", "#answers", "'email'",
+            "'objective'", "'jobid'", "'followup'", "removeAttribute('href')",
+        ):
+            with self.subTest(private_target=private_target):
+                self.assertIn(private_target, text)
+        self.assertIn("Private workspace content was cleared from this page.", text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_workspace_result_is_pending_until_saved_and_keeps_failed_job_state(self):
         from lofgren_intelligence.hosted import web_app
         case = self.open_ready_case()
@@ -628,6 +646,53 @@ class ApprovalPageTests(CaseTestBase):
         self.assertTrue(stored["snapshot"]["receipt_intact"])
         tampered = self._call(web_app.workspace_job_result, jid, "tok-u1")
         self.assertFalse(json.loads(tampered.body)["receipt"]["intact"])
+
+    def test_scoped_follow_up_requires_owned_saved_result_and_creates_new_draft(self):
+        from lofgren_intelligence.hosted import web_app
+        case = self.open_ready_case()
+        self.approve(case)
+        job = self.service.start_research("u1", {"case_id": case["case_id"]}, BASE)
+        jid = job["job_id"]
+        pending = self._call(web_app.workspace_job_follow_up, jid, "tok-u1", "POST",
+                             {"question": "Which assumption should we validate next?"})
+        self.assertEqual(pending.status_code, 400)
+        self.assertIn(b"saved research result is required", pending.body)
+
+        run = self.service.investigate("u1", {
+            "objective": "Is industrial construction increasing?",
+            "texts": {"fictional note": "Industrial construction increased in 2026."}}, BASE)
+        self.store.jobs[jid].update({"result_run_id": run["run_id"], "status": "succeeded"})
+        denied = self._call(web_app.workspace_job_follow_up, jid, "tok-u2", "POST",
+                            {"question": "Leak another tenant's result"})
+        self.assertNotEqual(denied.status_code, 200)
+        before = len(self.store.cases)
+        response = self._call(web_app.workspace_job_follow_up, jid, "tok-u1", "POST",
+                              {"question": "Which assumption should we validate next?"})
+        self.assertEqual(response.status_code, 200, response.body)
+        data = json.loads(response.body)
+        self.assertEqual(len(self.store.cases), before + 1)
+        self.assertEqual(data["follow_up"], {
+            "source_job_id": jid,
+            "source_run_id": run["run_id"],
+            "scope": "new_case_draft",
+        })
+        self.assertTrue(data["objective"].startswith(f"Follow up on saved research {run['run_id']}:"))
+        self.assertEqual(self.store.cases[data["case_id"]]["user_id"], "u1")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_scoped_follow_up_rejects_empty_or_oversized_question(self):
+        from lofgren_intelligence.hosted import web_app
+        case = self.open_ready_case()
+        self.approve(case)
+        job = self.service.start_research("u1", {"case_id": case["case_id"]}, BASE)
+        run = self.service.investigate("u1", {
+            "objective": "Is industrial construction increasing?",
+            "texts": {"fictional note": "Industrial construction increased in 2026."}}, BASE)
+        self.store.jobs[job["job_id"]].update({"result_run_id": run["run_id"], "status": "succeeded"})
+        for question in ("", "x" * 3001):
+            response = self._call(web_app.workspace_job_follow_up, job["job_id"], "tok-u1", "POST",
+                                  {"question": question})
+            self.assertEqual(response.status_code, 400)
 
     def test_result_paths_refuse_mismatched_rows_even_from_a_faulty_store(self):
         run = self.service.investigate("u1", {
