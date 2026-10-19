@@ -1246,7 +1246,7 @@ class PublicService:
         """Inspect persisted research without asserting that job settlement succeeded."""
         job = self._job(user_id, a.get("job_id"))
         view = job_model.public_job_view(job)
-        out = {"job_id": view["job_id"], "status": view["status"],
+        out = {"job_id": view["job_id"], "case_id": view["case_id"], "status": view["status"],
                "run_id": view["run_id"], "result_available": False}
         if not view["run_id"]:
             return out
@@ -1257,6 +1257,32 @@ class PublicService:
                     "unknowns": snap["unknowns"], "traces": snap["traces"],
                     "receipt": self.get_receipt(user_id, {"run_id": view["run_id"]})})
         return out
+
+    def create_scoped_follow_up(
+        self, user_id: str, a: dict[str, Any], base_url: str = "",
+    ) -> dict[str, Any]:
+        """Save a new case scoped to one owned, persisted research result."""
+        job = self._job(user_id, a.get("job_id"))
+        view = job_model.public_job_view(job)
+        run_id = str(view.get("run_id") or "")
+        if not run_id:
+            raise JobInvalid("a saved research result is required before creating a follow-up")
+        # Reuse result inspection's tenant and integrity boundary. Demo or
+        # client-supplied result identities cannot pass this lookup.
+        self._snapshot(user_id, run_id)
+        question = str(a.get("question") or "").strip()
+        if not question:
+            raise JobInvalid("follow-up question is required")
+        if len(question) > 3_000:
+            raise JobInvalid("follow-up question exceeds 3000 characters")
+        objective = f"Follow up on saved research {run_id}: {question}"
+        result = self.clarify_objective(user_id, {"objective": objective}, base_url)
+        result["follow_up"] = {
+            "source_job_id": str(view["job_id"]),
+            "source_run_id": run_id,
+            "scope": "new_case_draft",
+        }
+        return result
 
     def list_owned_jobs(self, user_id: str) -> dict[str, Any]:
         """Bounded reconnect index; never expose frozen inputs or lease state."""
