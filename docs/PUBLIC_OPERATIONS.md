@@ -15,7 +15,9 @@ mapped to the tested SHA is not releasable.
 Run:
 
 ```bash
-python scripts/public_mcp_gate.py --evidence public-mcp-evidence.json
+python scripts/public_mcp_gate.py \
+  --evidence public-mcp-evidence.json \
+  --trust-policy operator-trust-policy.json
 ```
 
 Unknown is false. Public launch requires `PublicMCPReady = TRUE`.
@@ -44,6 +46,24 @@ rollback, secret boundaries and exact/deployed SHA binding.
 11. Capture deployment SHA, health/readiness and rollback target.
 12. Evaluate the full public gate.
 13. Only after an owner release decision, promote the already-tested artifact.
+
+Before requesting that owner decision, assemble the candidate-bound activation
+and rollback handoff and validate it:
+
+```bash
+python scripts/validate_activation_package.py \
+  --package activation-package.json \
+  --output activation-package-check.json
+```
+
+The package references, by SHA-256 digest, real receipts for exact-head CI,
+migration-ledger alignment, health/readiness, observability, disposable
+backup/restore, rollback rehearsal, ordinary remote clients, tenant isolation
+and the hosted V1-V6 journey. It also pins the staging origin, candidate SHA,
+distinct rollback SHA, forward migrations and compatibility statement. The
+validator never signs evidence, never authorizes release and always reports
+`PublicMCPReady: false`; it only determines whether the handoff is complete
+enough to request the owner's activation decision.
 
 ## Rollback
 
