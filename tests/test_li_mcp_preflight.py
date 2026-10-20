@@ -1,6 +1,9 @@
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('preflight', Path(__file__).resolve().parents[1] / 'scripts/li_mcp_preflight.py')
 m = importlib.util.module_from_spec(spec)
@@ -106,6 +109,47 @@ class PreflightTests(unittest.TestCase):
                 m.check(base, SHA, self.request)
         with self.assertRaises(ValueError):
             m.check(BASE, 'main', self.request)
+
+    def test_protection_bypass_is_bound_to_the_exact_origin(self):
+        calls = []
+
+        def fetch(url, method='GET', body=None, extra_headers=None):
+            calls.append((url, extra_headers))
+            return 200, {}, {}
+
+        environment = {
+            'LI_VERCEL_AUTOMATION_BYPASS_SECRET': 'synthetic-test-token',
+            'LI_PREFLIGHT_BYPASS_ORIGIN': BASE,
+        }
+        with patch.object(m, 'fetch', side_effect=fetch):
+            request = m.request_from_environment(BASE, environment)
+            request(BASE + '/healthz')
+            with self.assertRaisesRegex(ValueError, 'another origin'):
+                request('https://attacker.example/collect')
+        self.assertEqual(calls, [(BASE + '/healthz', {
+            'x-vercel-protection-bypass': 'synthetic-test-token'})])
+
+    def test_protection_bypass_configuration_fails_closed(self):
+        configurations = (
+            {'LI_VERCEL_AUTOMATION_BYPASS_SECRET': 'token'},
+            {'LI_PREFLIGHT_BYPASS_ORIGIN': BASE},
+            {'LI_VERCEL_AUTOMATION_BYPASS_SECRET': 'token',
+             'LI_PREFLIGHT_BYPASS_ORIGIN': 'https://other.example'},
+            {'LI_VERCEL_AUTOMATION_BYPASS_SECRET': 'bad\nheader',
+             'LI_PREFLIGHT_BYPASS_ORIGIN': BASE},
+        )
+        for environment in configurations:
+            with self.subTest(environment=sorted(environment)), self.assertRaises(ValueError):
+                m.request_from_environment(BASE, environment)
+
+    def test_result_receipt_is_canonical_and_atomic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'receipt.json'
+            result = {'passed': False, 'checks': [{'check': 'ready', 'passed': False}]}
+            m.write_result(result, output)
+            self.assertEqual(json.loads(output.read_text(encoding='utf-8')), result)
+            self.assertTrue(output.read_text(encoding='utf-8').endswith('\n'))
+            self.assertFalse(output.with_name('.receipt.json.tmp').exists())
 
 
 if __name__ == '__main__':
