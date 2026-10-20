@@ -65,6 +65,13 @@ validator never signs evidence, never authorizes release and always reports
 `PublicMCPReady: false`; it only determines whether the handoff is complete
 enough to request the owner's activation decision.
 
+Each receipt must identify its slot with `proof_kind` (for example
+`backup_restore`), `candidate_sha`, strict boolean `passed: true` and a
+nonempty `result_id`. These fields are a handoff format check, not verifier
+authentication. A self-authored receipt is not independent proof; the signed
+36-term gate with the operator's trust policy remains required. Migration
+versions must be unique even when filenames differ.
+
 ## Rollback
 
 Keep the last known-good deployment id/SHA and the migration compatibility

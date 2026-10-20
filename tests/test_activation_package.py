@@ -22,7 +22,7 @@ class ActivationPackageTests(unittest.TestCase):
         for name in REQUIRED_PROOFS:
             path = root / f"{name}.json"
             raw = json.dumps(
-                {"candidate_sha": self.CANDIDATE, "passed": True, "result_id": name},
+                {"candidate_sha": self.CANDIDATE, "passed": True, "result_id": name, "proof_kind": name},
                 sort_keys=True,
             ).encode()
             path.write_bytes(raw)
@@ -94,6 +94,32 @@ class ActivationPackageTests(unittest.TestCase):
         self.assertFalse(result.ready)
         self.assertFalse(result.checks["rollback_sha"])
         self.assertFalse(result.checks["rollback_compatibility"])
+
+    def test_one_receipt_cannot_substitute_for_all_proof_kinds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = self._package(root)
+            receipt = package["proofs"]["exact_head_ci"]
+            package["proofs"] = {name: receipt for name in REQUIRED_PROOFS}
+            result = validate_activation_package(package, package_dir=root)
+            self.assertFalse(result.ready)
+            self.assertFalse(result.checks["proof:backup_restore"])
+
+    def test_malformed_inputs_return_blockers_without_crashing(self):
+        for field, value in (
+            ("forward_migrations", [{}]),
+            ("forward_migrations", ["20261018120000_a.sql", "20261018120000_b.sql"]),
+            ("deployment_origin", "https://[broken"),
+            ("deployment_origin", "https://example.com:invalid"),
+            ("deployment_origin", "https://example.com:70000"),
+            ("deployment_origin", "https://exa\nmple.com"),
+        ):
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                package = self._package(root)
+                package[field] = value
+                self.assertFalse(validate_activation_package(package, package_dir=root).ready)
+        self.assertFalse(validate_activation_package([], package_dir=Path.cwd()).ready)
 
 
 if __name__ == "__main__":
