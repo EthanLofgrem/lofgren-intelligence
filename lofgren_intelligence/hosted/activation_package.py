@@ -51,12 +51,17 @@ class ActivationCheck:
 
 
 def _https_origin(value: Any) -> bool:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 for c in value):
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
     return (
         parsed.scheme == "https"
         and bool(parsed.hostname)
+        and (port is None or 1 <= port <= 65535)
         and parsed.username is None
         and parsed.password is None
         and parsed.query == ""
@@ -65,16 +70,16 @@ def _https_origin(value: Any) -> bool:
     )
 
 
-def _receipt_valid(entry: Any, root: Path, candidate_sha: str) -> bool:
+def _receipt_valid(entry: Any, root: Path, candidate_sha: str, proof_kind: str) -> bool:
     if not isinstance(entry, dict):
         return False
     rel, digest = entry.get("path"), entry.get("sha256")
     if not isinstance(rel, str) or not DIGEST_RE.fullmatch(str(digest or "")):
         return False
-    path = (root / rel).resolve()
     try:
+        path = (root / rel).resolve()
         path.relative_to(root.resolve())
-    except ValueError:
+    except (ValueError, OSError, RuntimeError):
         return False
     try:
         raw = path.read_bytes()
@@ -84,6 +89,7 @@ def _receipt_valid(entry: Any, root: Path, candidate_sha: str) -> bool:
     return (
         hashlib.sha256(raw).hexdigest() == digest
         and isinstance(payload, dict)
+        and payload.get("proof_kind") == proof_kind
         and payload.get("candidate_sha") == candidate_sha
         and payload.get("passed") is True
         and isinstance(payload.get("result_id"), str)
@@ -92,6 +98,8 @@ def _receipt_valid(entry: Any, root: Path, candidate_sha: str) -> bool:
 
 
 def validate_activation_package(package: dict[str, Any], *, package_dir: Path) -> ActivationCheck:
+    if not isinstance(package, dict):
+        return ActivationCheck(False, {"schema": False}, ("package must be an object",))
     checks: dict[str, bool] = {}
     blockers: list[str] = []
 
@@ -107,8 +115,9 @@ def validate_activation_package(package: dict[str, Any], *, package_dir: Path) -
     migrations = package.get("forward_migrations")
     checks["forward_migrations"] = (
         isinstance(migrations, list)
-        and len(migrations) == len(set(migrations))
         and all(isinstance(item, str) and MIGRATION_RE.fullmatch(item) for item in migrations)
+        and len(migrations) == len(set(migrations))
+        and len(migrations) == len({item.split("_", 1)[0] for item in migrations})
     )
     compatibility = package.get("rollback_compatibility")
     checks["rollback_compatibility"] = (
@@ -124,7 +133,7 @@ def validate_activation_package(package: dict[str, Any], *, package_dir: Path) -
     for name in REQUIRED_PROOFS:
         checks[f"proof:{name}"] = (
             isinstance(proofs, dict)
-            and _receipt_valid(proofs.get(name), package_dir, candidate)
+            and _receipt_valid(proofs.get(name), package_dir, candidate, name)
         )
 
     commands = package.get("commands")
